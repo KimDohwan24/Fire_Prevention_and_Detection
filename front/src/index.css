@@ -101,6 +101,18 @@
 }
 
 @layer base {
+  .dark {
+    --color-primary: #ffffff;
+    --color-on-primary: #000000;
+    --color-ink: #ffffff;
+    --color-ink-deep: #e5e5e5;
+    --color-body: rgba(255, 255, 255, 0.7);
+    --color-canvas: #171717;
+    --color-hairline: #333333;
+    --color-mute: #525252;
+    --color-surface-soft: #262626;
+  }
+
   body {
     @apply font-ui text-body bg-canvas;
     margin: 0;
