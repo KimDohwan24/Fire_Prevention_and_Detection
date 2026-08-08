@@ -1,7 +1,15 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 const Login = () => {
+  const navigate = useNavigate();
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    // 로그인 로직 (토큰 저장 등)
+    navigate('/dashboard');
+  };
+
   return (
     <div className="min-h-screen bg-canvas flex flex-col items-center pt-32 px-4 font-ui relative transition-colors duration-300">
 
@@ -20,7 +28,7 @@ const Login = () => {
 
       {/* Login Form */}
       <div className="w-full max-w-[360px]">
-        <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+        <form className="space-y-4" onSubmit={handleLogin}>
           <div>
             <input
               type="text"
@@ -42,15 +50,17 @@ const Login = () => {
             />
           </div>
 
-          <button
-            type="submit"
-            className="w-full h-[36px] bg-primary text-on-primary rounded-full text-button-md hover:bg-ink-deep active:scale-[0.98] transition-all duration-200 mt-2"
-          >
-            로그인
-          </button>
+          <div className="flex flex-col space-y-2 pt-2">
+            <button
+              type="submit"
+              className="w-full h-[36px] bg-primary text-on-primary rounded-full text-button-md hover:bg-ink-deep active:scale-[0.98] transition-all duration-200"
+            >
+              로그인
+            </button>
+          </div>
         </form>
 
-        <div className="mt-8 flex flex-col items-center space-y-4 text-body-sm">
+        <div className="mt-8 flex flex-col items-center space-y-3 text-body-sm">
           <Link to="/forgot-password" className="text-body hover:text-ink underline decoration-hairline hover:decoration-ink underline-offset-4 transition-colors">
             아이디/비밀번호 찾기
           </Link>

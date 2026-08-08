@@ -62,20 +62,20 @@ const Signup = () => {
 
   return (
     <div className="min-h-screen bg-canvas flex flex-col items-center pt-24 pb-24 px-4 font-ui relative transition-colors duration-300">
-      
+
       {/* Brand / Logo */}
       <div className="flex flex-row items-center space-x-5 mb-10">
         <div className="text-[48px] leading-none">🔥</div>
         <div className="flex flex-col">
           <h1 className="font-display text-display-lg font-medium text-ink tracking-tight mb-1">
-            파이어가드 회원가입
+            FireGuard 회원가입
           </h1>
         </div>
       </div>
 
       <div className="w-full max-w-[420px]">
         <form className="space-y-5" onSubmit={handleSubmit}>
-          
+
           {/* 아이디 */}
           <div className="flex flex-col space-y-1.5">
             <input
@@ -247,7 +247,7 @@ const Signup = () => {
                 주소 검색
               </button>
             </div>
-            
+
             {/* 상세 주소 (주소가 입력되었을 때 동적으로 나타남) */}
             {formData.address && (
               <div className="pt-1 animate-fadeIn">
@@ -354,7 +354,7 @@ const Signup = () => {
               회원가입
             </button>
           </div>
-          
+
           <div className="text-center">
             <Link to="/login" className="text-body-sm text-body hover:text-ink underline decoration-hairline hover:decoration-ink underline-offset-4 transition-colors">
               이미 계정이 있으신가요?
