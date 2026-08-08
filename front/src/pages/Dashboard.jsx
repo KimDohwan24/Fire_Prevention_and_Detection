@@ -1,17 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  LogOut, Search, Bell, AlertTriangle, CheckCircle, 
-  Video, MapPin, Search as SearchIcon, VideoOff, X, ArrowLeft
+import {
+  LogOut, Search, Bell, AlertTriangle, CheckCircle,
+  Video, MapPin, Search as SearchIcon, VideoOff, X, ArrowLeft,
+  ShieldCheck, Users, PlusCircle, Settings, ShieldAlert, UserCheck
 } from 'lucide-react';
 
-// 가상의 CCTV 데이터 (실제 백엔드 연동 시 교체)
-const MOCK_CCTVS = [
+// 가상의 CCTV 데이터
+const INITIAL_CCTVS = [
   { id: 'CCTV-01', name: '정문 주차장', status: 'normal', lat: 37.5665, lng: 126.9780 },
   { id: 'CCTV-02', name: '후문 분리수거장', status: 'normal', lat: 37.5668, lng: 126.9785 },
   { id: 'CCTV-03', name: 'A동 1층 로비', status: 'fire', lat: 37.5662, lng: 126.9790 },
   { id: 'CCTV-04', name: 'B동 뒷골목', status: 'normal', lat: 37.5670, lng: 126.9770 },
   { id: 'CCTV-05', name: '옥상', status: 'offline', lat: 37.5655, lng: 126.9775 },
+];
+
+// 가상의 회원 목록 데이터 (관리자 전용)
+const MOCK_USERS = [
+  { id: 'admin', name: '최고 관리자', email: 'admin@fireguard.or.kr', role: 'admin', status: '승인' },
+  { id: 'user01', name: '홍길동 (관제1팀)', email: 'gildong@fireguard.or.kr', role: 'user', status: '승인' },
+  { id: 'user02', name: '김철수 (시설팀)', email: 'chulsoo@fireguard.or.kr', role: 'user', status: '승인' },
+  { id: 'user03', name: '이영희 (보안팀)', email: 'younghee@fireguard.or.kr', role: 'user', status: '대기' },
 ];
 
 const MOCK_LOGS = [
@@ -20,9 +29,9 @@ const MOCK_LOGS = [
   { id: 3, time: '12:00:00', message: '시스템 정기 점검 완료', type: 'normal' },
 ];
 
-// 가상의 소방서 위치 데이터 (위치 정보가 전해지면 고정됨)
+// 가상의 소방서 위치 데이터
 const MOCK_FIRE_STATION = {
-  name: '관할 소방서',
+  name: '소방서 위치',
   lat: 37.5660,
   lng: 126.9782,
   x: 50, // 화면 내 고정 좌표 (%)
@@ -31,56 +40,137 @@ const MOCK_FIRE_STATION = {
 
 function Dashboard() {
   const navigate = useNavigate();
+  const [currentUser, setCurrentUser] = useState(null);
+  const [cctvList, setCctvList] = useState(INITIAL_CCTVS);
   const [selectedCCTV, setSelectedCCTV] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   
-  // 소방서 위치 정보 (백엔드나 props/설정값으로 받아와서 고정)
+  // 관리자 전용 모달 상태
+  const [activeAdminTab, setActiveAdminTab] = useState(null); // 'addCCTV' | 'users' | 'settings' | null
+  const [userList, setUserList] = useState(MOCK_USERS);
+  const [newCCTVName, setNewCCTVName] = useState('');
+  const [autoNotify119, setAutoNotify119] = useState(true);
+
+  // 소방서 위치 정보
   const [fireStation] = useState(MOCK_FIRE_STATION);
 
+  useEffect(() => {
+    // localStorage에서 현재 로그인 유저 정보 가져오기
+    const storedUser = localStorage.getItem('currentUser');
+    if (storedUser) {
+      try {
+        setCurrentUser(JSON.parse(storedUser));
+      } catch (e) {
+        console.error(e);
+      }
+    } else {
+      // 기본값 설정 (비로그인 접근 시)
+      setCurrentUser({ id: 'guest', name: '손님', role: 'user' });
+    }
+  }, []);
+
+  const isAdmin = currentUser?.role === 'admin';
+
   const handleLogout = () => {
-    // 로그아웃 로직 (토큰 삭제 등)
+    localStorage.removeItem('currentUser');
     navigate('/login');
   };
 
-  const filteredCCTVs = MOCK_CCTVS.filter(cctv => 
+  const handleAddCCTV = (e) => {
+    e.preventDefault();
+    if (!newCCTVName.trim()) return;
+    const newId = `CCTV-0${cctvList.length + 1}`;
+    const newCCTV = {
+      id: newId,
+      name: newCCTVName,
+      status: 'normal',
+      lat: 37.5660 + (Math.random() * 0.002 - 0.001),
+      lng: 126.9780 + (Math.random() * 0.002 - 0.001),
+    };
+    setCctvList([...cctvList, newCCTV]);
+    setNewCCTVName('');
+    setActiveAdminTab(null);
+    alert(`새 CCTV (${newCCTV.name})가 등록되었습니다!`);
+  };
+
+  const toggleUserRole = (userId) => {
+    setUserList(prev => prev.map(u => {
+      if (u.id === userId) {
+        const nextRole = u.role === 'admin' ? 'user' : 'admin';
+        return { ...u, role: nextRole };
+      }
+      return u;
+    }));
+  };
+
+  const filteredCCTVs = cctvList.filter(cctv =>
     cctv.name.includes(searchQuery) || cctv.id.includes(searchQuery)
   );
 
   return (
     <div className="min-h-screen bg-canvas text-ink flex flex-col font-ui transition-colors duration-300">
       {/* 1. 상단 네비게이션 바 (GNB) */}
-      <header className="flex items-center justify-between px-6 h-14 border-b border-hairline shrink-0">
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="w-5 h-5 text-ink" />
-          <span className="font-display text-heading-md tracking-tight">FireGuard</span>
+      <header className="flex items-center justify-between px-6 h-14 border-b border-hairline shrink-0 bg-canvas z-20">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 text-ink" />
+            <span className="font-display text-heading-md tracking-tight">FireGuard</span>
+          </div>
+
+          {/* 권한 표시 배지 */}
+          {isAdmin ? (
+            <span className="flex items-center gap-1.5 text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 font-semibold px-3 py-1 rounded-full border border-amber-500/30">
+              <ShieldCheck className="w-4 h-4" /> 관리자 권한
+            </span>
+          ) : (
+            <span className="text-xs bg-surface-soft text-mute px-2.5 py-1 rounded-full border border-hairline">
+              일반 사용자
+            </span>
+          )}
         </div>
-        
+
         <div className="flex items-center gap-6">
-          <nav className="hidden md:flex gap-6 text-body-sm-strong text-body">
+          <nav className="flex items-center gap-6 text-body-sm-strong text-body">
             <button className="hover:text-ink transition-colors">마이페이지</button>
-            <button className="text-ink transition-colors">CCTV 모니터링</button>
+            
+            {/* 👑 관리자가 접속하면 마이페이지 옆에 보이는 '관리자 페이지' */}
+            {isAdmin && (
+              <button
+                onClick={() => navigate('/admin')}
+                className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-bold bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3 py-1 rounded-full transition-all text-xs cursor-pointer shadow-sm"
+              >
+                <span>👑 관리자 페이지</span>
+              </button>
+            )}
+
+            <button className="text-ink transition-colors font-bold">CCTV 모니터링</button>
           </nav>
-          
-          <button 
-            onClick={handleLogout}
-            className="flex items-center gap-2 bg-primary text-on-primary px-5 h-[36px] rounded-full text-button-md hover:bg-ink-deep transition-colors focus:outline-none focus-visible:outline-none"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>로그아웃</span>
-          </button>
+
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-mute font-medium hidden sm:inline">
+              {currentUser?.name || '사용자'}님
+            </span>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-2 bg-primary text-on-primary px-4 h-[34px] rounded-full text-button-md hover:bg-ink-deep transition-colors focus:outline-none focus-visible:outline-none text-xs"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>로그아웃</span>
+            </button>
+          </div>
         </div>
       </header>
 
       {/* 2. 메인 레이아웃 (지도 + 우측 패널) */}
       <main className="flex flex-col md:flex-row flex-1 overflow-hidden">
-        
+
         {/* 좌측: GIS 지도 영역 (가짜 지도 UI로 대체) */}
         <section className="flex-1 bg-surface-soft relative border-r border-hairline overflow-hidden flex flex-col">
           {/* 상단 검색/필터 바 */}
           <div className="absolute top-4 left-4 right-4 z-10 flex gap-2">
             <div className="flex items-center bg-canvas border border-hairline rounded-full px-4 h-[36px] w-full max-w-sm">
               <SearchIcon className="w-4 h-4 text-mute mr-2" />
-              <input 
+              <input
                 type="text"
                 placeholder="CCTV 이름 또는 ID 검색"
                 value={searchQuery}
@@ -95,9 +185,9 @@ function Dashboard() {
             <div className="absolute inset-0 flex items-center justify-center text-mute pointer-events-none">
               <span className="text-heading-lg tracking-widest uppercase">GIS Map Area</span>
             </div>
-            
+
             {/* 119 소방서 위치 표시 (고정 이모지) */}
-            <div 
+            <div
               className="absolute transform -translate-x-1/2 -translate-y-1/2 flex flex-col items-center justify-center z-0 select-none cursor-default"
               style={{ top: `${fireStation.y}%`, left: `${fireStation.x}%` }}
               title={`${fireStation.name} (${fireStation.lat}, ${fireStation.lng})`}
@@ -113,13 +203,12 @@ function Dashboard() {
               <button
                 key={cctv.id}
                 onClick={() => setSelectedCCTV(cctv)}
-                className={`absolute w-3 h-3 rounded-full border border-canvas transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-transform hover:scale-125 focus:outline-none focus-visible:outline-none ${
-                  cctv.status === 'fire' ? 'bg-terminal-red' : 
+                className={`absolute w-3 h-3 rounded-full border border-canvas transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-transform hover:scale-125 focus:outline-none focus-visible:outline-none ${cctv.status === 'fire' ? 'bg-terminal-red' :
                   cctv.status === 'offline' ? 'bg-mute' : 'bg-terminal-green'
-                } ${selectedCCTV?.id === cctv.id ? 'ring-2 ring-focus-ring ring-offset-2 ring-offset-canvas scale-125' : ''}`}
-                style={{ 
-                  top: `${30 + (index * 15)}%`, 
-                  left: `${20 + (index * 12)}%` 
+                  } ${selectedCCTV?.id === cctv.id ? 'ring-2 ring-focus-ring ring-offset-2 ring-offset-canvas scale-125' : ''}`}
+                style={{
+                  top: `${30 + (index * 15)}%`,
+                  left: `${20 + (index * 12)}%`
                 }}
                 title={cctv.name}
               />
@@ -135,15 +224,15 @@ function Dashboard() {
               <div className={`p-6 border-b border-hairline ${selectedCCTV.status === 'fire' ? 'bg-surface-dark text-on-dark' : 'bg-canvas'}`}>
                 {/* 뒤로가기 / 닫기 버튼 */}
                 <div className="flex items-center justify-between mb-4">
-                  <button 
+                  <button
                     onClick={() => setSelectedCCTV(null)}
                     className={`flex items-center gap-1.5 text-body-sm transition-colors focus:outline-none ${selectedCCTV.status === 'fire' ? 'text-on-dark-mute hover:text-on-dark' : 'text-body hover:text-ink'}`}
                   >
                     <ArrowLeft className="w-4 h-4" />
                     <span>전체 현황으로 돌아가기</span>
                   </button>
-                  
-                  <button 
+
+                  <button
                     onClick={() => setSelectedCCTV(null)}
                     className={`p-1 rounded-full hover:bg-black/10 transition-colors focus:outline-none ${selectedCCTV.status === 'fire' ? 'text-on-dark-mute hover:text-on-dark' : 'text-mute hover:text-ink'}`}
                     title="닫기"
@@ -206,7 +295,7 @@ function Dashboard() {
                       <span className="text-mute">Lng:</span> {selectedCCTV.lng}
                     </div>
                   </div>
-                  
+
                   {selectedCCTV.status === 'fire' && (
                     <button className="w-full mt-4 bg-primary text-on-primary h-[36px] rounded-full text-button-md hover:bg-ink-deep transition-colors focus:outline-none flex justify-center items-center gap-2">
                       <Bell className="w-4 h-4" />
@@ -221,14 +310,14 @@ function Dashboard() {
             <div className="flex flex-col items-center justify-center h-full p-8 text-center text-body">
               <MapPin className="w-12 h-12 mb-4 text-mute" />
               <h3 className="text-heading-sm text-ink mb-2">CCTV를 선택해주세요</h3>
-              <p className="text-body-sm mb-8">지도에서 마커를 클릭하여 상세 정보와<br/>실시간 영상을 확인하세요.</p>
-              
+              <p className="text-body-sm mb-8">지도에서 마커를 클릭하여 상세 정보와<br />실시간 영상을 확인하세요.</p>
+
               <div className="w-full bg-canvas border border-hairline rounded-lg p-4 text-left">
                 <h4 className="text-caption-sm text-mute uppercase tracking-wider mb-3">시스템 요약</h4>
                 <ul className="space-y-2 text-body-sm text-ink">
-                  <li className="flex justify-between"><span>전체 CCTV</span> <span>{MOCK_CCTVS.length}대</span></li>
-                  <li className="flex justify-between"><span>위험 상태</span> <span className="text-terminal-red font-medium">{MOCK_CCTVS.filter(c=>c.status==='fire').length}대</span></li>
-                  <li className="flex justify-between"><span>오프라인</span> <span className="text-mute">{MOCK_CCTVS.filter(c=>c.status==='offline').length}대</span></li>
+                  <li className="flex justify-between"><span>전체 CCTV</span> <span>{cctvList.length}대</span></li>
+                  <li className="flex justify-between"><span>위험 상태</span> <span className="text-terminal-red font-medium">{cctvList.filter(c => c.status === 'fire').length}대</span></li>
+                  <li className="flex justify-between"><span>오프라인</span> <span className="text-mute">{cctvList.filter(c => c.status === 'offline').length}대</span></li>
                 </ul>
               </div>
             </div>

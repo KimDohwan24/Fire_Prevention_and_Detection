@@ -1,12 +1,23 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 const Login = () => {
   const navigate = useNavigate();
+  const [id, setId] = useState('');
+  const [password, setPassword] = useState('');
 
   const handleLogin = (e) => {
     e.preventDefault();
-    // 로그인 로직 (토큰 저장 등)
+    
+    // Mock 로그인 처리 (admin / 1234)
+    let userData;
+    if (id === 'admin' && password === '1234') {
+      userData = { id: 'admin', name: '최고 관리자', role: 'admin' };
+    } else {
+      userData = { id: id || 'user01', name: id ? `${id} 님` : '일반 사용자', role: 'user' };
+    }
+    
+    localStorage.setItem('currentUser', JSON.stringify(userData));
     navigate('/dashboard');
   };
 
@@ -32,8 +43,10 @@ const Login = () => {
           <div>
             <input
               type="text"
+              value={id}
+              onChange={(e) => setId(e.target.value)}
               className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus-visible:outline-none focus:border-ink transition-all"
-              placeholder="아이디"
+              placeholder="아이디 (관리자: admin)"
               onInvalid={(e) => e.target.setCustomValidity('아이디를 꼭 입력해주세요!')}
               onInput={(e) => e.target.setCustomValidity('')}
               required
@@ -42,12 +55,18 @@ const Login = () => {
           <div>
             <input
               type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus-visible:outline-none focus:border-ink transition-all"
-              placeholder="비밀번호"
+              placeholder="비밀번호 (관리자: 1234)"
               onInvalid={(e) => e.target.setCustomValidity('비밀번호를 꼭 입력해주세요!')}
               onInput={(e) => e.target.setCustomValidity('')}
               required
             />
+          </div>
+
+          <div className="text-xs text-mute text-center">
+            💡 테스트 정보: 관리자 계정 <code className="bg-surface-soft px-1.5 py-0.5 rounded text-ink font-semibold">admin / 1234</code>
           </div>
 
           <div className="flex flex-col space-y-2 pt-2">
