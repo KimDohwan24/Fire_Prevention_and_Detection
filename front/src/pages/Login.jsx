@@ -1,19 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
-import { Moon, Sun } from 'lucide-react';
 
 const Login = () => {
-  const [isDark, setIsDark] = useState(false);
-
-  useEffect(() => {
-    // Check initial system preference or saved state if needed, here we default to light
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [isDark]);
-
   return (
     <div className="min-h-screen bg-canvas flex flex-col items-center pt-32 px-4 font-ui relative transition-colors duration-300">
 
@@ -74,15 +62,6 @@ const Login = () => {
           </div>
         </div>
       </div>
-
-      {/* Dark Mode Toggle */}
-      <button
-        onClick={() => setIsDark(!isDark)}
-        className="fixed bottom-8 right-8 p-3 rounded-full border border-hairline bg-canvas text-ink hover:bg-surface-soft transition-colors shadow-sm flex items-center justify-center cursor-pointer"
-        aria-label="Toggle Dark Mode"
-      >
-        {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-      </button>
     </div>
   );
 };

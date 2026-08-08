@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
+import DarkModeToggle from './components/DarkModeToggle';
 
 function App() {
   return (
@@ -13,6 +14,7 @@ function App() {
         {/* Placeholder for other routes */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <DarkModeToggle />
     </BrowserRouter>
   );
 }
