@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
+import FindAccount from './pages/FindAccount';
 import DarkModeToggle from './components/DarkModeToggle';
 
 function App() {
@@ -11,6 +12,9 @@ function App() {
         <Route path="/" element={<Login />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/forgot-password" element={<FindAccount />} />
+        <Route path="/find-account" element={<FindAccount />} />
+        <Route path="/find-id-pw" element={<FindAccount />} />
         {/* Placeholder for other routes */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
