@@ -1,0 +1,7 @@
+flask==3.0.3
+flask-cors==4.0.1
+psycopg2-binary==2.9.11
+PyJWT==2.9.0
+bcrypt==4.2.0
+python-dotenv==1.0.1
+pytest==8.3.3

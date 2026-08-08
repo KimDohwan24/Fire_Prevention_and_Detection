@@ -1,0 +1,20 @@
+"""블루프린트 모음. app.py 에서 register_blueprints(app) 한 번만 부르면 된다."""
+from flask import Flask
+
+from routes.auth_routes import bp as auth_bp
+from routes.user_routes import bp as user_bp
+from routes.cctv_routes import bp as cctv_bp
+from routes.event_routes import bp as event_bp
+from routes.alert_routes import bp as alert_bp
+from routes.agency_routes import bp as agency_bp
+from routes.report_routes import bp as report_bp
+
+
+def register_blueprints(app: Flask):
+    app.register_blueprint(auth_bp, url_prefix="/api/auth")
+    app.register_blueprint(user_bp, url_prefix="/api/users")
+    app.register_blueprint(cctv_bp, url_prefix="/api/cctvs")
+    app.register_blueprint(event_bp, url_prefix="/api/events")
+    app.register_blueprint(alert_bp, url_prefix="/api/alerts")
+    app.register_blueprint(agency_bp, url_prefix="/api/agencies")
+    app.register_blueprint(report_bp, url_prefix="/api/reports")
