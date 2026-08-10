@@ -116,11 +116,13 @@ def test_create_cctv_success(client, admin_headers):
 
 
 def test_create_cctv_missing_lat_returns_400(client, admin_headers):
-    """필수 필드 cctv_lat 누락 시 400."""
+    """필수 필드 cctv_lat 누락 시 400 — 어느 입력인지 field 로 알려준다."""
     payload = {k: v for k, v in NEW_CCTV.items() if k != "cctv_lat"}
     r = client.post("/api/cctvs", json=payload, headers=admin_headers)
     assert r.status_code == 400
-    assert set(r.get_json().keys()) == {"code", "message"}
+    body = r.get_json()
+    assert set(body.keys()) == {"code", "message", "field"}
+    assert body["field"] == "cctv_lat"
 
 
 # ---------- 등록: 빈 값 · 형식 오류 검증 ----------

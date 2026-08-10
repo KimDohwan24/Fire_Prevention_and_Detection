@@ -44,11 +44,12 @@ def ingest_detection():
 
     cctv_no = body.get("cctv_no")
     if isinstance(cctv_no, bool) or not isinstance(cctv_no, int):
-        raise ApiError(400, "BAD_REQUEST", "cctv_no 는 필수 정수입니다.")
+        raise ApiError(400, "BAD_REQUEST", "cctv_no 는 필수 정수입니다.", field="cctv_no")
 
     detections = body.get("detections")
     if not isinstance(detections, list):
-        raise ApiError(400, "BAD_REQUEST", "detections 는 리스트여야 합니다.")
+        raise ApiError(400, "BAD_REQUEST", "detections 는 리스트여야 합니다.",
+                       field="detections")
 
     if not db.query_one("SELECT cctv_no FROM cctv WHERE cctv_no = %s", (cctv_no,)):
         raise ApiError(404, "CCTV_NOT_FOUND", "카메라를 찾을 수 없습니다.")
@@ -59,7 +60,8 @@ def ingest_detection():
         try:
             captured_at = datetime.fromisoformat(raw)
         except (TypeError, ValueError):
-            raise ApiError(400, "BAD_REQUEST", "captured_at 은 ISO 8601 형식이어야 합니다.")
+            raise ApiError(400, "BAD_REQUEST", "captured_at 은 ISO 8601 형식이어야 합니다.",
+                          field="captured_at")
 
     result = event_service.process_detection(
         cctv_no=cctv_no,

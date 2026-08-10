@@ -37,7 +37,7 @@ def int_param(name: str) -> int | None:
     try:
         return int(v)
     except ValueError:
-        raise ApiError(400, "BAD_REQUEST", f"{name} 는 정수여야 합니다.")
+        raise ApiError(400, "BAD_REQUEST", f"{name} 는 정수여야 합니다.", field=name)
 
 
 def date_param(name: str) -> str | None:
@@ -48,7 +48,8 @@ def date_param(name: str) -> str | None:
     try:
         datetime.strptime(v, "%Y-%m-%d")
     except ValueError:
-        raise ApiError(400, "BAD_REQUEST", f"{name} 는 YYYY-MM-DD 형식이어야 합니다.")
+        raise ApiError(400, "BAD_REQUEST", f"{name} 는 YYYY-MM-DD 형식이어야 합니다.",
+                       field=name)
     return v
 
 
@@ -56,7 +57,7 @@ def require_str(body: dict, field: str) -> str:
     """필수 문자열 필드: 누락 · 빈 문자열 · 공백뿐이면 400."""
     v = body.get(field)
     if not isinstance(v, str) or not v.strip():
-        raise ApiError(400, "BAD_REQUEST", f"{field} 는 필수입니다.")
+        raise ApiError(400, "BAD_REQUEST", f"{field} 는 필수입니다.", field=field)
     return v
 
 
@@ -77,6 +78,7 @@ def validate_phone(body: dict, field: str = "user_phone") -> str | None:
         raise ApiError(
             400, "BAD_REQUEST",
             f"{field} 은 하이픈 없이 숫자만 입력해야 합니다. (예: 01012345678)",
+            field=field,
         )
     return v
 
@@ -107,6 +109,7 @@ def validate_user_id(value) -> str:
             400, "BAD_REQUEST",
             "user_id 는 5~20자의 영문 소문자·숫자·특수기호(_,-)만 사용할 수 있으며, "
             "시작은 영문 소문자여야 합니다.",
+            field="user_id",
         )
     return value
 
@@ -129,9 +132,10 @@ def validate_password(value, user_id: str | None = None) -> str:
     로그인은 형식 검증 없이 비교만 한다 (기존 계정 로그인 보장).
     """
     if not isinstance(value, str):
-        raise ApiError(400, "BAD_REQUEST", "user_pw 는 문자열이어야 합니다.")
+        raise ApiError(400, "BAD_REQUEST", "user_pw 는 문자열이어야 합니다.", field="user_pw")
     if len(value) > PW_MAX_LEN:
-        raise ApiError(400, "BAD_REQUEST", f"비밀번호는 최대 {PW_MAX_LEN}자까지 사용할 수 있습니다.")
+        raise ApiError(400, "BAD_REQUEST", f"비밀번호는 최대 {PW_MAX_LEN}자까지 사용할 수 있습니다.",
+                       field="user_pw")
 
     # 문자 종류: 영문자 / 숫자 / 특수문자(영문·숫자 외 전부) — 3종 모두 필수, 8자 이상
     has_all_classes = (
@@ -143,17 +147,20 @@ def validate_password(value, user_id: str | None = None) -> str:
         raise ApiError(
             400, "BAD_REQUEST",
             "비밀번호는 영문자·숫자·특수문자를 모두 포함해 8자 이상이어야 합니다.",
+            field="user_pw",
         )
 
     if _REPEAT_RE.search(value):
         raise ApiError(
             400, "BAD_REQUEST",
             "비밀번호에 같은 문자를 3번 이상 연속(aaa, 111 등)으로 사용할 수 없습니다.",
+            field="user_pw",
         )
     if _has_sequential_run(value):
         raise ApiError(
             400, "BAD_REQUEST",
             "비밀번호에 연속된 문자열(1234, abcd 등)은 사용할 수 없습니다.",
+            field="user_pw",
         )
 
     lowered = value.lower()
@@ -161,9 +168,11 @@ def validate_password(value, user_id: str | None = None) -> str:
         raise ApiError(
             400, "BAD_REQUEST",
             "비밀번호에 키보드 배열 문자열(qwer, asdf 등)은 사용할 수 없습니다.",
+            field="user_pw",
         )
     if user_id and user_id.lower() in lowered:
-        raise ApiError(400, "BAD_REQUEST", "비밀번호에 아이디를 포함할 수 없습니다.")
+        raise ApiError(400, "BAD_REQUEST", "비밀번호에 아이디를 포함할 수 없습니다.",
+                       field="user_pw")
     return value
 
 
@@ -171,5 +180,5 @@ def require_number(body: dict, field: str) -> int | float:
     """필수 숫자 필드: JSON 숫자(int/float)가 아니면 400 (bool · 숫자 문자열 거부)."""
     v = body.get(field)
     if isinstance(v, bool) or not isinstance(v, (int, float)):
-        raise ApiError(400, "BAD_REQUEST", f"{field} 는 숫자여야 합니다.")
+        raise ApiError(400, "BAD_REQUEST", f"{field} 는 숫자여야 합니다.", field=field)
     return v

@@ -3,8 +3,8 @@
 AI 모델이 프레임 1장의 검출 결과를 보낼 때마다:
 - X-Internal-Key 헤더로 인증 (JWT 아님)
 - 화재(flame/smoke) 검출이 있으면 PENDING 이벤트에 프레임을 누적
-- 임계 프레임 수에 도달하면 CONFIRMED 로 확정 + 확정 훅 호출
-- 윈도우(EVENT_WINDOW_SEC) 를 넘겨 끊긴 PENDING 은 DISMISSED 처리
+- 관측 창(EVENT_WINDOW_SEC) 안에서 임계 프레임 수에 도달하면 CONFIRMED + 확정 훅 호출
+- 창은 최초 감지 시각에 고정 — 미달인 채로 창이 닫힌 PENDING 은 DISMISSED 처리
 """
 from datetime import datetime, timedelta
 
@@ -231,10 +231,13 @@ def test_higher_confidence_frame_steals_primary(client):
     assert primaries[0]["media_url"] == "/m/f2.jpg"
 
 
-# ---------- 윈도우 초과 · 정리 ----------
+# ---------- 관측 창 종료 · 정리 ----------
+#
+# 창은 최초 감지 시각(event_first_detected_at)에 고정된다 (발표 슬라이드 10).
+# 검출이 계속 들어와도 창은 연장되지 않는다 — 그게 단발성 신호를 걸러내는 근거다.
 
-def test_stale_pending_dismissed_and_new_event_started(client):
-    """마지막 활동에서 윈도우(60초)를 넘긴 프레임은 기존 PENDING 을 기준미달 처리하고 새 이벤트를 연다."""
+def test_window_closes_and_new_event_started(client):
+    """최초 감지에서 창(60초)을 넘긴 프레임은 기존 PENDING 을 기준미달 처리하고 새 이벤트를 연다."""
     old_no = post_frame(client, captured_at="2026-08-08T14:30:00").get_json()["event_no"]
 
     r = post_frame(client, captured_at="2026-08-08T14:31:01")  # 61초 뒤
@@ -246,8 +249,63 @@ def test_stale_pending_dismissed_and_new_event_started(client):
     assert get_event_row(old_no)["event_status"] == "DISMISSED"
 
 
+def test_window_is_anchored_at_first_detection_not_last_activity(client, monkeypatch):
+    """창은 최초 감지 기준으로 고정 — 중간에 검출이 들어와도 연장되지 않는다.
+
+    프레임 간격은 계속 60초 미만이지만 최초 감지에서 90초가 지났으므로,
+    세 번째 프레임은 기존 이벤트를 이어받지 못하고 새 이벤트를 연다.
+    """
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 5)
+
+    first = post_frame(client, captured_at="2026-08-08T14:30:00").get_json()
+    mid = post_frame(client, captured_at="2026-08-08T14:30:50").get_json()  # +50초, 창 안
+    assert mid["event_no"] == first["event_no"]
+    assert mid["event_detected_frames"] == 2
+
+    # 직전 프레임과는 40초 차이지만 최초 감지에서는 90초 — 창은 이미 닫혔다
+    late = post_frame(client, captured_at="2026-08-08T14:31:30").get_json()
+    assert late["event_no"] != first["event_no"]
+    assert late["event_status"] == "PENDING"
+    assert late["event_detected_frames"] == 1
+    assert get_event_row(first["event_no"])["event_status"] == "DISMISSED"
+
+
+def test_slow_trickle_never_confirms(client, monkeypatch):
+    """창보다 느리게 떨어지는 신호는 총 프레임이 임계값을 넘어도 확정되지 않는다.
+
+    슬라이드 10 의 '단발성 신호는 관측 창에서 자동으로 걸러진다' 가 지키려는 성질.
+    """
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 3)
+
+    a = post_frame(client, captured_at="2026-08-08T14:30:00").get_json()["event_no"]
+    post_frame(client, captured_at="2026-08-08T14:30:50")   # +50초, 창 안 → 2프레임
+    b = post_frame(client, captured_at="2026-08-08T14:31:40").get_json()  # +100초, 창 밖
+    post_frame(client, captured_at="2026-08-08T14:32:30")   # b 기준 +50초, 창 안 → 2프레임
+
+    # 총 4프레임이 들어왔지만 어느 창도 3프레임을 채우지 못했다
+    assert get_event_row(a)["event_status"] == "DISMISSED"
+    assert get_event_row(a)["event_detected_frames"] == 2
+    assert get_event_row(b["event_no"])["event_status"] == "PENDING"
+    assert get_event_row(b["event_no"])["event_detected_frames"] == 2
+    assert db.query_one(
+        "SELECT count(*) AS cnt FROM fire_event WHERE event_status = 'CONFIRMED'"
+    )["cnt"] == 0
+
+
+def test_frames_inside_window_still_confirm(client, monkeypatch):
+    """창 안에서 임계값을 채우면 프레임 간격이 떨어져 있어도 확정된다."""
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 3)
+
+    post_frame(client, captured_at="2026-08-08T14:30:00")
+    post_frame(client, captured_at="2026-08-08T14:30:25")
+    body = post_frame(client, captured_at="2026-08-08T14:30:55").get_json()  # 최초 +55초
+
+    assert body["event_status"] == "CONFIRMED"
+    assert body["event_detected_frames"] == 3
+
+
 def test_sweep_stale_pending(client):
-    """sweep_stale_pending: 윈도우를 넘긴 PENDING 만 일괄 DISMISSED, 건수 반환."""
+    """sweep_stale_pending: 창을 넘긴 PENDING 만 일괄 DISMISSED, 건수 반환."""
     stale_at = (datetime.now() - timedelta(seconds=config.EVENT_WINDOW_SEC + 30))
     fresh_at = datetime.now()
     stale_no = post_frame(client, captured_at=stale_at.isoformat()).get_json()["event_no"]
@@ -258,6 +316,23 @@ def test_sweep_stale_pending(client):
     assert count == 1
     assert get_event_row(stale_no)["event_status"] == "DISMISSED"
     assert get_event_row(fresh_no)["event_status"] == "PENDING"
+
+
+def test_sweep_uses_first_detection_not_last_activity(client):
+    """스윕도 최초 감지 기준 — 방금 프레임이 들어왔어도 창이 닫혔으면 정리한다.
+
+    다음 프레임이 올 때까지 기다리지 않고 창 종료 시점에 판정을 끝내는 경로.
+    """
+    now = datetime.now()
+    first_at = now - timedelta(seconds=config.EVENT_WINDOW_SEC + 10)   # 창 밖
+    recent_at = now - timedelta(seconds=config.EVENT_WINDOW_SEC - 20)  # 최근 활동
+
+    ev_no = post_frame(client, captured_at=first_at.isoformat()).get_json()["event_no"]
+    same = post_frame(client, captured_at=recent_at.isoformat()).get_json()
+    assert same["event_no"] == ev_no  # 최초 감지 +40초 → 아직 창 안이라 같은 이벤트
+
+    assert event_service.sweep_stale_pending(now) == 1
+    assert get_event_row(ev_no)["event_status"] == "DISMISSED"
 
 
 # ---------- 확정 훅 ----------

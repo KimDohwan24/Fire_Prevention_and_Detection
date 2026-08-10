@@ -51,6 +51,7 @@ def login_required(f):
     def wrapper(*args, **kwargs):
         g.user = _decode_token()
         return f(*args, **kwargs)
+    wrapper._auth = "bearer"  # openapi.yaml 의 security 선언과 대조된다 (test_openapi.py)
     return wrapper
 
 
@@ -62,6 +63,7 @@ def admin_required(f):
         if g.user.get("user_role") != "ADMIN":
             raise ApiError(403, "FORBIDDEN", "관리자 권한이 필요합니다.")
         return f(*args, **kwargs)
+    wrapper._auth = "bearer"
     return wrapper
 
 
@@ -76,4 +78,5 @@ def internal_key_required(f):
         if key != config.INTERNAL_API_KEY:
             raise ApiError(401, "INTERNAL_UNAUTHORIZED", "내부 API 키가 올바르지 않습니다.")
         return f(*args, **kwargs)
+    wrapper._auth = "internal"
     return wrapper

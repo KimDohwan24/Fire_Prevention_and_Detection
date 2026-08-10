@@ -55,7 +55,7 @@ def create_user():
     body = request.get_json(silent=True) or {}
     for field in ("user_id", "user_pw", "user_name", "user_role"):
         if not body.get(field):
-            raise ApiError(400, "BAD_REQUEST", f"{field} 는 필수입니다.")
+            raise ApiError(400, "BAD_REQUEST", f"{field} 는 필수입니다.", field=field)
 
     # 아이디·비밀번호 작성규칙 (명세서 3번) — 로그인에는 적용하지 않는다
     validate_user_id(body["user_id"])
