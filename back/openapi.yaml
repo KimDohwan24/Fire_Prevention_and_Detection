@@ -1,0 +1,1633 @@
+# 파이어가드 API 스펙 (OpenAPI 3.0)
+#
+# 이 파일이 프론트에 나가는 계약서다. 손으로 관리하며, 라우트를 고치고 여기를
+# 안 고치면 tests/test_openapi.py 가 빨간불로 잡는다 (경로·메서드·인증 대조).
+#
+# 서빙:  GET /api/docs/        Swagger UI
+#        GET /api/openapi.yaml 원본 (TS 타입 생성기 입력)
+openapi: 3.0.3
+
+info:
+  title: 파이어가드 API
+  version: 0.4.0
+  description: |
+    CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
+
+    ## 공통 규칙
+    - 모든 필드는 `snake_case`, 날짜·시각은 ISO 8601 (`2026-08-10T14:30:00`)
+    - 인증은 `Authorization: Bearer <access_token>` (로그인·헬스체크·미디어 제외)
+    - AI 모델 전용 `/api/internal/*` 은 JWT 대신 `X-Internal-Key` 헤더를 쓴다
+    - 에러는 어떤 상황에서도 `{ "code": "...", "message": "..." }` 형태다
+    - 목록 중 페이징이 있는 것은 `items / page / size / total_count / total_pages`
+      봉투로 감싸 내려간다 (`/api/cctvs`, `/api/agencies` 는 페이징 없이 `items` 만)
+
+    ## 실시간 알림
+    WebSocket·SSE 없이 **폴링 3~5초**로 `GET /api/alerts` 를 다시 부르는 방식이다.
+
+servers:
+  - url: http://localhost:5000
+    description: 로컬 개발 서버
+
+tags:
+  - name: auth
+    description: 인증 (로그인·세션 복원)
+  - name: users
+    description: 관리자 계정
+  - name: cctvs
+    description: 연동 카메라
+  - name: events
+    description: 화재 이벤트
+  - name: alerts
+    description: 관리자 알림
+  - name: agencies
+    description: 소방서
+  - name: reports
+    description: 119 신고 이력
+  - name: internal
+    description: AI 모델 전용 내부 API
+  - name: system
+    description: 헬스체크·미디어 서빙
+
+paths:
+
+  # ---------------------------------------------------------------- 인증
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: 로그인
+      description: |
+        아이디·비밀번호로 JWT 를 발급받는다. 정지(SUSPENDED)·탈퇴(WITHDRAWN)
+        계정은 비밀번호가 맞아도 403 이다.
+        로그인에는 비밀번호 작성규칙을 적용하지 않는다 (기존 계정 보장).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, user_pw]
+              properties:
+                user_id:
+                  type: string
+                  example: admin01
+                user_pw:
+                  type: string
+                  format: password
+                  example: "Fire#123"
+      responses:
+        "200":
+          description: 발급 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    description: Bearer 토큰
+                  user:
+                    $ref: "#/components/schemas/LoginUser"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: 아이디 또는 비밀번호 불일치 (`INVALID_CREDENTIALS`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: 정지(`ACCOUNT_SUSPENDED`) 또는 탈퇴(`ACCOUNT_WITHDRAWN`) 계정
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/me:
+    get:
+      tags: [auth]
+      summary: 내 정보
+      description: 새로고침 후 세션 복원용. 토큰의 주인 정보를 DB 에서 다시 읽어 준다.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------- 계정
+  /api/users:
+    get:
+      tags: [users]
+      summary: 계정 목록 (ADMIN)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_status
+          in: query
+          description: 계정 상태 필터
+          schema:
+            $ref: "#/components/schemas/UserStatus"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/UserSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [users]
+      summary: 계정 등록 (ADMIN)
+      description: |
+        아이디·비밀번호 작성규칙을 여기서만 검사한다.
+        - `user_id`: 5~20자, 영문 소문자 시작, 소문자·숫자·`_`·`-`
+        - `user_pw`: 영문+숫자+특수문자 3종 포함 8~64자.
+          같은 문자 3연속·연속 문자열(1234, abcd)·키보드 배열(qwer)·아이디 포함 금지
+        - `user_phone`: 하이픈 없이 숫자만 (`01012345678`)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreate"
+      responses:
+        "201":
+          description: 등록 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_no:
+                    type: integer
+                    format: int64
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: 이미 사용 중인 아이디 (`DUPLICATE_USER_ID`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/users/{user_no}:
+    put:
+      tags: [users]
+      summary: 계정 수정 · 정지 · 탈퇴
+      description: |
+        ADMIN 은 모든 계정의 모든 필드를, 일반 사용자는 **본인 계정의**
+        `user_name`·`user_email`·`user_phone`·`user_gender`·`user_address`·`user_pw`
+        만 수정할 수 있다. `user_role`·`user_status` 가 하나라도 섞이면 요청 전체를
+        403 으로 거부한다 (부분 적용 없음).
+
+        `user_status: "WITHDRAWN"` 을 보내면 탈퇴 일시가 함께 기록된다.
+        보낸 필드만 갱신되며, 갱신할 필드가 하나도 없으면 400 이다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserNo"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: 수정 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_no:
+                    type: integer
+                    format: int64
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------- 카메라
+  /api/cctvs:
+    get:
+      tags: [cctvs]
+      summary: 카메라 목록
+      description: |
+        페이징 없이 전체를 내려준다.
+        ITS 카메라의 `cctv_stream_url` 은 토큰이 만료되므로 응답 직전에 최신 값으로
+        갈아끼운다 (외부 API 가 죽어 있으면 저장된 주소가 그대로 나간다).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cctv_status
+          in: query
+          schema:
+            $ref: "#/components/schemas/CctvStatus"
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Cctv"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [cctvs]
+      summary: 카메라 등록 (ADMIN)
+      description: 등록자(`user_no`)는 토큰의 주인으로 자동 지정되고, 상태는 `ACTIVE` 로 시작한다.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CctvCreate"
+      responses:
+        "201":
+          description: 등록 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cctv_no:
+                    type: integer
+                    format: int64
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/cctvs/{cctv_no}:
+    get:
+      tags: [cctvs]
+      summary: 카메라 단건
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CctvNo"
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cctv"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: 카메라 없음 (`CCTV_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [cctvs]
+      summary: 카메라 수정 · 중지 (ADMIN)
+      description: '보낸 필드만 갱신된다. 감시를 멈추려면 `cctv_status: "INACTIVE"`.'
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CctvNo"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CctvUpdate"
+      responses:
+        "200":
+          description: 수정 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cctv_no:
+                    type: integer
+                    format: int64
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 카메라 없음 (`CCTV_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------- 이벤트
+  /api/events:
+    get:
+      tags: [events]
+      summary: 화재 이벤트 목록
+      description: |
+        최신순(`event_no` 내림차순). 카메라 이름·위치와 대표 이미지
+        (`thumbnail_url`)를 함께 내려주므로 목록 화면에서 추가 호출이 필요 없다.
+
+        시연·테스트로 만든 이벤트(`event_is_test`)는 기본으로 빠진다.
+        보려면 `include_test=true`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: event_status
+          in: query
+          schema:
+            $ref: "#/components/schemas/EventStatus"
+        - name: event_class
+          in: query
+          schema:
+            $ref: "#/components/schemas/EventClass"
+        - name: cctv_no
+          in: query
+          description: 특정 카메라의 이벤트만
+          schema:
+            type: integer
+            format: int64
+        - name: date_from
+          in: query
+          description: 검출 시각 시작 (해당일 포함)
+          schema:
+            type: string
+            format: date
+            example: "2026-08-01"
+        - name: date_to
+          in: query
+          description: 검출 시각 종료 (해당일 포함)
+          schema:
+            type: string
+            format: date
+            example: "2026-08-10"
+        - name: include_test
+          in: query
+          description: 테스트 이벤트 포함 여부
+          schema:
+            type: boolean
+            default: false
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/EventSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/events/{event_no}:
+    get:
+      tags: [events]
+      summary: 화재 이벤트 상세
+      description: 카메라 정보 + 미디어(프레임·클립) + 알림 이력 + 119 신고 이력을 한 번에 준다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/EventNo"
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: 이벤트 없음 (`EVENT_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------- 알림
+  /api/alerts:
+    get:
+      tags: [alerts]
+      summary: 내 알림 목록
+      description: |
+        토큰 주인에게 온 알림만 나온다. 최신순(`alert_no` 내림차순).
+        실시간 표시는 이 엔드포인트를 3~5초 간격으로 다시 부르는 폴링으로 한다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: alert_status
+          in: query
+          schema:
+            $ref: "#/components/schemas/AlertStatus"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/AlertSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/alerts/{alert_no}/respond:
+    post:
+      tags: [alerts]
+      summary: 알림 응답 (화재 확인 / 오탐 취소)
+      description: |
+        - `READ` — 화재로 확인. 즉시 119 신고 절차가 시작된다.
+        - `CANCEL` — 오탐으로 취소. `alert_deadline_at` 이전에만 가능하며,
+          유예가 지났으면 409 (`DEADLINE_PASSED`) — 이미 신고 절차로 넘어갔기 때문이다.
+
+        응답은 **이벤트 단위**로 적용된다. 확정 시 PUSH·SMS 두 알림이 동시에 나가는데
+        한쪽에 응답하면 같은 이벤트의 나머지 미응답 알림도 같은 상태·같은 시각으로 닫힌다.
+
+        이미 무응답(`NO_RESPONSE`)으로 넘어간 알림에 뒤늦게 `READ` 를 보내면
+        받아주긴 하지만 `alert_status` 는 `NO_RESPONSE` 로 남는다 —
+        '무응답으로 신고까지 갔다'는 이력을 지우지 않기 위해서다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AlertNo"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [READ, CANCEL]
+      responses:
+        "200":
+          description: 응답 처리 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alert_no:
+                    type: integer
+                    format: int64
+                  alert_status:
+                    $ref: "#/components/schemas/AlertStatus"
+                  alert_responded_at:
+                    type: string
+                    format: date-time
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: 다른 사용자의 알림 (`NOT_YOUR_ALERT`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: 알림 없음 (`ALERT_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: 이미 응답함(`ALREADY_RESPONDED`) 또는 취소 유예 경과(`DEADLINE_PASSED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------- 소방서
+  /api/agencies:
+    get:
+      tags: [agencies]
+      summary: 소방서 목록
+      description: 페이징 없이 전체를 내려준다. 승계 우선순위는 저장하지 않고 CCTV 좌표와의 거리로 매번 계산한다.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Agency"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [agencies]
+      summary: 소방서 등록 (ADMIN)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgencyCreate"
+      responses:
+        "201":
+          description: 등록 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agency_no:
+                    type: integer
+                    format: int64
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/agencies/{agency_no}:
+    put:
+      tags: [agencies]
+      summary: 소방서 수정 · 비활성화 (ADMIN)
+      description: '보낸 필드만 갱신된다. 승계 대상에서 빼려면 `agency_is_active: false`.'
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AgencyNo"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgencyUpdate"
+      responses:
+        "200":
+          description: 수정 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agency_no:
+                    type: integer
+                    format: int64
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 소방서 없음 (`AGENCY_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------- 신고
+  /api/reports:
+    get:
+      tags: [reports]
+      summary: 119 신고 이력
+      description: |
+        `event_no` 로 필터하면 그 화재 1건의 **승계 이력**이 통째로 나온다.
+        `report_sequence` 는 기관을 몇 번째로 바꿨는지(바깥 루프),
+        `report_attempt_count` 는 그 기관에 몇 번 쐈는지(안쪽 루프)다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: report_status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ReportStatus"
+        - name: event_no
+          in: query
+          description: 특정 이벤트의 승계 이력만
+          schema:
+            type: integer
+            format: int64
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Report"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------- 내부 (AI)
+  /api/internal/cctvs:
+    get:
+      tags: [internal]
+      summary: 감시 대상 카메라 목록 (AI 전용)
+      description: |
+        공개 목록과 같은 컬럼 + 최신 스트림 주소. 보통 `?cctv_status=ACTIVE` 로
+        가동 중인 카메라만 받아 간다. ITS 스트림 주소의 토큰이 만료돼 재생이 끊기면
+        이 엔드포인트를 다시 불러 새 주소로 재접속하면 된다.
+      security:
+        - internalKey: []
+      parameters:
+        - name: cctv_status
+          in: query
+          schema:
+            $ref: "#/components/schemas/CctvStatus"
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Cctv"
+        "401":
+          description: 내부 API 키 불일치 (`INTERNAL_UNAUTHORIZED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/internal/detections:
+    post:
+      tags: [internal]
+      summary: 검출 결과 수집 (AI 전용)
+      description: |
+        **프레임 1장** 단위로 보낸다. 백엔드가 프레임을 누적해 이벤트를 만들고,
+        임계 프레임 수를 넘기면 이벤트를 `CONFIRMED` 로 확정하며 알림까지 발송한다.
+
+        - `detections` 가 비었거나 화재 클래스가 없으면 이벤트를 만들지 않고
+          `{ "event_no": null, "ignored": true }` 를 돌려준다.
+        - 화재로 취급하는 클래스는 `flame`·`smoke` 뿐이다 (`person` 등은 판정에서 제외하되
+          원본은 그대로 저장한다).
+        - `captured_at` 을 생략하면 서버 수신 시각을 쓴다.
+      security:
+        - internalKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DetectionIngest"
+      responses:
+        "200":
+          description: 수집 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetectionResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: 내부 API 키 불일치 (`INTERNAL_UNAUTHORIZED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: 카메라 없음 (`CCTV_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------- 시스템
+  /api/health:
+    get:
+      tags: [system]
+      summary: 헬스체크
+      description: 인증 없이 부를 수 있다. 서버가 떠 있는지만 본다.
+      responses:
+        "200":
+          description: 정상
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /media/{filename}:
+    get:
+      tags: [system]
+      summary: 미디어 파일 서빙
+      description: |
+        검출 프레임(FRAME)·영상 클립(CLIP) 실제 파일. API 응답의 `media_url` /
+        `thumbnail_url` 값이 곧 이 경로이므로 `<img src>` 에 그대로 넣으면 된다.
+
+        **인증을 걸지 않는다** — 브라우저의 `<img>`/`<video>` 는 `Authorization`
+        헤더를 붙일 수 없어 JWT 를 요구하면 화면에 아무것도 뜨지 않는다.
+        (운영이라면 만료 시간이 든 서명 URL 또는 리버스 프록시 인증을 써야 한다.)
+
+        저장 루트 바깥을 노리는 경로(`../`)는 404 로 막힌다.
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          description: 저장 루트 기준 상대 경로
+          schema:
+            type: string
+          example: events/12/frame_001.jpg
+      responses:
+        "200":
+          description: 파일 본문
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: '로그인으로 받은 `access_token` 을 `Authorization: Bearer <token>` 으로 보낸다.'
+    internalKey:
+      type: apiKey
+      in: header
+      name: X-Internal-Key
+      description: AI 모델 전용. 서버의 `INTERNAL_API_KEY` 환경변수 값과 대조한다.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: 페이지 번호 (1부터)
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      description: 페이지 크기 (최대 100)
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    UserNo:
+      name: user_no
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    CctvNo:
+      name: cctv_no
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    EventNo:
+      name: event_no
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    AlertNo:
+      name: alert_no
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    AgencyNo:
+      name: agency_no
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+
+  responses:
+    BadRequest:
+      description: 필수값 누락 또는 형식 오류 (`BAD_REQUEST`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: 토큰 없음·만료·손상 (`UNAUTHORIZED`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: 권한 없음 (`FORBIDDEN`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 리소스 없음
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+
+    # ---------- 공통 ----------
+    Error:
+      type: object
+      description: 모든 에러 응답의 공통 형식
+      properties:
+        code:
+          type: string
+          example: BAD_REQUEST
+        message:
+          type: string
+          description: 사용자에게 그대로 보여줄 수 있는 한글 메시지
+          example: user_id 는 필수입니다.
+
+    PageMeta:
+      type: object
+      description: 페이징 목록 봉투. `total_count` 가 0 이면 `total_pages` 도 0 이다.
+      properties:
+        page:
+          type: integer
+          example: 1
+        size:
+          type: integer
+          example: 20
+        total_count:
+          type: integer
+          example: 137
+        total_pages:
+          type: integer
+          example: 7
+
+    # ---------- enum ----------
+    UserRole:
+      type: string
+      enum: [ADMIN, VIEWER]
+    UserStatus:
+      type: string
+      enum: [ACTIVE, SUSPENDED, WITHDRAWN]
+    CctvStatus:
+      type: string
+      enum: [ACTIVE, INACTIVE]
+    EventStatus:
+      type: string
+      description: |
+        `PENDING` 누적 중 · `CONFIRMED` 화재 확정 · `DISMISSED` 오탐 취소 또는 소멸
+      enum: [PENDING, CONFIRMED, DISMISSED]
+    EventClass:
+      type: string
+      description: 불꽃·연기가 함께 잡히면 `FLAME_SMOKE`
+      enum: [FLAME, SMOKE, FLAME_SMOKE]
+    MediaType:
+      type: string
+      enum: [FRAME, CLIP]
+    AlertChannel:
+      type: string
+      description: 확정 시 두 채널이 동시에 나간다 (PUSH = 프론트 폴링, SMS = 실제 발송)
+      enum: [PUSH, SMS]
+    AlertStatus:
+      type: string
+      description: |
+        `SENT` 발송됨 · `READ` 화재 확인 · `CANCELED` 오탐 취소 ·
+        `NO_RESPONSE` 유예 내 무응답(119 신고로 넘어감)
+      enum: [SENT, READ, CANCELED, NO_RESPONSE]
+    ReportStatus:
+      type: string
+      description: |
+        `SENDING` 전송 중 · `DISPATCHED` 출동 접수 ·
+        `NO_RESPONSE` 무응답이라 다음 기관으로 승계 · `FAILED` 모든 기관 소진
+      enum: [SENDING, DISPATCHED, NO_RESPONSE, FAILED]
+
+    # ---------- 계정 ----------
+    LoginUser:
+      type: object
+      description: 로그인 직후 화면에 바로 필요한 최소 정보
+      properties:
+        user_no:
+          type: integer
+          format: int64
+        user_id:
+          type: string
+        user_name:
+          type: string
+          nullable: true
+        user_role:
+          $ref: "#/components/schemas/UserRole"
+
+    Me:
+      type: object
+      properties:
+        user_no:
+          type: integer
+          format: int64
+        user_id:
+          type: string
+        user_name:
+          type: string
+          nullable: true
+        user_email:
+          type: string
+          nullable: true
+        user_phone:
+          type: string
+          nullable: true
+          description: 하이픈 없이 숫자만
+        user_role:
+          $ref: "#/components/schemas/UserRole"
+        user_status:
+          $ref: "#/components/schemas/UserStatus"
+
+    UserSummary:
+      type: object
+      properties:
+        user_no:
+          type: integer
+          format: int64
+        user_id:
+          type: string
+        user_name:
+          type: string
+          nullable: true
+        user_email:
+          type: string
+          nullable: true
+        user_phone:
+          type: string
+          nullable: true
+        user_role:
+          $ref: "#/components/schemas/UserRole"
+        user_status:
+          $ref: "#/components/schemas/UserStatus"
+        user_created_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    UserCreate:
+      type: object
+      required: [user_id, user_pw, user_name, user_role]
+      properties:
+        user_id:
+          type: string
+          pattern: "^[a-z][a-z0-9_-]{4,19}$"
+          example: user02
+        user_pw:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 64
+          example: "Fire#123"
+        user_name:
+          type: string
+          example: 홍길동
+        user_role:
+          $ref: "#/components/schemas/UserRole"
+        user_email:
+          type: string
+          nullable: true
+        user_phone:
+          type: string
+          nullable: true
+          pattern: "^01[016789][0-9]{7,8}$"
+          example: "01012345678"
+        user_gender:
+          type: string
+          nullable: true
+        user_address:
+          type: string
+          nullable: true
+
+    UserUpdate:
+      type: object
+      description: 보낸 필드만 갱신된다. 하나도 없으면 400.
+      properties:
+        user_name:
+          type: string
+        user_email:
+          type: string
+          nullable: true
+        user_phone:
+          type: string
+          nullable: true
+          description: 지우려면 `null` 을 보낸다 (빈 문자열은 형식 오류)
+          pattern: "^01[016789][0-9]{7,8}$"
+        user_pw:
+          type: string
+          format: password
+        user_gender:
+          type: string
+          nullable: true
+        user_address:
+          type: string
+          nullable: true
+        user_role:
+          allOf:
+            - $ref: "#/components/schemas/UserRole"
+          description: ADMIN 만 변경 가능
+        user_status:
+          allOf:
+            - $ref: "#/components/schemas/UserStatus"
+          description: ADMIN 만 변경 가능. `WITHDRAWN` 이면 탈퇴 일시가 함께 기록된다
+
+    # ---------- 카메라 ----------
+    Cctv:
+      type: object
+      properties:
+        cctv_no:
+          type: integer
+          format: int64
+        user_no:
+          type: integer
+          format: int64
+          description: 등록한 관리자
+        cctv_name:
+          type: string
+          nullable: true
+        cctv_location:
+          type: string
+          nullable: true
+        cctv_lat:
+          type: number
+          format: double
+          nullable: true
+          example: 37.5665
+        cctv_lng:
+          type: number
+          format: double
+          nullable: true
+          example: 126.9780
+        cctv_stream_url:
+          type: string
+          nullable: true
+          description: ITS 카메라면 응답 시점의 최신 주소로 갈아끼워 나간다
+        cctv_width:
+          type: integer
+          nullable: true
+        cctv_height:
+          type: integer
+          nullable: true
+        cctv_status:
+          $ref: "#/components/schemas/CctvStatus"
+        cctv_created_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CctvCreate:
+      type: object
+      required: [cctv_name, cctv_location, cctv_lat, cctv_lng, cctv_stream_url]
+      properties:
+        cctv_name:
+          type: string
+        cctv_location:
+          type: string
+        cctv_lat:
+          type: number
+          format: double
+          description: 숫자로 보낸다 ("37.5" 같은 문자열은 400)
+        cctv_lng:
+          type: number
+          format: double
+        cctv_stream_url:
+          type: string
+        cctv_width:
+          type: integer
+          nullable: true
+        cctv_height:
+          type: integer
+          nullable: true
+
+    CctvUpdate:
+      type: object
+      description: 보낸 필드만 갱신된다. 하나도 없으면 400.
+      properties:
+        cctv_name:
+          type: string
+        cctv_location:
+          type: string
+        cctv_lat:
+          type: number
+          format: double
+        cctv_lng:
+          type: number
+          format: double
+        cctv_stream_url:
+          type: string
+        cctv_width:
+          type: integer
+        cctv_height:
+          type: integer
+        cctv_status:
+          $ref: "#/components/schemas/CctvStatus"
+
+    # ---------- 이벤트 ----------
+    EventSummary:
+      type: object
+      properties:
+        event_no:
+          type: integer
+          format: int64
+        cctv_no:
+          type: integer
+          format: int64
+        cctv_name:
+          type: string
+          nullable: true
+        cctv_location:
+          type: string
+          nullable: true
+        event_status:
+          $ref: "#/components/schemas/EventStatus"
+        event_class:
+          $ref: "#/components/schemas/EventClass"
+        event_first_detected_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 첫 프레임이 잡힌 시각
+        event_detected_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 화재로 확정된 시각 (PENDING 이면 null)
+        event_confidence:
+          type: number
+          format: double
+          nullable: true
+          example: 0.9231
+        event_is_test:
+          type: boolean
+        thumbnail_url:
+          type: string
+          nullable: true
+          description: 대표 이미지 경로 (`<img src>` 에 그대로 사용)
+          example: /media/events/12/frame_001.jpg
+
+    EventDetail:
+      type: object
+      properties:
+        event_no:
+          type: integer
+          format: int64
+        event_status:
+          $ref: "#/components/schemas/EventStatus"
+        event_class:
+          $ref: "#/components/schemas/EventClass"
+        event_first_detected_at:
+          type: string
+          format: date-time
+          nullable: true
+        event_detected_at:
+          type: string
+          format: date-time
+          nullable: true
+        event_detected_frames:
+          type: integer
+          nullable: true
+          description: 지금까지 누적된 화재 프레임 수
+        event_threshold_frames:
+          type: integer
+          nullable: true
+          description: 확정에 필요한 프레임 수
+        event_confidence:
+          type: number
+          format: double
+          nullable: true
+        event_is_test:
+          type: boolean
+        cctv:
+          $ref: "#/components/schemas/EventCctv"
+        media:
+          type: array
+          items:
+            $ref: "#/components/schemas/Media"
+        alerts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Alert"
+        reports:
+          type: array
+          description: 승계 순서대로 쌓인 119 신고 이력
+          items:
+            $ref: "#/components/schemas/EventReport"
+
+    EventCctv:
+      type: object
+      description: 상세 화면용 카메라 요약 (지도 표시에 좌표가 필요하다)
+      properties:
+        cctv_no:
+          type: integer
+          format: int64
+        cctv_name:
+          type: string
+          nullable: true
+        cctv_location:
+          type: string
+          nullable: true
+        cctv_lat:
+          type: number
+          format: double
+          nullable: true
+        cctv_lng:
+          type: number
+          format: double
+          nullable: true
+
+    Media:
+      type: object
+      description: 대표 이미지(`media_is_primary`)가 먼저 나온다
+      properties:
+        media_no:
+          type: integer
+          format: int64
+        media_type:
+          $ref: "#/components/schemas/MediaType"
+        media_url:
+          type: string
+          nullable: true
+          example: /media/events/12/frame_001.jpg
+        media_confidence:
+          type: number
+          format: double
+          nullable: true
+        media_captured_at:
+          type: string
+          format: date-time
+          nullable: true
+        media_is_primary:
+          type: boolean
+        media_detections:
+          type: array
+          nullable: true
+          description: AI 가 보낸 원본 검출 배열 (화재 외 클래스도 그대로 보관)
+          items:
+            $ref: "#/components/schemas/Detection"
+
+    # ---------- 알림 ----------
+    Alert:
+      type: object
+      description: 이벤트 상세에 붙는 알림 이력
+      properties:
+        alert_no:
+          type: integer
+          format: int64
+        user_no:
+          type: integer
+          format: int64
+        user_name:
+          type: string
+          nullable: true
+        alert_level:
+          type: integer
+          nullable: true
+          description: 단계 (1차, 2차 …)
+        alert_channel:
+          $ref: "#/components/schemas/AlertChannel"
+        alert_status:
+          $ref: "#/components/schemas/AlertStatus"
+        alert_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        alert_deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 이 시각까지 응답이 없으면 119 신고로 넘어간다
+        alert_responded_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    AlertSummary:
+      type: object
+      description: 내 알림 목록용 — 어떤 화재인지 바로 보이도록 이벤트·카메라 정보를 얹었다
+      properties:
+        alert_no:
+          type: integer
+          format: int64
+        event_no:
+          type: integer
+          format: int64
+        event_class:
+          $ref: "#/components/schemas/EventClass"
+        cctv_name:
+          type: string
+          nullable: true
+        alert_level:
+          type: integer
+          nullable: true
+        alert_channel:
+          $ref: "#/components/schemas/AlertChannel"
+        alert_status:
+          $ref: "#/components/schemas/AlertStatus"
+        alert_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        alert_deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+        alert_responded_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ---------- 소방서 ----------
+    Agency:
+      type: object
+      properties:
+        agency_no:
+          type: integer
+          format: int64
+        agency_name:
+          type: string
+          nullable: true
+        agency_lat:
+          type: number
+          format: double
+          nullable: true
+        agency_lng:
+          type: number
+          format: double
+          nullable: true
+        agency_endpoint:
+          type: string
+          nullable: true
+          description: 신고를 쏘는 주소 (시연에서는 가상 119 서버)
+          example: http://localhost:6000/report
+        agency_is_active:
+          type: boolean
+
+    AgencyCreate:
+      type: object
+      required: [agency_name, agency_lat, agency_lng, agency_endpoint]
+      properties:
+        agency_name:
+          type: string
+        agency_lat:
+          type: number
+          format: double
+        agency_lng:
+          type: number
+          format: double
+        agency_endpoint:
+          type: string
+
+    AgencyUpdate:
+      type: object
+      description: 보낸 필드만 갱신된다. 하나도 없으면 400.
+      properties:
+        agency_name:
+          type: string
+        agency_lat:
+          type: number
+          format: double
+        agency_lng:
+          type: number
+          format: double
+        agency_endpoint:
+          type: string
+        agency_is_active:
+          type: boolean
+
+    # ---------- 신고 ----------
+    Report:
+      type: object
+      properties:
+        report_no:
+          type: integer
+          format: int64
+        event_no:
+          type: integer
+          format: int64
+        agency_no:
+          type: integer
+          format: int64
+        agency_name:
+          type: string
+          nullable: true
+        report_sequence:
+          type: integer
+          nullable: true
+          description: 기관을 몇 번째로 바꿨나 (승계 순서)
+        report_external_id:
+          type: string
+          nullable: true
+          description: 소방서가 돌려준 접수번호
+        report_trigger_reason:
+          type: string
+          nullable: true
+          description: 신고를 시작한 이유
+          example: NO_RESPONSE_TIMEOUT
+        report_status:
+          $ref: "#/components/schemas/ReportStatus"
+        report_address:
+          type: string
+          nullable: true
+        report_distance_km:
+          type: number
+          format: double
+          nullable: true
+          description: CCTV 좌표에서 그 소방서까지의 거리
+        report_attempt_count:
+          type: integer
+          nullable: true
+          description: 그 기관에 몇 번 쐈나 (최대 4)
+        reported_at:
+          type: string
+          format: date-time
+          nullable: true
+        report_dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    EventReport:
+      type: object
+      description: 이벤트 상세에 붙는 신고 이력 (목록용 Report 의 축약본)
+      properties:
+        report_no:
+          type: integer
+          format: int64
+        agency_no:
+          type: integer
+          format: int64
+        agency_name:
+          type: string
+          nullable: true
+        report_sequence:
+          type: integer
+          nullable: true
+        report_status:
+          $ref: "#/components/schemas/ReportStatus"
+        report_distance_km:
+          type: number
+          format: double
+          nullable: true
+        reported_at:
+          type: string
+          format: date-time
+          nullable: true
+        report_dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ---------- 내부 (AI) ----------
+    Detection:
+      type: object
+      description: 프레임 1장에서 잡힌 박스 1개
+      properties:
+        cls:
+          type: string
+          description: 화재로 취급하는 값은 `flame`·`smoke` 뿐 (그 외는 판정에서 제외)
+          example: flame
+        conf:
+          type: number
+          format: double
+          example: 0.87
+        bbox:
+          type: array
+          description: "[x1, y1, x2, y2] 픽셀 좌표"
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+
+    DetectionIngest:
+      type: object
+      required: [cctv_no, detections]
+      properties:
+        cctv_no:
+          type: integer
+          format: int64
+        captured_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 생략하면 서버 수신 시각을 쓴다 (ISO 8601)
+        media_url:
+          type: string
+          nullable: true
+          description: 저장된 프레임 이미지 경로
+          example: /media/events/12/frame_001.jpg
+        detections:
+          type: array
+          description: 빈 배열이면 무시된다 (이벤트를 만들지 않는다)
+          items:
+            $ref: "#/components/schemas/Detection"
+
+    DetectionResult:
+      type: object
+      description: |
+        화재 클래스가 없으면 `{ "event_no": null, "ignored": true }`,
+        있으면 누적 상태를 돌려준다.
+      properties:
+        event_no:
+          type: integer
+          format: int64
+          nullable: true
+        ignored:
+          type: boolean
+          description: 화재 클래스가 없어 무시된 프레임일 때만 `true`
+        event_status:
+          $ref: "#/components/schemas/EventStatus"
+        event_detected_frames:
+          type: integer
+          description: 지금까지 누적된 화재 프레임 수
+        event_threshold_frames:
+          type: integer
+          description: 확정에 필요한 프레임 수
