@@ -84,6 +84,10 @@ wandb/
 mlruns/
 datasets/
 data/raw/
+# 검출 테스트용 화재 영상 (용량 큼, 출처는 설계 문서에 적어 둔다)
+ai-model/samples/
+# 검출 결과물 (박스 그린 영상 등)
+ai-model/out/
 
 # ===== Node (front) =====
 node_modules/
