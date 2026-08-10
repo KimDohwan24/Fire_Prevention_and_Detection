@@ -9,6 +9,8 @@ desktop.ini
 # ===== IDE / Editor =====
 .idea/
 .vscode/
+# Claude Code 개인 설정 (launch.json = 서버 실행 설정, settings.local.json = 개인 권한)
+.claude/
 *.iml
 *.swp
 *.swo
