@@ -14,10 +14,12 @@
   더 시도할 기관이 없으면 마지막 행만 FAILED(전송실패).
 - 점검 모드(event_is_test) 이벤트는 신고하지 않는다.
 """
+import base64
 import json
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 
 import psycopg2.errors
 import requests
@@ -82,6 +84,37 @@ def _log_attempt(report_no: int, attempt: int, endpoint: str, request_body: dict
          None if response_body is None else json.dumps(response_body),
          None if error is None else error[:500], elapsed_ms, sent_at),
     )
+
+
+def _primary_frame(event_no: int) -> tuple[str | None, list | None]:
+    """대표 프레임(media_is_primary)의 이미지(base64)와 검출 상자 좌표를 가져온다.
+
+    실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없으므로 이미지 자체를
+    페이로드에 싣는다. 파일이 없거나 못 읽으면 (None, None) — 이미지는 곁들이고
+    신고가 본체라, 이미지 때문에 신고가 막히면 안 된다.
+    """
+    row = db.query_one(
+        """
+        SELECT media_url, media_detections FROM event_media
+        WHERE event_no = %s AND media_is_primary
+        """,
+        (event_no,),
+    )
+    if row is None or not row["media_url"]:
+        return None, None
+    prefix = "/media/"
+    url = row["media_url"]
+    if not url.startswith(prefix):
+        logger.warning("대표 프레임 경로 형식이 예상과 다름 — 이미지 없이 신고 (event_no=%s, url=%s)",
+                       event_no, url)
+        return None, None
+    try:
+        content = (Path(config.MEDIA_ROOT) / url[len(prefix):]).read_bytes()
+    except OSError as exc:
+        logger.warning("대표 프레임 파일 읽기 실패 — 이미지 없이 신고 (event_no=%s): %s",
+                       event_no, exc)
+        return None, None
+    return base64.b64encode(content).decode("ascii"), row["media_detections"]
 
 
 def _find_active_report(event_no: int) -> dict | None:
@@ -163,7 +196,14 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
         "lng": float(event["cctv_lng"]),
         "event_class": event["event_class"],
         "confidence": float(event["event_confidence"]),
+        # 최초 검출 시각 — 유예 30초 + 승계가 겹치면 신고가 검출보다 1분 이상
+        # 늦을 수 있다. 소방 입장에선 신고 시각이 아니라 발화 시점이 중요하다.
+        "first_detected_at": event["event_first_detected_at"].isoformat(timespec="seconds")
+        if event.get("event_first_detected_at") else None,
         "reported_at": datetime.now().isoformat(timespec="seconds"),
+        # 대표 프레임(bbox 검출 좌표 포함) — 접수 서버가 화면에 띄울 수 있게 싣는다
+        "image_base64": event["image_base64"],
+        "image_detections": event["image_detections"],
     }
     max_attempts = config.MAX_REPORT_ATTEMPTS
     endpoint = agency["agency_endpoint"]
@@ -248,6 +288,7 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
     event = db.query_one(
         """
         SELECT e.event_no, e.event_class, e.event_confidence, e.event_is_test,
+               e.event_first_detected_at,
                c.cctv_location, c.cctv_lat, c.cctv_lng
         FROM fire_event e
         JOIN cctv c ON c.cctv_no = e.cctv_no
@@ -268,6 +309,9 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
         logger.info("이미 진행 중인 신고 반환 (event_no=%s, report_no=%s)",
                     event_no, existing["report_no"])
         return existing
+
+    # 대표 프레임은 이벤트 단위 — 재전송·승계 내내 같으니 한 번만 읽는다
+    event["image_base64"], event["image_detections"] = _primary_frame(event_no)
 
     # 후보 기관: 활성 기관을 CCTV 좌표 기준 거리 오름차순으로
     agencies = db.query(

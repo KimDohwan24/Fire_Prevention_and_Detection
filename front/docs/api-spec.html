@@ -137,7 +137,7 @@
   <tr><td><code>cctv_status</code></td><td><code>ACTIVE</code>(정상) · <code>INACTIVE</code>(중지) · <code>ERROR</code>(오류)</td></tr>
   <tr><td><code>event_status</code></td><td><code>CONFIRMED</code>(확정) · <code>DISMISSED</code>(기준미달)</td></tr>
   <tr><td><code>event_class</code></td><td><code>FLAME</code>(불꽃) · <code>SMOKE</code>(연기) · <code>FLAME_SMOKE</code>(둘다)</td></tr>
-  <tr><td><code>media_type</code></td><td><code>FRAME</code>(프레임 이미지) · <code>CLIP</code>(영상 클립)</td></tr>
+  <tr><td><code>media_type</code></td><td><code>FRAME</code>(프레임 이미지) — <code>CLIP</code>(영상 클립)은 2026-08-10 폐기, 프레임만 저장한다</td></tr>
   <tr><td><code>alert_level</code></td><td><code>1</code>(1차 알림) · <code>2</code>(승격) · <code>3</code>(최종)</td></tr>
   <tr><td><code>alert_channel</code></td><td><code>PUSH</code>(앱알림) · <code>SMS</code>(문자)</td></tr>
   <tr><td><code>alert_status</code></td><td><code>SENT</code>(발송) · <code>READ</code>(확인) · <code>CANCELED</code>(취소) · <code>NO_RESPONSE</code>(무응답)</td></tr>
@@ -460,12 +460,14 @@
     },
     {
       "media_no": 31,
-      "media_type": "CLIP",
-      "media_url": "/media/events/12/clip_001.mp4",
-      "media_confidence": null,
+      "media_type": "FRAME",
+      "media_url": "/media/events/12/frame_002.jpg",
+      "media_confidence": 0.8811,
       "media_captured_at": "2026-08-08T14:30:10",
       "media_is_primary": false,
-      "media_detections": null
+      "media_detections": [
+        { "cls": "flame", "conf": 0.881, "box": [0.241, 0.263, 0.051, 0.118] }
+      ]
     }
   ],
   "alerts": [

@@ -9,10 +9,12 @@
 - DB 부분 유니크 인덱스(UX_report_119_active)로 이벤트당 진행 중 신고 1건 강제.
 - 실제 HTTP 는 절대 나가지 않는다 — _post_report 를 monkeypatch 한다.
 """
+import base64
+
 import psycopg2
 import pytest
 import requests
-from conftest import make_alert, make_alert_pair, make_event, make_report
+from conftest import make_alert, make_alert_pair, make_event, make_media, make_report
 
 import config
 import db
@@ -118,6 +120,24 @@ def test_start_report_success_first_try(monkeypatch):
     assert payload["reported_at"] is not None
 
 
+def test_payload_carries_first_detected_at(monkeypatch):
+    """페이로드에 최초 검출 시각이 실린다 — 발화 시점 전달.
+
+    유예 30초 + 승계가 겹치면 검출과 신고 사이가 1분 이상 벌어질 수 있다.
+    reported_at(신고 시각)만으로는 소방이 발화 시점을 알 수 없다 (슬라이드 12 ①).
+    """
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-FD"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    row = db.query_one(
+        "SELECT event_first_detected_at FROM fire_event WHERE event_no = %s", (event_no,))
+    _, payload = calls[0]
+    assert payload["first_detected_at"] == \
+        row["event_first_detected_at"].isoformat(timespec="seconds")
+
+
 def test_start_report_retry_then_success(monkeypatch):
     """2번 실패(타임아웃/거절) 후 3번째 성공 → 같은 기관, attempt_count=3, ACCEPTED."""
     def fn(ep, pl, n):
@@ -153,6 +173,45 @@ def test_start_report_accepts_2xx_without_body(monkeypatch):
     assert r["report_status"] == "ACCEPTED"
     assert r["report_external_id"] is None
     assert result["report_status"] == "ACCEPTED"
+
+
+# ---------- bbox 이미지 전송 ----------
+#
+# 신고 페이로드에 대표 프레임 이미지(base64)와 검출 상자(bbox) 좌표를 실어 보낸다.
+# 실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없어 이미지 자체를 싣는다.
+# 시연 대상이 모의 접수 서버라 가능한 결정 (2026-08-10, 슬라이드 12 ①).
+
+def test_payload_carries_bbox_image(monkeypatch, tmp_path):
+    """페이로드에 대표 프레임 이미지(base64)와 검출 상자 좌표가 실린다."""
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-IMG"}))
+    event_no = make_event()
+    img = tmp_path / "events" / str(event_no) / "frame.jpg"
+    img.parent.mkdir(parents=True)
+    img.write_bytes(b"\xff\xd8fake-jpeg-bytes")
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/frame.jpg")
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert base64.b64decode(payload["image_base64"]) == b"\xff\xd8fake-jpeg-bytes"
+    assert payload["image_detections"] == [
+        {"cls": "flame", "conf": 0.91, "box": [0.238, 0.259, 0.047, 0.113]}]
+
+
+def test_report_goes_out_without_image_file(monkeypatch, tmp_path):
+    """대표 프레임 파일이 디스크에 없어도 신고는 나간다 — 이미지가 신고를 막으면 안 된다."""
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-NOIMG"}))
+    event_no = make_event()
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/ghost.jpg")
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    assert result["report_status"] == "ACCEPTED"
+    _, payload = calls[0]
+    assert payload["image_base64"] is None
+    assert payload["image_detections"] is None
 
 
 # ---------- 신고 ID (멱등 키) ----------

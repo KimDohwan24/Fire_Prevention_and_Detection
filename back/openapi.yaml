@@ -961,7 +961,7 @@ paths:
       tags: [system]
       summary: 미디어 파일 서빙
       description: |
-        검출 프레임(FRAME)·영상 클립(CLIP) 실제 파일. API 응답의 `media_url` /
+        검출 프레임(FRAME) 실제 파일. API 응답의 `media_url` /
         `thumbnail_url` 값이 곧 이 경로이므로 `<img src>` 에 그대로 넣으면 된다.
 
         **인증을 걸지 않는다** — 브라우저의 `<img>`/`<video>` 는 `Authorization`
@@ -1345,7 +1345,8 @@ components:
       enum: [FLAME, SMOKE, FLAME_SMOKE]
     MediaType:
       type: string
-      enum: [FRAME, CLIP]
+      description: CLIP(영상 클립)은 2026-08-10 폐기 — 프레임만 저장한다
+      enum: [FRAME]
     AlertChannel:
       type: string
       description: 확정 시 두 채널이 동시에 나간다 (PUSH = 프론트 폴링, SMS = 실제 발송)

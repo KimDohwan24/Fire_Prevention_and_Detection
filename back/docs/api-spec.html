@@ -159,7 +159,7 @@
   <tr><td><code>cctv_status</code></td><td><code>ACTIVE</code>(정상) · <code>INACTIVE</code>(중지) · <code>ERROR</code>(오류)</td></tr>
   <tr><td><code>event_status</code></td><td><code>PENDING</code>(판정중 — 프레임 누적 중) · <code>CONFIRMED</code>(확정) · <code>DISMISSED</code>(기준미달)</td></tr>
   <tr><td><code>event_class</code></td><td><code>FLAME</code>(불꽃) · <code>SMOKE</code>(연기) · <code>FLAME_SMOKE</code>(둘다)</td></tr>
-  <tr><td><code>media_type</code></td><td><code>FRAME</code>(프레임 이미지) · <code>CLIP</code>(영상 클립)</td></tr>
+  <tr><td><code>media_type</code></td><td><code>FRAME</code>(프레임 이미지) — <code>CLIP</code>(영상 클립)은 2026-08-10 폐기, 프레임만 저장한다</td></tr>
   <tr><td><code>alert_level</code></td><td><code>1</code> — <b>항상 1</b>. 단계 승격 개념이 없어졌다 (아래 주의 참고)</td></tr>
   <tr><td><code>alert_channel</code></td><td><code>PUSH</code>(앱알림) · <code>SMS</code>(문자)</td></tr>
   <tr><td><code>alert_status</code></td><td><code>SENT</code>(발송) · <code>READ</code>(확인) · <code>CANCELED</code>(취소) · <code>NO_RESPONSE</code>(무응답)</td></tr>
@@ -605,12 +605,14 @@
     },
     {
       "media_no": 31,
-      "media_type": "CLIP",
-      "media_url": "/media/events/12/clip_001.mp4",
-      "media_confidence": null,
+      "media_type": "FRAME",
+      "media_url": "/media/events/12/frame_002.jpg",
+      "media_confidence": 0.8811,
       "media_captured_at": "2026-08-08T14:30:10",
       "media_is_primary": false,
-      "media_detections": null
+      "media_detections": [
+        { "cls": "flame", "conf": 0.881, "box": [0.241, 0.263, 0.051, 0.118] }
+      ]
     }
   ],
   "alerts": [
@@ -907,8 +909,23 @@
   "lng": 126.978,
   "event_class": "FLAME",
   "confidence": 0.9123,
-  "reported_at": "2026-08-08T14:33:10"
+  "first_detected_at": "2026-08-08T14:32:05",
+  "reported_at": "2026-08-08T14:33:10",
+  "image_base64": "/9j/4AAQSkZJRg…(대표 프레임 JPEG, base64)",
+  "image_detections": [
+    { "cls": "flame", "conf": 0.910, "box": [0.238, 0.259, 0.047, 0.113] }
+  ]
 }</pre>
+
+<div class="note">
+  🕐 <b><code>first_detected_at</code> 은 최초 검출 시각</b>(<code>event_first_detected_at</code>)이다.
+  유예 30초에 승계까지 겹치면 신고(<code>reported_at</code>)가 검출보다 1분 이상 늦을 수 있는데,
+  소방 입장에서 중요한 건 발화 시점이다.
+  <br>🖼️ <b><code>image_base64</code> 는 대표 프레임</b>(최고 신뢰도, <code>media_is_primary</code>)의
+  원본 이미지, <code>image_detections</code> 는 그 프레임의 검출 상자(bbox, 0~1 비율 좌표)다.
+  실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없어 이미지 자체를 싣는다 (시연은 모의 접수 서버 대상).
+  파일을 못 읽으면 둘 다 <code>null</code> 로 나가고 <b>신고는 그대로 진행된다</b>.
+</div>
 
 <div class="note">
   🔑 <b><code>report_uid</code> 는 화재 하나에 하나</b>다(<code>FG-{event_no}</code>).
@@ -991,7 +1008,12 @@
         "address": "서울시 종로구 세종대로 1",
         "lat": 37.5665, "lng": 126.978,
         "event_class": "FLAME", "confidence": 0.9123,
-        "reported_at": "2026-08-08T14:33:10"
+        "first_detected_at": "2026-08-08T14:32:05",
+        "reported_at": "2026-08-08T14:33:10",
+        "image_base64": "/9j/4AAQSkZJRg…(대표 프레임 JPEG, base64)",
+        "image_detections": [
+          { "cls": "flame", "conf": 0.910, "box": [0.238, 0.259, 0.047, 0.113] }
+        ]
       },
       "log_result": "TIMEOUT",
       "log_http_status": null,
@@ -1218,7 +1240,7 @@ Content-Type: application/json
     <span class="path">/media/&lt;path&gt;</span>
     <span class="auth-badge auth-no">인증 불필요</span>
   </div>
-  <div class="desc">검출 프레임 이미지(FRAME)와 영상 클립(CLIP) 파일을 그대로 내려준다.
+  <div class="desc">검출 프레임 이미지(FRAME) 파일을 그대로 내려준다.
   <b>유일하게 <code>/api</code> 아래가 아닌 경로</b>다.</div>
 
   <div class="label">URL 매핑</div>
