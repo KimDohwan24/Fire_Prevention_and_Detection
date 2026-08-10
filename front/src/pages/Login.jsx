@@ -14,7 +14,7 @@ const Login = () => {
     if (id === 'admin' && password === '1234') {
       userData = { id: 'admin', name: '최고 관리자', role: 'admin' };
     } else {
-      userData = { id: id || 'user01', name: id ? `${id} 님` : '일반 사용자', role: 'user' };
+      userData = { id: id || 'user01', name: id || '일반 사용자', role: 'user' };
     }
     
     localStorage.setItem('currentUser', JSON.stringify(userData));
