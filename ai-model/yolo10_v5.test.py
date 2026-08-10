@@ -36,6 +36,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import albumentations as A
 from ultralytics import YOLO
 
 
@@ -44,9 +45,9 @@ class YOLOv10FireTrainer:
     def __init__(
         self,
         model_name="yolov10n.pt",
-        yaml_path="/workspace/sec_project/Fire_Prevention_and_Detection/ai-model/data.yaml",
+        yaml_path="./dataset/data.yaml",
         image_size=640,
-        epochs=30,
+        epochs=10,
         batch=8,
         patience=10,
         conf_threshold=0.25,
@@ -126,6 +127,42 @@ class YOLOv10FireTrainer:
 
         model = YOLO(self.model_name)
 
+        # ============================================================
+        # 커스텀 Albumentations 증강
+        # ============================================================
+        # CCTV 환경에서 발생할 수 있는 밝기 변화, 센서 노이즈,
+        # 약한 흐림을 가정한 증강입니다.
+        #
+        # Train 데이터에만 학습 중 적용되며 Val/Test에는 적용되지 않습니다.
+        # 아래 3개는 이미지의 픽셀 값만 바꾸므로 bbox 위치는 그대로 유지됩니다.
+        custom_augmentations = [
+            # 밝기 ±15%, 대비 ±15% / 40% 확률
+            A.RandomBrightnessContrast(
+                brightness_limit=0.15,
+                contrast_limit=0.15,
+                p=0.40,
+            ),
+
+            # 약한 Gaussian Noise / 20% 확률
+            A.GaussNoise(
+                std_range=(0.01, 0.03),
+                mean_range=(0.0, 0.0),
+                p=0.20,
+            ),
+
+            # 약한 Gaussian Blur(3x3~5x5) / 20% 확률
+            A.GaussianBlur(
+                blur_limit=(3, 5),
+                sigma_limit=(0.1, 1.0),
+                p=0.20,
+            ),
+        ]
+
+        print("\n[학습 증강 설정]")
+        print("- RandomBrightnessContrast : p=0.40")
+        print("- GaussNoise               : p=0.20")
+        print("- GaussianBlur             : p=0.20")
+
         start_time = time.time()
 
         self.train_result = model.train(
@@ -135,6 +172,10 @@ class YOLOv10FireTrainer:
             batch=self.batch,
             device=self.device,
             patience=self.patience,
+
+            # 사용자 정의 Albumentations 증강 적용
+            augmentations=custom_augmentations,
+
             plots=True,
             save=True,
             seed=42,
@@ -678,6 +719,7 @@ class YOLOv10FireTrainer:
         print(f"Model               : {self.model_name}")
         print(f"Epoch                : {self.epochs}")
         print(f"Image Size           : {self.image_size} x {self.image_size}")
+        print("Augmentation         : Brightness/Contrast 40%, Noise 20%, Blur 20%")
         print("-" * 75)
 
         print(
@@ -761,13 +803,13 @@ if __name__ == "__main__":
         model_name="yolov10n.pt",
 
         # 팀원 전처리 코드가 만든 data.yaml
-        yaml_path="./data.yaml",
+        yaml_path="./dataset/data.yaml",
 
         # 전처리 Letterbox 크기와 동일
         image_size=640,
 
         # 확인용 기본값. 전체 학습 때 늘려도 됩니다.
-        epochs=30,
+        epochs=10,
 
         # GPU 메모리 부족 또는 CPU 학습이면 4/2로 낮추세요.
         batch=8,
