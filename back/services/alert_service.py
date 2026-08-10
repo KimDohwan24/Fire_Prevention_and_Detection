@@ -6,7 +6,7 @@
   두 채널 모두 같은 사람의 같은 휴대폰으로 가므로 단계를 나눠 승격시키면
   화재 상황에서 유예 시간만 두 배로 낭비된다 (단계 승격 개념 폐기).
 - 전달: SMS 는 여기서 실제로 보내고, PUSH 는 프론트 폴링이 알림 목록에서 가져간다.
-- 마감: alert_deadline_at = alert_sent_at + ALERT_DEADLINE_MIN 분. 두 행이 동일하다.
+- 마감: alert_deadline_at = alert_sent_at + ALERT_DEADLINE_SEC 초. 두 행이 동일하다.
   이 유예까지 무응답이면 에스컬레이션이 두 알림을 NO_RESPONSE 로 닫고 119 로 넘긴다.
 - alert_level 컬럼은 스키마 호환을 위해 남겨두고 항상 1 을 쓴다.
 - 점검 모드(event_is_test) 이벤트는 어떤 알림도 만들지 않는다.
@@ -69,13 +69,13 @@ def send_alerts(event_no: int) -> list[int] | None:
             INSERT INTO alert (event_no, user_no, alert_level, alert_channel,
                                alert_status, alert_sent_at, alert_deadline_at)
             VALUES (%(event_no)s, %(user_no)s, 1, 'PUSH', 'SENT',
-                    now(), now() + make_interval(mins => %(mins)s)),
+                    now(), now() + make_interval(secs => %(secs)s)),
                    (%(event_no)s, %(user_no)s, 1, 'SMS', 'SENT',
-                    now(), now() + make_interval(mins => %(mins)s))
+                    now(), now() + make_interval(secs => %(secs)s))
             RETURNING alert_no
             """,
             {"event_no": event_no, "user_no": row["user_no"],
-             "mins": config.ALERT_DEADLINE_MIN},
+             "secs": config.ALERT_DEADLINE_SEC},
         )
         alert_nos = sorted(r["alert_no"] for r in cur.fetchall())
 
