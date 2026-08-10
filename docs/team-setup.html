@@ -233,6 +233,24 @@ fetch(`${import.meta.env.VITE_API_BASE_URL}/api/auth/login`, ...)</code></pre>
 </table>
 <p><strong>최종 결정은 프론트가 하고 백엔드에 알려주세요.</strong> 폴링으로 가면 백엔드 작업은 없습니다.</p>
 
+<div class="note">
+  🗳️ <strong>확정 대기 중인 항목 — 프론트 담당이 이 한 줄만 답해주면 닫힙니다.</strong><br><br>
+  “알림 수신을 <strong><code>GET /api/alerts</code> 3~5초 폴링</strong>으로 갈까요?”<br><br>
+  <strong>예</strong> → 백엔드 추가 작업 없음. 명세서에 한 줄 적고 종료.<br>
+  <strong>아니오(SSE·WebSocket)</strong> → 백엔드에 신규 기능이 필요하므로, 결정한 방식을 알려주면
+  작업 계획을 잡습니다.
+</div>
+
+<p>폴링 구현은 이 정도면 됩니다 — 새 알림이 있으면 화면에 배지·브라우저 알림을 띄우면 됩니다.</p>
+<pre><code>// 5초마다 내 알림을 확인한다
+setInterval(async () =&gt; {
+  const res = await fetch(`${BASE}/api/alerts?alert_status=SENT`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const { items } = await res.json();
+  // items 중 처음 보는 alert_no 가 있으면 알림 표시
+}, 5000);</code></pre>
+
 <h3>CCTV 영상 재생 — HLS</h3>
 <p><code>cctv_stream_url</code> 은 <strong>HLS(<code>.m3u8</code>) 주소</strong>입니다.
 백엔드는 영상을 중계하지 않고 주소만 전달하므로, 프론트가 직접 연결해 재생합니다.</p>
