@@ -6,4 +6,7 @@ bcrypt==4.2.0
 python-dotenv==1.0.1
 requests==2.32.*
 apscheduler==3.10.*
+flask-swagger-ui==5.32.12
+PyYAML==6.0.3
 pytest==8.3.3
+openapi-spec-validator==0.9.0
