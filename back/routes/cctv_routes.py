@@ -19,6 +19,11 @@ UPDATABLE = [
     "cctv_stream_url", "cctv_width", "cctv_height", "cctv_status",
 ]
 
+# 응답에 내보내는 컬럼을 명시한다 — SELECT * 를 쓰면 나중에 컬럼이 추가될 때
+# 의도치 않은 값이 조용히 API 응답에 섞여 나간다 (명세서 4번 섹션 기준)
+COLUMNS = """cctv_no, user_no, cctv_name, cctv_location, cctv_lat, cctv_lng,
+             cctv_stream_url, cctv_width, cctv_height, cctv_status, cctv_created_at"""
+
 
 @bp.get("")
 @login_required
@@ -30,7 +35,7 @@ def list_cctvs():
         params.append(status)
 
     rows = db.query(
-        f"SELECT * FROM cctv {where} ORDER BY cctv_no", tuple(params)
+        f"SELECT {COLUMNS} FROM cctv {where} ORDER BY cctv_no", tuple(params)
     )
     return jsonify({"items": rows})
 
@@ -38,7 +43,9 @@ def list_cctvs():
 @bp.get("/<int:cctv_no>")
 @login_required
 def get_cctv(cctv_no: int):
-    row = db.query_one("SELECT * FROM cctv WHERE cctv_no = %s", (cctv_no,))
+    row = db.query_one(
+        f"SELECT {COLUMNS} FROM cctv WHERE cctv_no = %s", (cctv_no,)
+    )
     if not row:
         raise ApiError(404, "CCTV_NOT_FOUND", "카메라를 찾을 수 없습니다.")
     return jsonify(row)

@@ -11,6 +11,7 @@ import db
 from auth import admin_required, login_required
 from errors import ApiError
 from utils.pagination import get_page_params, paged_response
+from utils.validation import validate_password, validate_phone, validate_user_id
 
 bp = Blueprint("users", __name__)
 
@@ -56,6 +57,11 @@ def create_user():
         if not body.get(field):
             raise ApiError(400, "BAD_REQUEST", f"{field} 는 필수입니다.")
 
+    # 아이디·비밀번호 작성규칙 (명세서 3번) — 로그인에는 적용하지 않는다
+    validate_user_id(body["user_id"])
+    validate_password(body["user_pw"], user_id=body["user_id"])
+    validate_phone(body, "user_phone")
+
     if db.query_one("SELECT 1 FROM users WHERE user_id = %s", (body["user_id"],)):
         raise ApiError(409, "DUPLICATE_USER_ID", "이미 사용 중인 아이디입니다.")
 
@@ -89,6 +95,8 @@ def update_user(user_no: int):
         if any(field in body for field in ADMIN_ONLY_FIELDS):
             raise ApiError(403, "FORBIDDEN", "권한 등급과 계정 상태는 관리자만 변경할 수 있습니다.")
 
+    validate_phone(body, "user_phone")
+
     sets = []
     params: list = []
     for col in UPDATABLE:
@@ -97,6 +105,11 @@ def update_user(user_no: int):
             params.append(body[col])
 
     if "user_pw" in body:
+        # 비밀번호 작성규칙 — 대상 사용자의 아이디 포함 여부는 DB 조회로 확인한다
+        target = db.query_one("SELECT user_id FROM users WHERE user_no = %s", (user_no,))
+        if not target:
+            raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+        validate_password(body["user_pw"], user_id=target["user_id"])
         sets.append("user_pw = %s")
         params.append(bcrypt.hashpw(body["user_pw"].encode(), bcrypt.gensalt()).decode())
 

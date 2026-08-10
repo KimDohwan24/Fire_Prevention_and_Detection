@@ -50,6 +50,37 @@ def test_list_events_includes_joined_fields(client, admin_headers):
     assert item["event_is_test"] is False
 
 
+def test_list_events_thumbnail_picks_highest_confidence_primary(client, admin_headers):
+    """대표 이미지가 여러 장이면 media_confidence 가 가장 높은 것을 고른다.
+
+    ORDER BY 없는 LIMIT 1 은 어떤 행이 나올지 보장되지 않는다(플랜에 따라 바뀜).
+    일부러 낮은 신뢰도 행을 먼저 넣어 '먼저 들어온 행'이 뽑히면 실패하게 만든다.
+    """
+    ev = make_event(cctv_no=1)
+    make_media(ev, is_primary=True, url="/media/events/1/low.jpg", confidence=0.5000)
+    make_media(ev, is_primary=True, url="/media/events/1/high.jpg", confidence=0.9900)
+    # 대표가 아닌 행은 신뢰도가 더 높아도 후보가 아니다
+    make_media(ev, is_primary=False, url="/media/events/1/not_primary.jpg",
+               confidence=0.9999)
+
+    for _ in range(3):  # 여러 번 불러도 같은 값이어야 한다
+        items = client.get("/api/events", headers=admin_headers).get_json()["items"]
+        assert items[0]["thumbnail_url"] == "/media/events/1/high.jpg"
+
+
+def test_list_events_thumbnail_tiebreak_is_lowest_media_no(client, admin_headers):
+    """신뢰도가 같으면 media_no 가 작은(먼저 저장된) 대표 이미지를 쓴다."""
+    ev = make_event(cctv_no=1)
+    first = make_media(ev, is_primary=True, url="/media/events/1/a.jpg",
+                       confidence=0.7000)
+    second = make_media(ev, is_primary=True, url="/media/events/1/b.jpg",
+                        confidence=0.7000)
+    assert first < second
+
+    items = client.get("/api/events", headers=admin_headers).get_json()["items"]
+    assert items[0]["thumbnail_url"] == "/media/events/1/a.jpg"
+
+
 def test_list_events_excludes_test_events_by_default(client, admin_headers):
     """점검 모드(is_test) 이벤트는 기본 제외, include_test=true 면 포함."""
     normal = make_event(is_test=False)

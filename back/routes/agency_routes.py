@@ -15,11 +15,16 @@ bp = Blueprint("agencies", __name__)
 
 UPDATABLE = ["agency_name", "agency_lat", "agency_lng", "agency_endpoint", "agency_is_active"]
 
+# 응답에 내보내는 컬럼을 명시한다 — SELECT * 를 쓰면 나중에 컬럼이 추가될 때
+# 의도치 않은 값이 조용히 API 응답에 섞여 나간다 (명세서 7번 섹션 기준)
+COLUMNS = """agency_no, agency_name, agency_lat, agency_lng,
+             agency_endpoint, agency_is_active"""
+
 
 @bp.get("")
 @login_required
 def list_agencies():
-    rows = db.query("SELECT * FROM agency ORDER BY agency_no")
+    rows = db.query(f"SELECT {COLUMNS} FROM agency ORDER BY agency_no")
     return jsonify({"items": rows})
 
 

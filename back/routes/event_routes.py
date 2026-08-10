@@ -50,8 +50,12 @@ def list_events():
                e.event_status, e.event_class,
                e.event_first_detected_at, e.event_detected_at,
                e.event_confidence, e.event_is_test,
+               -- 대표 이미지가 여러 장일 수 있으므로 정렬을 명시한다.
+               -- (ORDER BY 없는 LIMIT 1 은 어떤 행이 뽑힐지 보장되지 않는다)
+               -- 신뢰도가 가장 높은 것, 같으면 먼저 저장된 것(media_no 작은 쪽).
                (SELECT m.media_url FROM event_media m
                 WHERE m.event_no = e.event_no AND m.media_is_primary
+                ORDER BY m.media_confidence DESC NULLS LAST, m.media_no
                 LIMIT 1) AS thumbnail_url
         FROM fire_event e
         JOIN cctv c ON c.cctv_no = e.cctv_no

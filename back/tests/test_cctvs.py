@@ -4,12 +4,19 @@
 """
 import pytest
 
+# 명세서가 문서화한 카메라 응답 키 — 이 집합에서 늘거나 줄면 명세 위반이다.
+# (SELECT * 를 쓰면 나중에 컬럼이 추가될 때 조용히 응답에 섞여 들어간다)
+CCTV_KEYS = {
+    "cctv_no", "user_no", "cctv_name", "cctv_location", "cctv_lat", "cctv_lng",
+    "cctv_stream_url", "cctv_width", "cctv_height", "cctv_status", "cctv_created_at",
+}
+
 NEW_CCTV = {
     "cctv_name": "옥상 카메라",
     "cctv_location": "본관 옥상",
     "cctv_lat": 37.5700,
     "cctv_lng": 126.9800,
-    "cctv_stream_url": "rtsp://192.168.0.12/1",
+    "cctv_stream_url": "http://192.168.0.12:8080/live/cam3.m3u8",
     "cctv_width": 1920,
     "cctv_height": 1080,
 }
@@ -36,7 +43,7 @@ def test_list_cctvs_returns_seeded_cameras(client, admin_headers):
     assert first["cctv_name"] == "정문 카메라"
     assert first["cctv_location"] == "본관 정문 앞"
     assert first["cctv_status"] == "ACTIVE"
-    assert first["cctv_stream_url"] == "rtsp://192.168.0.10/1"
+    assert first["cctv_stream_url"] == "http://192.168.0.10:8080/live/cam1.m3u8"
     assert first["cctv_width"] == 1920
     assert first["cctv_height"] == 1080
     # numeric 컬럼은 문자열이 아니라 JSON 숫자로 직렬화되어야 한다
@@ -56,7 +63,20 @@ def test_list_cctvs_filter_by_status(client, admin_headers):
     assert items[0]["cctv_status"] == "ACTIVE"
 
 
+def test_list_cctvs_item_keys_are_exactly_documented(client, admin_headers):
+    """목록 항목의 키 집합이 명세서와 정확히 일치한다 (누락도 초과도 없음)."""
+    items = client.get("/api/cctvs", headers=admin_headers).get_json()["items"]
+    for it in items:
+        assert set(it.keys()) == CCTV_KEYS
+
+
 # ---------- 단건 ----------
+
+def test_get_cctv_keys_are_exactly_documented(client, admin_headers):
+    """단건 조회도 목록 항목과 같은 키 집합을 돌려준다."""
+    body = client.get("/api/cctvs/1", headers=admin_headers).get_json()
+    assert set(body.keys()) == CCTV_KEYS
+
 
 def test_get_cctv_detail(client, admin_headers):
     """단건 조회는 목록 항목과 동일한 형태의 단일 객체."""

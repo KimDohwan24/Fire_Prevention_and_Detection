@@ -23,7 +23,8 @@ from auth import issue_token
 SCHEMA_SQL = Path(__file__).resolve().parents[2] / "db" / "schema.sql"
 
 # 테스트 계정 공통 비밀번호 (bcrypt 는 느려서 해시를 한 번만 만든다)
-PW = "pass1234"
+# 비밀번호 작성규칙(3종 조합 8자 이상 등)을 만족하는 값이어야 한다
+PW = "Guard#2026"
 PW_HASH = bcrypt.hashpw(PW.encode(), bcrypt.gensalt(rounds=4)).decode()
 
 TABLES = ["report_119", "alert", "event_media", "fire_event", "cctv", "agency", "users"]
@@ -75,8 +76,8 @@ def seed(_test_db):
             """
             INSERT INTO users (user_id, user_pw, user_name, user_email, user_phone,
                                user_role, user_status) VALUES
-            ('admin01',  %(pw)s, '관리자',   'admin@fg.kr',  '010-1111-1111', 'ADMIN',  'ACTIVE'),
-            ('viewer01', %(pw)s, '조회자',   'viewer@fg.kr', '010-2222-2222', 'VIEWER', 'ACTIVE'),
+            ('admin01',  %(pw)s, '관리자',   'admin@fg.kr',  '01011111111', 'ADMIN',  'ACTIVE'),
+            ('viewer01', %(pw)s, '조회자',   'viewer@fg.kr', '01022222222', 'VIEWER', 'ACTIVE'),
             ('susp01',   %(pw)s, '정지자',   NULL, NULL, 'ADMIN', 'SUSPENDED'),
             ('gone01',   %(pw)s, '탈퇴자',   NULL, NULL, 'ADMIN', 'WITHDRAWN')
             """,
@@ -87,9 +88,9 @@ def seed(_test_db):
             INSERT INTO cctv (user_no, cctv_name, cctv_location, cctv_lat, cctv_lng,
                               cctv_stream_url, cctv_width, cctv_height, cctv_status) VALUES
             (1, '정문 카메라', '본관 정문 앞', 37.5665000, 126.9780000,
-             'rtsp://192.168.0.10/1', 1920, 1080, 'ACTIVE'),
+             'http://192.168.0.10:8080/live/cam1.m3u8', 1920, 1080, 'ACTIVE'),
             (1, '후문 카메라', '본관 후문',    37.5670000, 126.9790000,
-             'rtsp://192.168.0.11/1', 1280, 720, 'INACTIVE')
+             'http://192.168.0.11:8080/live/cam2.m3u8', 1280, 720, 'INACTIVE')
             """
         )
         cur.execute(
@@ -99,6 +100,31 @@ def seed(_test_db):
             ('중부소방서', 37.5610000, 126.9950000, 'http://localhost:6000/report')
             """
         )
+    yield
+
+
+class _FakeReportResponse:
+    """requests.Response 대역 — 2xx + external_id 본문 흉내."""
+    status_code = 200
+
+    def json(self):
+        return {"external_id": "MOCK-OK"}
+
+
+@pytest.fixture(autouse=True)
+def _no_real_report_http(monkeypatch):
+    """전역 가드: 어떤 테스트도 실제 119 신고 HTTP 를 보내지 않는다.
+
+    알림 READ 응답이 report_service.start_report 를 부르므로, 스텁이 없으면
+    무관한 테스트가 seed 기관 endpoint(localhost:6000)로 실제 접속을 시도하며
+    재시도×타임아웃만큼 느려진다. 기본은 '항상 성공' 스텁 — 특정 실패 시나리오가
+    필요한 테스트는 자기 monkeypatch 로 _post_report 를 다시 덮어쓰면 된다
+    (테스트 본문의 setattr 가 나중에 적용되므로 이 스텁을 이긴다).
+    """
+    monkeypatch.setattr(
+        "services.report_service._post_report",
+        lambda endpoint, payload: _FakeReportResponse(),
+    )
     yield
 
 
@@ -138,35 +164,51 @@ def make_event(cctv_no=1, status="CONFIRMED", event_class="FLAME",
     return row["event_no"]
 
 
-def make_media(event_no, media_type="FRAME", is_primary=False, url=None):
+def make_media(event_no, media_type="FRAME", is_primary=False, url=None,
+               confidence=0.9123):
     row = db.execute_returning(
         """
         INSERT INTO event_media (event_no, media_type, media_url, media_detections,
                                  media_confidence, media_captured_at, media_is_primary)
         VALUES (%s, %s, %s,
                 '[{"cls":"flame","conf":0.91,"box":[0.238,0.259,0.047,0.113]}]'::jsonb,
-                0.9123, now(), %s)
+                %s, now(), %s)
         RETURNING media_no
         """,
-        (event_no, media_type, url or f"/media/events/{event_no}/f.jpg", is_primary),
+        (event_no, media_type, url or f"/media/events/{event_no}/f.jpg",
+         confidence, is_primary),
     )
     return row["media_no"]
 
 
-def make_alert(event_no, user_no=1, level=1, status="SENT",
+def make_alert(event_no, user_no=1, level=1, channel="PUSH", status="SENT",
                deadline_offset_sec=180, responded=False):
     row = db.execute_returning(
         """
         INSERT INTO alert (event_no, user_no, alert_level, alert_channel, alert_status,
                            alert_sent_at, alert_deadline_at, alert_responded_at)
-        VALUES (%s, %s, %s, 'PUSH', %s, now(),
+        VALUES (%s, %s, %s, %s, %s, now(),
                 now() + (%s || ' seconds')::interval,
                 CASE WHEN %s THEN now() ELSE NULL END)
         RETURNING alert_no
         """,
-        (event_no, user_no, level, status, deadline_offset_sec, responded),
+        (event_no, user_no, level, channel, status, deadline_offset_sec, responded),
     )
     return row["alert_no"]
+
+
+def make_alert_pair(event_no, user_no=1, status="SENT", sms_status=None,
+                    deadline_offset_sec=180, responded=False):
+    """확정 시 실제로 만들어지는 PUSH+SMS 한 쌍을 흉내낸다.
+
+    반환: (push_alert_no, sms_alert_no). sms_status 를 주면 SMS 행만 다른 상태로.
+    """
+    push_no = make_alert(event_no, user_no=user_no, channel="PUSH", status=status,
+                         deadline_offset_sec=deadline_offset_sec, responded=responded)
+    sms_no = make_alert(event_no, user_no=user_no, channel="SMS",
+                        status=sms_status or status,
+                        deadline_offset_sec=deadline_offset_sec, responded=responded)
+    return push_no, sms_no
 
 
 def make_report(event_no, agency_no=1, sequence=1, status="DISPATCHED"):

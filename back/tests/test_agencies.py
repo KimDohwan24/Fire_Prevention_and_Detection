@@ -5,6 +5,12 @@ POST /api/agencies               등록 (ADMIN)
 PUT  /api/agencies/<agency_no>   수정 · 비활성화 (ADMIN)
 """
 
+# 명세서가 문서화한 소방서 응답 키 — 이 집합에서 늘거나 줄면 명세 위반이다.
+AGENCY_KEYS = {
+    "agency_no", "agency_name", "agency_lat", "agency_lng",
+    "agency_endpoint", "agency_is_active",
+}
+
 NEW_AGENCY = {
     "agency_name": "용산소방서",
     "agency_lat": 37.5326,
@@ -37,6 +43,13 @@ def test_list_agencies_returns_seed_rows(client, admin_headers):
     # numeric 컬럼은 JSON 숫자로 직렬화된다 (문자열이면 안 됨)
     assert isinstance(first["agency_lat"], (int, float))
     assert abs(first["agency_lat"] - 37.5720) < 1e-6
+
+
+def test_list_agencies_item_keys_are_exactly_documented(client, admin_headers):
+    """목록 항목의 키 집합이 명세서와 정확히 일치한다 (누락도 초과도 없음)."""
+    items = client.get("/api/agencies", headers=admin_headers).get_json()["items"]
+    for it in items:
+        assert set(it.keys()) == AGENCY_KEYS
 
 
 # ---------- POST /api/agencies ----------
