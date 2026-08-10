@@ -128,6 +128,51 @@ def _no_real_report_http(monkeypatch):
     yield
 
 
+# ITS(국가교통정보센터) 정상 응답 대역 — 실제 응답과 같은 키 구성.
+# 이름을 일부러 시드 카메라('정문 카메라'/'후문 카메라')와 다르게 둬서,
+# 기본 상태에서는 어떤 테스트의 저장된 스트림 주소도 바뀌지 않게 한다.
+ITS_SAMPLE_PAYLOAD = {
+    "response": {
+        "coordtype": 1,
+        "data": [
+            {
+                "roadsectionid": "", "coordx": 127.1058, "coordy": 37.3855,
+                "cctvresolution": "", "filecreatetime": "",
+                "cctvtype": 1, "cctvformat": "HLS",
+                "cctvname": "[경부선] 판교분기점",
+                "cctvurl": "http://cctvsec.example/1?wmsAuthSign=CANNED-A",
+            },
+            {
+                "roadsectionid": "", "coordx": 126.9012, "coordy": 37.4821,
+                "cctvresolution": "", "filecreatetime": "",
+                "cctvtype": 1, "cctvformat": "HLS",
+                "cctvname": "[서해안선] 금천IC",
+                "cctvurl": "http://cctvsec.example/2?wmsAuthSign=CANNED-B",
+            },
+        ],
+    }
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_real_its_http(monkeypatch):
+    """전역 가드: 어떤 테스트도 실제 ITS 오픈 API 를 호출하지 않는다.
+
+    카메라 조회(GET /api/cctvs 등)가 스트림 주소 갱신을 부르므로, 스텁이 없으면
+    무관한 테스트가 openapi.its.go.kr 로 실제 접속을 시도하며 느려지고
+    (키 유무·망 상태에 따라) 결과도 흔들린다. 기본은 '시드와 이름이 겹치지 않는
+    정상 응답' 스텁 — 매칭/실패 시나리오가 필요한 테스트는 자기 monkeypatch 로
+    _get 을 다시 덮어쓰면 된다 (테스트 본문의 setattr 가 나중에 적용되므로 이김).
+    모듈 TTL 캐시도 테스트 간에 새로 비운다.
+    """
+    from services import its_cctv
+
+    its_cctv.clear_cache()
+    monkeypatch.setattr("services.its_cctv._get", lambda params: ITS_SAMPLE_PAYLOAD)
+    yield
+    its_cctv.clear_cache()
+
+
 # ---------- 인증 헬퍼 ----------
 
 def _headers(user_no, user_id, role):

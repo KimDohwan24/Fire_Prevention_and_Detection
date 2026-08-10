@@ -10,6 +10,7 @@ from flask import Blueprint, g, jsonify, request
 import db
 from auth import admin_required, login_required
 from errors import ApiError
+from services import its_cctv
 from utils.validation import require_number, require_str
 
 bp = Blueprint("cctvs", __name__)
@@ -37,6 +38,9 @@ def list_cctvs():
     rows = db.query(
         f"SELECT {COLUMNS} FROM cctv {where} ORDER BY cctv_no", tuple(params)
     )
+    # ITS 카메라의 스트림 주소는 토큰이 만료되므로 응답 직전에 최신 값으로 갈아끼운다
+    # (외부 API 가 죽어 있으면 저장된 주소 그대로 내려간다)
+    rows = its_cctv.refresh_stream_urls(rows)
     return jsonify({"items": rows})
 
 
@@ -48,7 +52,7 @@ def get_cctv(cctv_no: int):
     )
     if not row:
         raise ApiError(404, "CCTV_NOT_FOUND", "카메라를 찾을 수 없습니다.")
-    return jsonify(row)
+    return jsonify(its_cctv.refresh_stream_urls([row])[0])
 
 
 @bp.post("")
