@@ -1268,7 +1268,8 @@ components:
     EventStatus:
       type: string
       description: |
-        `PENDING` 누적 중 · `CONFIRMED` 화재 확정 · `DISMISSED` 오탐 취소 또는 소멸
+        `PENDING` 관측 창에서 누적 중 · `CONFIRMED` 화재 확정 ·
+        `DISMISSED` 오탐 취소 또는 창 안에서 임계 프레임 수를 못 채워 기준미달
       enum: [PENDING, CONFIRMED, DISMISSED]
     EventClass:
       type: string
