@@ -63,3 +63,17 @@ def admin_required(f):
             raise ApiError(403, "FORBIDDEN", "관리자 권한이 필요합니다.")
         return f(*args, **kwargs)
     return wrapper
+
+
+def internal_key_required(f):
+    """내부 시스템(AI 모델) 전용 인증 — X-Internal-Key 헤더를 비교한다.
+
+    JWT 와 무관하며, 키가 없거나 다르면 401 INTERNAL_UNAUTHORIZED.
+    """
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        key = request.headers.get("X-Internal-Key")
+        if key != config.INTERNAL_API_KEY:
+            raise ApiError(401, "INTERNAL_UNAUTHORIZED", "내부 API 키가 올바르지 않습니다.")
+        return f(*args, **kwargs)
+    return wrapper
