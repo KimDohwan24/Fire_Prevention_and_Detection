@@ -216,6 +216,120 @@ def test_report_uid_differs_between_events():
     assert report_service.report_uid(11) != report_service.report_uid(12)
 
 
+# ---------- 송수신 로그 ----------
+#
+# report_119 는 결과 요약만 남긴다. 전송 시도 하나하나가 무엇을 보내고 무엇을 받았는지는
+# report_log 에 쌓인다 (발표 슬라이드 12 ⑤ "전 구간 송수신 로그 저장", 요구사항 N-04).
+
+def get_log_rows(report_no=None):
+    if report_no is None:
+        return db.query("SELECT * FROM report_log ORDER BY log_no")
+    return db.query(
+        "SELECT * FROM report_log WHERE report_no = %s ORDER BY log_no", (report_no,)
+    )
+
+
+def test_success_is_logged_with_request_and_response(monkeypatch):
+    """성공 1회 = 로그 1행. 보낸 본문과 받은 본문이 그대로 남는다."""
+    patch_post(monkeypatch,
+               lambda ep, pl, n: FakeResponse(200, {"external_id": "R-LOG-1"}))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    (log,) = get_log_rows(result["report_no"])
+    assert log["log_attempt"] == 1
+    assert log["log_result"] == "ACCEPTED"
+    assert log["log_http_status"] == 200
+    assert log["log_request"]["report_uid"] == f"FG-{event_no}"
+    assert log["log_request"]["address"] == "본관 정문 앞"
+    assert log["log_response"] == {"external_id": "R-LOG-1"}
+    assert log["log_error"] is None
+    assert log["log_sent_at"] is not None
+    assert log["log_elapsed_ms"] >= 0
+
+
+def test_every_attempt_is_logged_with_its_own_result(monkeypatch):
+    """실패한 시도도 남는다 — 무응답과 거절은 뜻이 달라서 결과값으로 구분한다."""
+    def fn(ep, pl, n):
+        if n == 1:
+            raise requests.exceptions.Timeout("모의 타임아웃")
+        if n == 2:
+            return FakeResponse(500, {"error": "system unavailable"})
+        return FakeResponse(200, {"external_id": "R-LOG-3"})
+
+    patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    logs = get_log_rows(result["report_no"])
+    assert [l["log_attempt"] for l in logs] == [1, 2, 3]
+    assert [l["log_result"] for l in logs] == ["TIMEOUT", "REJECTED", "ACCEPTED"]
+    assert [l["log_http_status"] for l in logs] == [None, 500, 200]
+    # 타임아웃은 사유가 남고, 응답을 받은 시도는 사유가 없다
+    assert "모의 타임아웃" in logs[0]["log_error"]
+    assert logs[1]["log_error"] is None
+    assert logs[1]["log_response"] == {"error": "system unavailable"}
+
+
+def test_connection_failure_logged_as_error(monkeypatch):
+    """연결 자체가 안 된 것(ERROR)과 응답이 없는 것(TIMEOUT)은 다르다.
+
+    TIMEOUT 은 상대가 접수했을 수도 있다는 뜻이라 사후 판단이 달라진다.
+    """
+    patch_post(monkeypatch, lambda ep, pl, n: (_ for _ in ()).throw(
+        requests.exceptions.ConnectionError("모의 연결 실패")))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    logs = get_log_rows(result["report_no"])
+    assert len(logs) == config.MAX_REPORT_ATTEMPTS
+    assert {l["log_result"] for l in logs} == {"ERROR"}
+    assert all(l["log_http_status"] is None for l in logs)
+
+
+def test_logs_cover_every_agency_in_takeover(monkeypatch):
+    """승계하면 기관마다 자기 신고 행에 로그가 붙는다 — 전 구간이 남는다."""
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            raise requests.exceptions.Timeout("모의 타임아웃")
+        return FakeResponse(200, {"external_id": "R-LOG-TK"})
+
+    patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    first, second = get_report_rows(event_no)
+    first_logs = get_log_rows(first["report_no"])
+    second_logs = get_log_rows(second["report_no"])
+
+    assert len(first_logs) == 4
+    assert {l["log_result"] for l in first_logs} == {"TIMEOUT"}
+    assert {l["log_endpoint"] for l in first_logs} == {"http://a1/report"}
+    assert len(second_logs) == 1
+    assert second_logs[0]["log_result"] == "ACCEPTED"
+    assert second_logs[0]["log_endpoint"] == "http://a2/report"
+
+
+def test_logging_failure_does_not_break_the_report(monkeypatch):
+    """로그 기록이 실패해도 신고는 나간다 — 증거 남기려다 신고를 막으면 본말전도다."""
+    patch_post(monkeypatch,
+               lambda ep, pl, n: FakeResponse(200, {"external_id": "R-NOLOG"}))
+    monkeypatch.setattr("services.report_service._log_attempt",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("로그 실패")))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    assert result["report_status"] == "ACCEPTED"
+    assert result["report_external_id"] == "R-NOLOG"
+
+
 # ---------- 승계 (기관 교체) ----------
 
 def test_takeover_to_second_agency(monkeypatch):

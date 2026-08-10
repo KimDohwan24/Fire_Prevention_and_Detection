@@ -27,7 +27,8 @@ SCHEMA_SQL = Path(__file__).resolve().parents[2] / "db" / "schema.sql"
 PW = "Guard#2026"
 PW_HASH = bcrypt.hashpw(PW.encode(), bcrypt.gensalt(rounds=4)).decode()
 
-TABLES = ["report_119", "alert", "event_media", "fire_event", "cctv", "agency", "users"]
+TABLES = ["report_log", "report_119", "alert", "event_media", "fire_event",
+          "cctv", "agency", "users"]
 
 
 def _admin_conn(dbname: str):

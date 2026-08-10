@@ -1,8 +1,11 @@
 """119 신고 API 테스트 — 명세서 8번 섹션.
 
-GET /api/reports   신고 이력 목록 (event_no 로 승계 이력 필터)
+GET /api/reports                     신고 이력 목록 (event_no 로 승계 이력 필터)
+GET /api/reports/<report_no>/logs    그 신고의 119 송수신 로그
 """
 from conftest import make_event, make_report
+
+import db
 
 # 명세서 8번 응답 예시의 항목 필드 전체
 REPORT_FIELDS = {
@@ -133,3 +136,85 @@ def test_list_reports_paged_shape(client, admin_headers):
 
     r = client.get("/api/reports?page=2&size=2", headers=admin_headers)
     assert len(r.get_json()["items"]) == 1
+
+
+# ---------- GET /api/reports/<report_no>/logs ----------
+
+LOG_FIELDS = {
+    "log_no", "report_no", "log_attempt", "log_endpoint", "log_request",
+    "log_result", "log_http_status", "log_response", "log_error",
+    "log_elapsed_ms", "log_sent_at",
+}
+
+
+def make_log(report_no, attempt=1, result="ACCEPTED", http_status=200,
+             endpoint="http://localhost:6000/report", error=None):
+    return db.execute_returning(
+        """
+        INSERT INTO report_log (report_no, log_attempt, log_endpoint, log_request,
+                                log_result, log_http_status, log_response,
+                                log_error, log_elapsed_ms, log_sent_at)
+        VALUES (%s, %s, %s, '{"report_uid":"FG-1","event_no":1}'::jsonb,
+                %s, %s, '{"external_id":"R-000001"}'::jsonb, %s, 42, now())
+        RETURNING log_no
+        """,
+        (report_no, attempt, endpoint, result, http_status, error),
+    )["log_no"]
+
+
+def test_report_logs_require_token(client):
+    """토큰 없이 호출하면 401."""
+    r = client.get("/api/reports/1/logs")
+    assert r.status_code == 401
+    assert r.get_json()["code"] == "UNAUTHORIZED"
+
+
+def test_report_logs_unknown_report_404(client, admin_headers):
+    """없는 신고 번호면 404 REPORT_NOT_FOUND (빈 목록이 아니다)."""
+    r = client.get("/api/reports/999/logs", headers=admin_headers)
+    assert r.status_code == 404
+    assert r.get_json()["code"] == "REPORT_NOT_FOUND"
+
+
+def test_report_logs_empty_for_report_without_logs(client, admin_headers):
+    """신고는 있는데 로그가 없으면 빈 목록 (404 아님)."""
+    report_no = make_report(make_event())
+    r = client.get(f"/api/reports/{report_no}/logs", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.get_json()["items"] == []
+
+
+def test_report_logs_returned_in_attempt_order(client, admin_headers):
+    """시도 순서대로 나오고, 각 항목이 스펙의 모든 필드를 갖는다."""
+    report_no = make_report(make_event())
+    make_log(report_no, attempt=2, result="REJECTED", http_status=500)
+    make_log(report_no, attempt=1, result="TIMEOUT", http_status=None,
+             error="모의 타임아웃")
+    make_log(report_no, attempt=3)
+
+    r = client.get(f"/api/reports/{report_no}/logs", headers=admin_headers)
+    assert r.status_code == 200
+    items = r.get_json()["items"]
+
+    assert [i["log_attempt"] for i in items] == [1, 2, 3]   # 넣은 순서가 아니라 시도 순서
+    assert [i["log_result"] for i in items] == ["TIMEOUT", "REJECTED", "ACCEPTED"]
+    assert set(items[0].keys()) == LOG_FIELDS
+    # jsonb 는 파싱된 객체로 내려간다
+    assert items[0]["log_request"]["report_uid"] == "FG-1"
+    assert items[0]["log_http_status"] is None
+    assert items[0]["log_error"] == "모의 타임아웃"
+    assert items[2]["log_response"]["external_id"] == "R-000001"
+
+
+def test_report_logs_only_that_report(client, admin_headers):
+    """다른 신고의 로그는 섞이지 않는다."""
+    event_no = make_event()
+    mine = make_report(event_no, sequence=1, status="NO_RESPONSE")
+    other = make_report(event_no, agency_no=2, sequence=2)
+    make_log(mine, attempt=1)
+    make_log(other, attempt=1)
+
+    r = client.get(f"/api/reports/{mine}/logs", headers=admin_headers)
+    items = r.get_json()["items"]
+    assert len(items) == 1
+    assert items[0]["report_no"] == mine

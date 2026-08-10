@@ -14,7 +14,9 @@
   더 시도할 기관이 없으면 마지막 행만 FAILED(전송실패).
 - 점검 모드(event_is_test) 이벤트는 신고하지 않는다.
 """
+import json
 import logging
+import time
 from datetime import datetime
 
 import psycopg2.errors
@@ -59,6 +61,27 @@ def _post_report(endpoint: str, payload: dict) -> requests.Response:
     테스트에서 monkeypatch 하는 지점 — 기본은 실제 구현에 위임한다.
     """
     return _real_post_report(endpoint, payload)
+
+
+def _log_attempt(report_no: int, attempt: int, endpoint: str, request_body: dict,
+                 sent_at: datetime, elapsed_ms: int, result: str,
+                 http_status: int | None, response_body, error: str | None) -> None:
+    """전송 1회를 report_log 에 그대로 남긴다 (요구사항 N-04).
+
+    report_119 는 결과 요약만 갖고 있어서, 사후에 "몇 시에 뭘 보냈고 뭐라고
+    답이 왔는지"를 따질 수 없었다. 승계 판단의 근거도 여기 남는다.
+    """
+    db.execute(
+        """
+        INSERT INTO report_log (report_no, log_attempt, log_endpoint, log_request,
+                                log_result, log_http_status, log_response,
+                                log_error, log_elapsed_ms, log_sent_at)
+        VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s, %s)
+        """,
+        (report_no, attempt, endpoint, json.dumps(request_body), result, http_status,
+         None if response_body is None else json.dumps(response_body),
+         None if error is None else error[:500], elapsed_ms, sent_at),
+    )
 
 
 def _find_active_report(event_no: int) -> dict | None:
@@ -143,26 +166,46 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
         "reported_at": datetime.now().isoformat(timespec="seconds"),
     }
     max_attempts = config.MAX_REPORT_ATTEMPTS
+    endpoint = agency["agency_endpoint"]
     for attempt in range(1, max_attempts + 1):
+        sent_at = datetime.now()
+        started = time.monotonic()
+        http_status = body = error = None
         try:
-            resp = _post_report(agency["agency_endpoint"], payload)
-            ok = 200 <= resp.status_code < 300
+            resp = _post_report(endpoint, payload)
+        except requests.exceptions.Timeout as exc:
+            # 응답이 없었을 뿐, 상대는 접수했을 수도 있다 — 연결 실패와 뜻이 다르다
+            result, ok, error = "TIMEOUT", False, str(exc)
+            logger.warning("신고 응답 없음 (report_no=%s, attempt=%s/%s): %s",
+                           report_no, attempt, max_attempts, exc)
         except requests.exceptions.RequestException as exc:
-            # 타임아웃/연결 실패 등 전송 계층 실패 — 거절과 동일하게 재시도
+            # 연결 실패 등 — 전송 자체가 안 됐다
+            result, ok, error = "ERROR", False, str(exc)
             logger.warning("신고 전송 실패 (report_no=%s, attempt=%s/%s): %s",
                            report_no, attempt, max_attempts, exc)
-            ok = False
         else:
+            http_status = resp.status_code
+            ok = 200 <= http_status < 300
+            result = "ACCEPTED" if ok else "REJECTED"
+            try:
+                body = resp.json()
+            except (ValueError, AttributeError):
+                body = None       # 본문 없는 2xx 도 성공으로 본다
             if not ok:
                 logger.warning("신고 거절 응답 %s (report_no=%s, attempt=%s/%s)",
-                               resp.status_code, report_no, attempt, max_attempts)
+                               http_status, report_no, attempt, max_attempts)
+
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        try:
+            _log_attempt(report_no, attempt, endpoint, payload, sent_at,
+                         elapsed_ms, result, http_status, body, error)
+        except Exception:
+            # 증거를 남기려다 신고를 막으면 본말전도다
+            logger.exception("송수신 로그 기록 실패 — 신고는 계속한다 "
+                             "(report_no=%s, attempt=%s)", report_no, attempt)
 
         if ok:
-            # 2xx 성공 — 본문의 external_id 는 있으면 저장 (없는 2xx 도 성공)
-            try:
-                external_id = resp.json().get("external_id")
-            except (ValueError, AttributeError):
-                external_id = None
+            external_id = body.get("external_id") if isinstance(body, dict) else None
             db.execute(
                 """
                 UPDATE report_119

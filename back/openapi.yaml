@@ -807,6 +807,48 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/reports/{report_no}/logs:
+    get:
+      tags: [reports]
+      summary: 119 송수신 로그
+      description: |
+        신고 1건이 실제로 무엇을 보내고 무엇을 받았는지 **전송 시도별로** 남긴 기록이다.
+        `report_119` 는 결과 요약(상태·시도횟수·접수번호)만 갖고 있어서
+        "몇 시에 뭘 보냈고 뭐라고 답이 왔길래 승계했나"를 따질 수 없었다.
+
+        페이징하지 않는다 — 한 신고의 시도는 `MAX_REPORT_ATTEMPTS`(기본 4)건으로 묶인다.
+        화재 1건의 전 구간을 보려면 `GET /api/reports?event_no=` 로 승계 이력을 받아
+        각 `report_no` 의 로그를 이어 붙이면 된다.
+
+        `log_result` 의 `TIMEOUT` 과 `ERROR` 는 뜻이 다르다. `TIMEOUT` 은 응답이
+        안 왔을 뿐 **상대는 접수했을 수도 있다**(그래서 신고 ID 로 중복을 막는다).
+        `ERROR` 는 연결 자체가 안 돼 전송되지 않은 것이다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: report_no
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 조회 성공 (시도 순서대로)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReportLog"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/ReportNotFound"
+
   # ---------------------------------------------------------------- 내부 (AI)
   /api/internal/cctvs:
     get:
@@ -1217,6 +1259,16 @@ components:
             code: AGENCY_NOT_FOUND
             message: 소방서를 찾을 수 없습니다.
 
+    ReportNotFound:
+      description: 신고 없음 (`REPORT_NOT_FOUND`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            code: REPORT_NOT_FOUND
+            message: 신고를 찾을 수 없습니다.
+
     InternalUnauthorized:
       description: 내부 API 키 불일치 (`INTERNAL_UNAUTHORIZED`)
       content:
@@ -1304,6 +1356,62 @@ components:
         `SENT` 발송됨 · `READ` 화재 확인 · `CANCELED` 오탐 취소 ·
         `NO_RESPONSE` 유예 내 무응답(119 신고로 넘어감)
       enum: [SENT, READ, CANCELED, NO_RESPONSE]
+    ReportLog:
+      type: object
+      description: 119 로 전송한 시도 1회의 기록 (`GET /api/reports/{report_no}/logs`)
+      properties:
+        log_no:
+          type: integer
+          format: int64
+        report_no:
+          type: integer
+          format: int64
+        log_attempt:
+          type: integer
+          description: 그 기관에 몇 번째로 쐈나 (1부터)
+          example: 1
+        log_endpoint:
+          type: string
+          description: 실제로 전송한 기관 주소
+          example: http://localhost:6000/report?mode=ok
+        log_request:
+          type: object
+          additionalProperties: true
+          description: 보낸 신고 본문 그대로
+        log_result:
+          $ref: "#/components/schemas/ReportLogResult"
+        log_http_status:
+          type: integer
+          nullable: true
+          description: 응답 HTTP 상태코드. 응답이 없었으면 `null`
+          example: 200
+        log_response:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 받은 응답 본문. 본문이 없거나 JSON 이 아니면 `null`
+        log_error:
+          type: string
+          nullable: true
+          description: 전송 실패 사유 (타임아웃·연결실패). 응답을 받았으면 `null`
+        log_elapsed_ms:
+          type: integer
+          description: 요청부터 응답(또는 실패)까지 걸린 시간(ms)
+          example: 42
+        log_sent_at:
+          type: string
+          format: date-time
+
+    ReportLogResult:
+      type: string
+      description: |
+        `ACCEPTED` 2xx 접수 확인 · `REJECTED` 2xx 아닌 응답 ·
+        `TIMEOUT` 응답 없음 · `ERROR` 연결 실패 등 전송 자체가 안 됨
+
+        `TIMEOUT` 은 **상대가 접수했을 수도 있다**는 뜻이다. 그래서 재전송에
+        같은 신고 ID(`report_uid`)를 실어 중복 접수를 막는다.
+      enum: [ACCEPTED, REJECTED, TIMEOUT, ERROR]
+
     ReportStatus:
       type: string
       description: |
