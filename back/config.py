@@ -35,9 +35,11 @@ EVENT_THRESHOLD_FRAMES = int(os.getenv("EVENT_THRESHOLD_FRAMES", "30"))
 # 이후 검출로 연장되지 않는다 — 미달인 채로 창이 닫히면 기준미달(DISMISSED)
 EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "60"))
 
-# 알림 응답 유예 시간(분): alert_deadline_at = alert_sent_at + 이 값
-# 마감까지 무응답이면 에스컬레이션(1차→2차, 2차→119 신고)이 진행된다
-ALERT_DEADLINE_MIN = int(os.getenv("ALERT_DEADLINE_MIN", "3"))
+# 알림 응답 유예 시간(초): alert_deadline_at = alert_sent_at + 이 값
+# 마감까지 무응답이면 에스컬레이션이 곧바로 119 신고로 넘어간다.
+# 기본 30초는 발표 슬라이드 11 타임라인(알림 02:14:08 → 신고 02:14:38) 기준.
+# 화재는 초 단위로 번지므로 유예를 분 단위로 잡을 여유가 없다.
+ALERT_DEADLINE_SEC = int(os.getenv("ALERT_DEADLINE_SEC", "30"))
 
 # 에스컬레이션 스윕 주기(초): 스케줄러가 이 간격으로 run_escalation_tick 을 돌린다
 ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "10"))

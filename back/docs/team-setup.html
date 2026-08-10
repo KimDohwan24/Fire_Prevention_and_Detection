@@ -226,8 +226,9 @@ fetch(`${import.meta.env.VITE_API_BASE_URL}/api/auth/login`, ...)</code></pre>
   <tr><th>방식</th><th>평가</th></tr>
   <tr><td><strong>폴링</strong> (권장)</td>
       <td>기존 <code>GET /api/alerts</code> 재사용 → <strong>추가 개발 0</strong>.
-          알림 유예가 분 단위라 몇 초 지연은 체감되지 않고, 동시 사용자도 소수라 부하 문제 없음.
-          연결이 끊길 일이 없어 시연에서 가장 안전</td></tr>
+          동시 사용자가 소수라 부하 문제 없고, 연결이 끊길 일이 없어 시연에서 가장 안전.
+          다만 유예가 30초라 폴링 주기는 그에 맞춰 짧게(3~5초) 잡아야 한다 —
+          주기가 길면 관리자가 알림을 보기도 전에 유예가 지나간다</td></tr>
   <tr><td>WebSocket</td><td>양방향이 필요 없는 구조라 오버스펙</td></tr>
   <tr><td>SSE</td><td>동기 Flask 와 궁합이 나쁨 (연결 하나가 워커 하나를 점유)</td></tr>
 </table>
@@ -386,10 +387,13 @@ UPDATE fireguard.agency SET agency_endpoint = 'http://localhost:6000/report?mode
 <p><code>mode</code> 값: <code>ok</code>(접수) · <code>fail</code>(장애) · <code>timeout</code>(무응답) · <code>reject</code>(거절)</p>
 
 <h3>시간 단축</h3>
-<p>기본 설정으로는 알림 후 3분을 기다려야 자동 신고가 나갑니다. 시연에서는 <code>.env</code> 를 조정하세요.</p>
-<pre><code>ALERT_DEADLINE_MIN=1        # 알림 유예를 1분으로
+<p>기본 설정으로는 알림 후 30초를 기다려야 자동 신고가 나갑니다. 더 짧게 돌리려면
+<code>.env</code> 를 조정하세요.</p>
+<pre><code>ALERT_DEADLINE_SEC=10       # 알림 유예를 10초로
 EVENT_THRESHOLD_FRAMES=5    # 5프레임만 쌓여도 화재 확정
 ESCALATION_INTERVAL_SEC=5   # 무응답 감지 주기를 5초로</code></pre>
+<p>스윕 주기(<code>ESCALATION_INTERVAL_SEC</code>)만큼 신고가 늦어질 수 있으므로,
+유예를 짧게 잡을수록 주기도 같이 줄여야 실제 유예가 의도한 값에 가까워집니다.</p>
 
 <h3>시연 순서 예시</h3>
 <ol>
