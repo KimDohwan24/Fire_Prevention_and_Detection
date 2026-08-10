@@ -72,7 +72,17 @@ def _log_attempt(report_no: int, attempt: int, endpoint: str, request_body: dict
 
     report_119 는 결과 요약만 갖고 있어서, 사후에 "몇 시에 뭘 보냈고 뭐라고
     답이 왔는지"를 따질 수 없었다. 승계 판단의 근거도 여기 남는다.
+
+    이미지(base64)만은 예외로 생략한다 — 원본이 디스크(MEDIA_ROOT)에 있는데
+    로그 행마다 그대로 남기면 재전송 4회에 같은 이미지가 4번 DB 에 쌓인다.
+    검출 좌표(image_detections)는 작고 승계 판단에 유용해 그대로 남긴다.
     """
+    if request_body.get("image_base64"):
+        request_body = dict(
+            request_body,
+            image_base64=f"<base64 {len(request_body['image_base64'])}자 생략"
+                         " — 원본은 event_media 대표 프레임 파일>",
+        )
     db.execute(
         """
         INSERT INTO report_log (report_no, log_attempt, log_endpoint, log_request,
@@ -86,12 +96,51 @@ def _log_attempt(report_no: int, attempt: int, endpoint: str, request_body: dict
     )
 
 
+def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
+    """검출 상자(bbox)를 이미지에 그려 넣는다 — 받는 쪽이 좌표를 몰라도 되게.
+
+    좌표는 media_detections 의 YOLO xywhn(중심 x·y, 폭, 높이 — 0~1 비율).
+    화재 클래스(flame/smoke)만 그린다. 어떤 이유로든 실패하면 원본을 그대로
+    돌려준다 — 이미지 때문에 신고가 막히면 안 된다.
+    """
+    try:
+        import io
+
+        from PIL import Image, ImageDraw
+
+        im = Image.open(io.BytesIO(content)).convert("RGB")
+        draw = ImageDraw.Draw(im)
+        width, height = im.size
+        drew = False
+        for det in detections or []:
+            if not isinstance(det, dict) or det.get("cls") not in ("flame", "smoke"):
+                continue
+            box = det.get("box") or []
+            if len(box) != 4:
+                continue
+            cx, cy, w, h = (float(v) for v in box)
+            x1, y1 = (cx - w / 2) * width, (cy - h / 2) * height
+            x2, y2 = (cx + w / 2) * width, (cy + h / 2) * height
+            draw.rectangle([x1, y1, x2, y2], outline=(220, 30, 30),
+                           width=max(2, width // 300))
+            drew = True
+        if not drew:
+            return content
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=90)
+        return out.getvalue()
+    except Exception as exc:                       # noqa: BLE001
+        logger.warning("bbox 그리기 실패 — 원본 이미지로 전송: %s", exc)
+        return content
+
+
 def _primary_frame(event_no: int) -> tuple[str | None, list | None]:
     """대표 프레임(media_is_primary)의 이미지(base64)와 검출 상자 좌표를 가져온다.
 
     실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없으므로 이미지 자체를
-    페이로드에 싣는다. 파일이 없거나 못 읽으면 (None, None) — 이미지는 곁들이고
-    신고가 본체라, 이미지 때문에 신고가 막히면 안 된다.
+    페이로드에 싣는다. 이미지에는 검출 상자를 그려 넣는다. 파일이 없거나 못
+    읽으면 (None, None) — 이미지는 곁들이고 신고가 본체라, 이미지 때문에
+    신고가 막히면 안 된다.
     """
     row = db.query_one(
         """
@@ -114,6 +163,7 @@ def _primary_frame(event_no: int) -> tuple[str | None, list | None]:
         logger.warning("대표 프레임 파일 읽기 실패 — 이미지 없이 신고 (event_no=%s): %s",
                        event_no, exc)
         return None, None
+    content = _draw_bboxes(content, row["media_detections"])
     return base64.b64encode(content).decode("ascii"), row["media_detections"]
 
 

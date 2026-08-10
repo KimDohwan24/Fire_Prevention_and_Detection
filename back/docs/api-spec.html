@@ -921,8 +921,11 @@
   🕐 <b><code>first_detected_at</code> 은 최초 검출 시각</b>(<code>event_first_detected_at</code>)이다.
   유예 30초에 승계까지 겹치면 신고(<code>reported_at</code>)가 검출보다 1분 이상 늦을 수 있는데,
   소방 입장에서 중요한 건 발화 시점이다.
-  <br>🖼️ <b><code>image_base64</code> 는 대표 프레임</b>(최고 신뢰도, <code>media_is_primary</code>)의
-  원본 이미지, <code>image_detections</code> 는 그 프레임의 검출 상자(bbox, 0~1 비율 좌표)다.
+  <br>🖼️ <b><code>image_base64</code> 는 대표 프레임</b>(최고 신뢰도, <code>media_is_primary</code>)에
+  <b>검출 상자(bbox)를 그려 넣은 이미지</b>다 — 받는 쪽이 좌표를 해석하지 않아도 발화 위치가 보인다.
+  <code>image_detections</code> 는 그 상자의 좌표 원본(0~1 비율)이다.
+  로그(<code>report_log.log_request</code>)에는 이미지 원본 대신 크기 표시만 남는다 —
+  파일은 디스크에 이미 있는데 재전송마다 DB 에 사본이 쌓이는 것을 막기 위해서다.
   실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없어 이미지 자체를 싣는다 (시연은 모의 접수 서버 대상).
   파일을 못 읽으면 둘 다 <code>null</code> 로 나가고 <b>신고는 그대로 진행된다</b>.
 </div>
@@ -1010,7 +1013,7 @@
         "event_class": "FLAME", "confidence": 0.9123,
         "first_detected_at": "2026-08-08T14:32:05",
         "reported_at": "2026-08-08T14:33:10",
-        "image_base64": "/9j/4AAQSkZJRg…(대표 프레임 JPEG, base64)",
+        "image_base64": "&lt;base64 152340자 생략 — 원본은 event_media 대표 프레임 파일&gt;",
         "image_detections": [
           { "cls": "flame", "conf": 0.910, "box": [0.238, 0.259, 0.047, 0.113] }
         ]

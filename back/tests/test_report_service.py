@@ -181,10 +181,39 @@ def test_start_report_accepts_2xx_without_body(monkeypatch):
 # 실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없어 이미지 자체를 싣는다.
 # 시연 대상이 모의 접수 서버라 가능한 결정 (2026-08-10, 슬라이드 12 ①).
 
-def test_payload_carries_bbox_image(monkeypatch, tmp_path):
-    """페이로드에 대표 프레임 이미지(base64)와 검출 상자 좌표가 실린다."""
+def test_payload_carries_bbox_drawn_image(monkeypatch, tmp_path):
+    """페이로드 이미지에는 검출 상자(bbox)가 그려져 있다 — DB 좌표로 그려서 보낸다.
+
+    받는 쪽(119)이 좌표를 해석하지 않아도 발화 위치가 보이는 이미지를 받는다
+    (슬라이드 12 ① "bbox 표시 화재 이미지"). 좌표 원본도 같이 실린다.
+    """
+    import io as _io
+
+    from PIL import Image
+
     monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
     calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-IMG"}))
+    event_no = make_event()
+    img_path = tmp_path / "events" / str(event_no) / "frame.jpg"
+    img_path.parent.mkdir(parents=True)
+    Image.new("RGB", (100, 100), (0, 0, 0)).save(img_path, "JPEG")
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/frame.jpg")
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    sent = Image.open(_io.BytesIO(base64.b64decode(payload["image_base64"]))).convert("RGB")
+    # 검은 원본 위에 상자 선이 그려졌으면 붉은 픽셀이 존재한다
+    reds = [px for px in sent.getdata() if px[0] > 150 and px[1] < 80 and px[2] < 80]
+    assert reds, "페이로드 이미지에 bbox 선이 없다"
+    assert payload["image_detections"] == [
+        {"cls": "flame", "conf": 0.91, "box": [0.238, 0.259, 0.047, 0.113]}]
+
+
+def test_payload_falls_back_to_raw_image_when_not_parseable(monkeypatch, tmp_path):
+    """이미지로 못 여는 파일이면 그리기를 포기하고 원본 그대로 보낸다 — 신고가 우선."""
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-RAW"}))
     event_no = make_event()
     img = tmp_path / "events" / str(event_no) / "frame.jpg"
     img.parent.mkdir(parents=True)
@@ -195,8 +224,6 @@ def test_payload_carries_bbox_image(monkeypatch, tmp_path):
 
     _, payload = calls[0]
     assert base64.b64decode(payload["image_base64"]) == b"\xff\xd8fake-jpeg-bytes"
-    assert payload["image_detections"] == [
-        {"cls": "flame", "conf": 0.91, "box": [0.238, 0.259, 0.047, 0.113]}]
 
 
 def test_report_goes_out_without_image_file(monkeypatch, tmp_path):
@@ -212,6 +239,32 @@ def test_report_goes_out_without_image_file(monkeypatch, tmp_path):
     _, payload = calls[0]
     assert payload["image_base64"] is None
     assert payload["image_detections"] is None
+
+
+def test_log_request_omits_image_bytes(monkeypatch, tmp_path):
+    """로그에는 이미지 원본을 남기지 않는다 — 크기 표시로 대체.
+
+    이미지 파일은 디스크(MEDIA_ROOT)에 이미 있다. 로그 행마다 base64 를
+    그대로 남기면 재전송 4회에 같은 이미지가 4번 DB 에 쌓인다.
+    """
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-LOGIMG"}))
+    event_no = make_event()
+    img = tmp_path / "events" / str(event_no) / "frame.jpg"
+    img.parent.mkdir(parents=True)
+    img.write_bytes(b"\xff\xd8fake-jpeg-bytes")
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/frame.jpg")
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    (log,) = db.query(
+        "SELECT * FROM report_log WHERE report_no = %s", (result["report_no"],))
+    logged = log["log_request"]["image_base64"]
+    assert "생략" in logged                      # 원본 대신 표시 문자열
+    assert len(logged) < 100                     # base64 원본이 아니다
+    # 검출 좌표는 작고 승계 판단에 유용하므로 로그에 그대로 남는다
+    assert log["log_request"]["image_detections"] == [
+        {"cls": "flame", "conf": 0.91, "box": [0.238, 0.259, 0.047, 0.113]}]
 
 
 # ---------- 신고 ID (멱등 키) ----------
