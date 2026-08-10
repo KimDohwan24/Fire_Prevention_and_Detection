@@ -8,6 +8,8 @@ from routes.event_routes import bp as event_bp
 from routes.alert_routes import bp as alert_bp
 from routes.agency_routes import bp as agency_bp
 from routes.report_routes import bp as report_bp
+from routes.internal_routes import bp as internal_bp
+from routes.media_routes import bp as media_bp
 
 
 def register_blueprints(app: Flask):
@@ -18,3 +20,6 @@ def register_blueprints(app: Flask):
     app.register_blueprint(alert_bp, url_prefix="/api/alerts")
     app.register_blueprint(agency_bp, url_prefix="/api/agencies")
     app.register_blueprint(report_bp, url_prefix="/api/reports")
+    app.register_blueprint(internal_bp, url_prefix="/api/internal")
+    # 미디어만 /api 아래가 아니다 — media_url 값이 곧 URL 이 되도록 /media 로 붙인다
+    app.register_blueprint(media_bp, url_prefix="/media")
