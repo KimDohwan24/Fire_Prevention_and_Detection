@@ -1,0 +1,15 @@
+# 추론 환경 (Python 3.11 — back/.venv 의 3.14 에는 torch 가 안 들어간다)
+#   py -3.11 -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+#
+# 클라우드 GPU 로 옮길 때는 torch 만 CUDA 빌드로 갈아끼우면 된다.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+ultralytics>=8.3
+opencv-python>=4.10
+requests>=2.32
+
+# best.pt 안에 albumentations 객체가 pickle 로 박혀 있어서, 추론만 할 때도 필요하다.
+# (학습 스크립트가 model.train(augmentations=...) 로 넘긴 객체가 체크포인트에 딸려 들어갔다)
+albumentations>=2.0
+
+pytest>=8.0
