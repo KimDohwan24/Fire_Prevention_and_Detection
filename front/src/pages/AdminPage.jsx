@@ -8,11 +8,15 @@ import {
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
   BadgeCheck, ChevronRight, Edit3, MapPin
 } from 'lucide-react';
-import { cctvApi } from '../api';
-import CctvPlayer from '../components/CctvPlayer';
 
 // 가상의 초기 CCTV 데이터
-const INITIAL_CCTVS = [];
+const INITIAL_CCTVS = [
+  { id: 'CCTV-01', name: '정문 주차장', status: 'normal', location: '1F 외부', lat: 37.5665, lng: 126.9780 },
+  { id: 'CCTV-02', name: '후문 분리수거장', status: 'normal', location: '1F 외부', lat: 37.5668, lng: 126.9785 },
+  { id: 'CCTV-03', name: 'A동 1층 로비', status: 'fire', location: 'A동 1F', lat: 37.5662, lng: 126.9790 },
+  { id: 'CCTV-04', name: 'B동 뒷골목', status: 'normal', location: 'B동 외곽', lat: 37.5670, lng: 126.9770 },
+  { id: 'CCTV-05', name: '옥상', status: 'offline', location: 'A동 R층', lat: 37.5655, lng: 126.9775 },
+];
 
 // 가상의 회원 목록 데이터 (상세 정보 확장)
 const INITIAL_USERS = [
@@ -101,7 +105,7 @@ const SYSTEM_LOGS = [
     confidence: 98,
     eventType: '화재/연기 감지',
     status: '조치중 (119 신고 완료)',
-    videoUrl: 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
     thumbnail: 'https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?w=800&auto=format&fit=crop&q=80',
     history: [
       { timestamp: '2026-08-08 14:45:00', event: 'AI 모듈 - 연기 및 불꽃 패턴 감지 (신뢰도 98%)' },
@@ -171,7 +175,7 @@ const SYSTEM_LOGS = [
     confidence: 72,
     eventType: '화재 의심 감지',
     status: '오탐지 해제',
-    videoUrl: 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4',
+    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
     thumbnail: 'https://images.unsplash.com/photo-1508873696983-2df515122519?w=800&auto=format&fit=crop&q=80',
     history: [
       { timestamp: '2026-08-07 18:20:00', event: 'AI 모듈 - 연기 패턴 감지 (신뢰도 72%)' },
@@ -203,7 +207,6 @@ const AdminPage = () => {
   const [selectedUser, setSelectedUser] = useState(null);
   const [editingCctv, setEditingCctv] = useState(null);
   const [isAddingCctv, setIsAddingCctv] = useState(false);
-  const [previewCctv, setPreviewCctv] = useState(null);
 
   useEffect(() => {
     const stored = localStorage.getItem('currentUser');
@@ -222,24 +225,6 @@ const AdminPage = () => {
     } else {
       navigate('/login');
     }
-
-    // 백엔드 CCTV 목록 로드
-    cctvApi.list().then(res => {
-      const items = res?.items || res || [];
-      if (Array.isArray(items) && items.length > 0) {
-        const mapped = items.map(item => ({
-          id: `CCTV-${String(item.cctv_no).padStart(2, '0')}`,
-          cctv_no: item.cctv_no,
-          name: item.cctv_name,
-          location: item.cctv_location,
-          status: item.cctv_status === 'ACTIVE' ? 'normal' : item.cctv_status === 'INACTIVE' ? 'offline' : 'fire',
-          lat: parseFloat(item.cctv_lat) || 37.5665,
-          lng: parseFloat(item.cctv_lng) || 126.9780,
-          stream_url: item.cctv_stream_url
-        }));
-        setCctvList(mapped);
-      }
-    }).catch(err => console.warn('CCTV 백엔드 로드 오류:', err));
   }, [navigate]);
 
   const handleLogout = () => {
@@ -507,14 +492,6 @@ const AdminPage = () => {
                           )}
                         </td>
                         <td className="p-4 text-center space-x-2 whitespace-nowrap">
-                          <button
-                            onClick={() => setPreviewCctv(cctv)}
-                            className="px-2.5 py-1 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors cursor-pointer inline-flex items-center gap-1 shadow-xs"
-                            title="실시간 비디오 스트림 팝업 보기"
-                          >
-                            <Play className="w-3.5 h-3.5 fill-current" />
-                            <span>실시간 스트림</span>
-                          </button>
                           <button
                             onClick={() => {
                               setEditingCctv({ ...cctv });
@@ -1268,80 +1245,9 @@ const AdminPage = () => {
           </div>
         </div>
       )}
-
-      {/* ------------------------------------------------------------- */}
-      {/* 팝업 모달 4: CCTV 실시간 스트리밍 영상 라이브 뷰어 모달 */}
-      {/* ------------------------------------------------------------- */}
-      {previewCctv && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs animate-in fade-in duration-200">
-          <div
-            className="bg-canvas border border-hairline rounded-2xl shadow-2xl flex flex-col overflow-hidden"
-            style={{ width: '640px', minWidth: '320px', maxWidth: '95vw' }}
-          >
-            {/* Header */}
-            <div className="px-6 py-4 border-b border-hairline flex items-center justify-between shrink-0 bg-canvas">
-              <div className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full bg-red-500 animate-ping" />
-                <div>
-                  <h3 className="text-heading-md font-bold text-ink">{previewCctv.name} 실시간 모니터링</h3>
-                  <p className="text-caption-sm text-mute font-mono">{previewCctv.id} · {previewCctv.location}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setPreviewCctv(null)}
-                className="p-1.5 text-mute hover:text-ink rounded-full transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Body */}
-            <div className="p-6 max-h-[75vh] overflow-y-auto space-y-4">
-              <CctvPlayer
-                streamUrl={previewCctv.stream_url || previewCctv.cctv_stream_url}
-                cctvName={previewCctv.name}
-                isFire={previewCctv.status === 'fire'}
-              />
-
-              <div className="bg-surface-soft p-4 rounded-xl border border-hairline space-y-2 text-xs">
-                <div className="flex justify-between items-center">
-                  <span className="text-mute font-medium">카메라 명칭:</span>
-                  <span className="text-ink font-bold">{previewCctv.name}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-mute font-medium">설치 위치:</span>
-                  <span className="text-ink font-semibold">{previewCctv.location}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-mute font-medium">GPS 위도/경도:</span>
-                  <span className="text-ink font-mono">{previewCctv.lat}, {previewCctv.lng}</span>
-                </div>
-                <div className="flex justify-between items-center pt-2 border-t border-hairline">
-                  <span className="text-mute font-medium">실시간 스트림 URL:</span>
-                  <span className="text-blue-500 font-mono text-[11px] truncate max-w-[320px]">
-                    {previewCctv.stream_url || previewCctv.cctv_stream_url || '자동 갱신 HLS 주소'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="px-6 py-4 border-t border-hairline bg-surface-soft flex items-center justify-between shrink-0">
-              <span className="text-xs text-mute">ITS 실시간 스트림 자동 토큰 갱신 지원</span>
-              <button
-                onClick={() => setPreviewCctv(null)}
-                className="px-5 h-10 rounded-full bg-primary text-on-primary text-body-sm font-medium hover:bg-ink-deep transition-colors cursor-pointer"
-              >
-                닫기
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
 
 export default AdminPage;
-
 
