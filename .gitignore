@@ -117,3 +117,9 @@ bin/
 *.sqlite
 *.sqlite3
 *.db
+
+# ===== 미디어 (검출 프레임/클립 실제 파일) =====
+# GET /media/<path> 로 서빙되는 저장소. 파일 자체는 커밋하지 않고
+# 디렉터리만 .gitkeep 으로 남긴다 ("media/" 로 통째 무시하면 negation 이 안 먹는다)
+media/*
+!media/.gitkeep
