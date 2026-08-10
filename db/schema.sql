@@ -3,6 +3,10 @@
 -- PostgreSQL 구축 스크립트  |  ERD v4 기반, 테이블 8개
 -- (report_log 는 ERD v4 에 없던 것 — 119 송수신 이력을 남기려고 추가했다)
 --
+-- ⚠️ 이 파일은 DB 를 처음부터 만드는 용도다. 아래 DROP SCHEMA 가
+--    fireguard 스키마를 통째로 지우므로 기존 데이터는 전부 사라진다.
+--    fireguard 스키마 안에 PostGIS 를 설치해 뒀다면 그 확장도 같이 날아간다.
+--    이미 쓰고 있는 DB 를 최신 구조로 맞추려면 db/migrations/ 의 파일을 쓸 것.
 --
 -- =====================================================
 DROP SCHEMA IF EXISTS fireguard CASCADE;
