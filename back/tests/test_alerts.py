@@ -3,7 +3,7 @@
 GET  /api/alerts                     내 알림 목록 (로그인 사용자 본인 것만)
 POST /api/alerts/<alert_no>/respond  알림 응답 (READ 화재확인 / CANCEL 오탐취소)
 """
-from conftest import make_alert, make_event
+from conftest import make_alert, make_alert_pair, make_event
 
 import db
 
@@ -182,6 +182,91 @@ def test_respond_already_responded_conflict(client, admin_headers):
                     headers=admin_headers, json={"action": "READ"})
     assert r.status_code == 409
     assert r.get_json()["code"] == "ALREADY_RESPONDED"
+
+
+# ---------- 형제 알림 동시 종료 ----------
+# 규칙: 확정 시 PUSH/SMS 두 알림이 동시에 나가므로 응답은 '이벤트 단위'로 적용된다.
+# 한쪽에 응답하면 같은 이벤트의 나머지 미응답 알림도 같은 상태·같은 응답 시각으로 닫는다.
+
+def test_respond_read_closes_sibling_alert(client, admin_headers):
+    """PUSH 에 READ 하면 같은 이벤트의 SMS 알림도 READ + 같은 응답 시각으로 닫힌다."""
+    event_no = make_event()
+    push_no, sms_no = make_alert_pair(event_no)
+
+    r = client.post(f"/api/alerts/{push_no}/respond",
+                    headers=admin_headers, json={"action": "READ"})
+    assert r.status_code == 200
+
+    rows = {row["alert_no"]: row for row in db.query(
+        "SELECT * FROM alert WHERE event_no = %s", (event_no,))}
+    assert rows[push_no]["alert_status"] == "READ"
+    assert rows[sms_no]["alert_status"] == "READ"
+    assert rows[sms_no]["alert_responded_at"] is not None
+    assert rows[sms_no]["alert_responded_at"] == rows[push_no]["alert_responded_at"]
+
+
+def test_respond_cancel_closes_sibling_alert(client, admin_headers):
+    """PUSH 에 CANCEL 하면 같은 이벤트의 SMS 알림도 CANCELED 로 닫힌다."""
+    event_no = make_event()
+    push_no, sms_no = make_alert_pair(event_no, deadline_offset_sec=180)
+
+    r = client.post(f"/api/alerts/{push_no}/respond",
+                    headers=admin_headers, json={"action": "CANCEL"})
+    assert r.status_code == 200
+
+    rows = {row["alert_no"]: row for row in db.query(
+        "SELECT * FROM alert WHERE event_no = %s", (event_no,))}
+    assert rows[push_no]["alert_status"] == "CANCELED"
+    assert rows[sms_no]["alert_status"] == "CANCELED"
+    assert rows[sms_no]["alert_responded_at"] == rows[push_no]["alert_responded_at"]
+
+
+def test_respond_to_sibling_after_read_conflicts(client, admin_headers):
+    """PUSH 를 READ 한 뒤 SMS 알림에 다시 응답하면 409 ALREADY_RESPONDED."""
+    event_no = make_event()
+    push_no, sms_no = make_alert_pair(event_no)
+
+    r = client.post(f"/api/alerts/{push_no}/respond",
+                    headers=admin_headers, json={"action": "READ"})
+    assert r.status_code == 200
+
+    r = client.post(f"/api/alerts/{sms_no}/respond",
+                    headers=admin_headers, json={"action": "READ"})
+    assert r.status_code == 409
+    assert r.get_json()["code"] == "ALREADY_RESPONDED"
+
+
+def test_sibling_in_no_response_keeps_status_but_records_responded_at(
+        client, admin_headers):
+    """NO_RESPONSE 인 형제는 상태를 보존하고 응답 시각만 기록한다 (신고 이력 보존)."""
+    event_no = make_event()
+    push_no, sms_no = make_alert_pair(event_no, sms_status="NO_RESPONSE")
+
+    r = client.post(f"/api/alerts/{push_no}/respond",
+                    headers=admin_headers, json={"action": "READ"})
+    assert r.status_code == 200
+    assert r.get_json()["alert_status"] == "READ"
+
+    sms_row = db.query_one("SELECT * FROM alert WHERE alert_no = %s", (sms_no,))
+    assert sms_row["alert_status"] == "NO_RESPONSE"  # READ 로 덮어쓰지 않는다
+    assert sms_row["alert_responded_at"] is not None
+
+
+def test_respond_does_not_touch_other_events_alerts(client, admin_headers):
+    """형제 종료는 같은 이벤트에만 적용된다 — 다른 이벤트의 알림은 그대로."""
+    event_a = make_event(cctv_no=1)
+    event_b = make_event(cctv_no=2)
+    push_a, _ = make_alert_pair(event_a)
+    make_alert_pair(event_b)
+
+    r = client.post(f"/api/alerts/{push_a}/respond",
+                    headers=admin_headers, json={"action": "READ"})
+    assert r.status_code == 200
+
+    rows = db.query(
+        "SELECT * FROM alert WHERE event_no = %s ORDER BY alert_no", (event_b,))
+    assert [row["alert_status"] for row in rows] == ["SENT", "SENT"]
+    assert all(row["alert_responded_at"] is None for row in rows)
 
 
 def test_respond_someone_elses_alert_forbidden(client, admin_headers):

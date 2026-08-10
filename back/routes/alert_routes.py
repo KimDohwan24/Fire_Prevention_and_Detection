@@ -3,14 +3,18 @@
 GET  /api/alerts                     내 알림 목록
 POST /api/alerts/<alert_no>/respond  알림 응답 (READ 화재확인 / CANCEL 오탐취소)
 """
+import logging
+
 from flask import Blueprint, g, jsonify, request
 
 import db
 from auth import login_required
 from errors import ApiError
+from services import report_service
 from utils.pagination import get_page_params, paged_response
 
 bp = Blueprint("alerts", __name__)
+logger = logging.getLogger("fireguard.alerts")
 
 
 @bp.get("")
@@ -53,7 +57,13 @@ def respond_alert(alert_no: int):
     if action not in ("READ", "CANCEL"):
         raise ApiError(400, "BAD_REQUEST", "action 은 READ 또는 CANCEL 이어야 합니다.")
 
-    alert = db.query_one("SELECT * FROM alert WHERE alert_no = %s", (alert_no,))
+    alert = db.query_one(
+        """
+        SELECT alert_no, event_no, user_no, alert_status, alert_responded_at
+        FROM alert WHERE alert_no = %s
+        """,
+        (alert_no,),
+    )
     if not alert:
         raise ApiError(404, "ALERT_NOT_FOUND", "알림을 찾을 수 없습니다.")
     if alert["user_no"] != g.user["user_no"]:
@@ -77,13 +87,44 @@ def respond_alert(alert_no: int):
         new_status = "NO_RESPONSE"
     else:
         new_status = "READ" if action == "READ" else "CANCELED"
-    row = db.execute_returning(
-        """
-        UPDATE alert
-        SET alert_status = %s, alert_responded_at = now()
-        WHERE alert_no = %s
-        RETURNING alert_no, alert_status, alert_responded_at
-        """,
-        (new_status, alert_no),
-    )
+
+    # 응답은 '이벤트 단위'로 적용된다.
+    # 확정 시 PUSH/SMS 두 알림이 동시에 나가는데 둘 다 같은 사람의 같은 화재 건이므로,
+    # 한쪽에 응답하면 같은 이벤트의 나머지 미응답 알림도 같은 상태·같은 시각으로 닫는다.
+    # (NO_RESPONSE 형제는 신고 이력 보존을 위해 상태를 유지하고 응답 시각만 기록)
+    with db.get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE alert
+            SET alert_status = %s, alert_responded_at = now()
+            WHERE alert_no = %s
+            RETURNING alert_no, alert_status, alert_responded_at
+            """,
+            (new_status, alert_no),
+        )
+        row = dict(cur.fetchone())
+        cur.execute(
+            """
+            UPDATE alert
+            SET alert_status = CASE WHEN alert_status = 'NO_RESPONSE'
+                                    THEN 'NO_RESPONSE' ELSE %s END,
+                alert_responded_at = %s
+            WHERE event_no = %s
+              AND alert_no <> %s
+              AND alert_responded_at IS NULL
+              AND alert_status IN ('SENT', 'NO_RESPONSE')
+            """,
+            (new_status, row["alert_responded_at"], alert["event_no"], alert_no),
+        )
+
+    if action == "READ" and alert["alert_status"] == "SENT":
+        # D4: 사용자가 화재를 확인하면 즉시 119 신고를 시작한다.
+        # (NO_RESPONSE 알림의 늦은 READ 는 제외 — 에스컬레이션이 이미 신고를 처리했다)
+        # 신고 로직이 실패해도 알림 응답 자체는 성공해야 하므로 예외는 삼킨다.
+        try:
+            report_service.start_report(alert["event_no"], "USER_CONFIRMED")
+        except Exception:
+            logger.exception("화재 확인 신고 시작 실패 (alert_no=%s, event_no=%s)",
+                             alert_no, alert["event_no"])
+
     return jsonify(row)
