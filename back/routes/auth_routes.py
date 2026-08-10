@@ -18,8 +18,10 @@ def login():
     body = request.get_json(silent=True) or {}
     user_id = body.get("user_id")
     user_pw = body.get("user_pw")
-    if not user_id or not user_pw:
-        raise ApiError(400, "BAD_REQUEST", "user_id 와 user_pw 는 필수입니다.")
+    # 어느 칸이 비었는지 프론트가 알 수 있게 필드별로 나눠서 던진다
+    for name, value in (("user_id", user_id), ("user_pw", user_pw)):
+        if not value:
+            raise ApiError(400, "BAD_REQUEST", f"{name} 는 필수입니다.", field=name)
 
     # 필요한 컬럼만 읽는다 (SELECT * 면 주소·연락처 등 로그인에 불필요한 값까지 딸려온다)
     user = db.query_one(
