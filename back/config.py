@@ -41,8 +41,11 @@ EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "60"))
 # 화재는 초 단위로 번지므로 유예를 분 단위로 잡을 여유가 없다.
 ALERT_DEADLINE_SEC = int(os.getenv("ALERT_DEADLINE_SEC", "30"))
 
-# 에스컬레이션 스윕 주기(초): 스케줄러가 이 간격으로 run_escalation_tick 을 돌린다
-ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "10"))
+# 에스컬레이션 스윕 주기(초): 스케줄러가 이 간격으로 run_escalation_tick 을 돌린다.
+# 유예 마감 초과가 실제 신고로 이어지기까지 최대 이만큼 늦어지므로,
+# 30초 유예에 대해 실제 유예는 30~35초가 된다. ALERT_DEADLINE_SEC 를 줄이면
+# 이 값도 같이 줄여야 실제 유예가 의도한 값에서 크게 벗어나지 않는다.
+ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "5"))
 
 # 119 신고: 한 기관에 최대 몇 번 전송을 시도하나 (안쪽 루프, report_attempt_count)
 MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))

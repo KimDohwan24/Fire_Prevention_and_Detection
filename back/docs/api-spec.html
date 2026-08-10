@@ -710,7 +710,7 @@
   </tr>
 </table>
 
-<p>무응답 처리는 백엔드 스케줄러가 <code>ESCALATION_INTERVAL_SEC</code>(기본 10초)마다 도는
+<p>무응답 처리는 백엔드 스케줄러가 <code>ESCALATION_INTERVAL_SEC</code>(기본 5초)마다 도는
 에스컬레이션 스윕이 담당한다. 프론트가 호출할 API 는 없다.
 스윕은 관측 창이 닫히도록 임계값을 못 채운 <code>PENDING</code> 이벤트를
 <code>DISMISSED</code>로 정리하는 일도 함께 한다.</p>
@@ -1197,7 +1197,7 @@ Content-Type: application/json
   <tr><td><code>EVENT_THRESHOLD_FRAMES</code></td><td><code>30</code></td><td>화재 확정에 필요한 누적 프레임 수. 새 이벤트 생성 시 <code>event_threshold_frames</code>로 복사된다</td></tr>
   <tr><td><code>EVENT_WINDOW_SEC</code></td><td><code>60</code></td><td>관측 창 길이(초). <b>최초 감지 시각 기준으로 고정</b>되며 이후 검출로 연장되지 않는다. 이 시간 안에 임계 프레임 수를 못 채운 <code>PENDING</code> 이벤트는 <code>DISMISSED</code> 처리</td></tr>
   <tr><td><code>ALERT_DEADLINE_SEC</code></td><td><code>30</code></td><td>알림 응답 유예(초). <code>alert_deadline_at = alert_sent_at +</code> 이 값</td></tr>
-  <tr><td><code>ESCALATION_INTERVAL_SEC</code></td><td><code>10</code></td><td>무응답 에스컬레이션 스윕 주기(초). 마감 초과가 실제로 신고로 이어지기까지 최대 이만큼 지연될 수 있다</td></tr>
+  <tr><td><code>ESCALATION_INTERVAL_SEC</code></td><td><code>5</code></td><td>무응답 에스컬레이션 스윕 주기(초). 마감 초과가 실제로 신고로 이어지기까지 최대 이만큼 지연되므로, 30초 유예에 대해 <b>실제 유예는 30~35초</b>가 된다</td></tr>
   <tr><td><code>MAX_REPORT_ATTEMPTS</code></td><td><code>4</code></td><td>119 신고에서 <b>한 기관에</b> 최대 몇 번 전송을 시도하나 (<code>report_attempt_count</code>의 상한)</td></tr>
   <tr><td><code>REPORT_HTTP_TIMEOUT_SEC</code></td><td><code>3</code></td><td>기관 <code>agency_endpoint</code> 전송 HTTP 타임아웃(초). 초과하면 1회 실패로 계산</td></tr>
   <tr><td><code>MEDIA_ROOT</code></td><td>프로젝트 루트의 <code>media/</code></td><td><code>GET /media/&lt;path&gt;</code>가 파일을 찾는 루트 디렉터리</td></tr>
