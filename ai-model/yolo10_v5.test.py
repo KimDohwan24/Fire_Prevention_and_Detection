@@ -44,7 +44,7 @@ class YOLOv10FireTrainer:
     def __init__(
         self,
         model_name="yolov10n.pt",
-        yaml_path="./dataset/data.yaml",
+        yaml_path="./data.yaml",
         image_size=640,
         epochs=30,
         batch=8,
