@@ -154,9 +154,9 @@ def process_detection(cctv_no: int, captured_at: datetime,
         # 프레임 미디어 저장 (검출 목록은 원본 그대로 jsonb 로)
         cur.execute(
             """
-            INSERT INTO event_media (event_no, media_type, media_url, media_detections,
+            INSERT INTO event_media (event_no, media_url, media_detections,
                                      media_confidence, media_captured_at)
-            VALUES (%s, 'FRAME', %s, %s::jsonb, %s, %s)
+            VALUES (%s, %s, %s::jsonb, %s, %s)
             RETURNING media_no
             """,
             (event["event_no"], media_url, json.dumps(detections),

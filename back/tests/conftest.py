@@ -27,7 +27,8 @@ SCHEMA_SQL = Path(__file__).resolve().parents[2] / "db" / "schema.sql"
 PW = "Guard#2026"
 PW_HASH = bcrypt.hashpw(PW.encode(), bcrypt.gensalt(rounds=4)).decode()
 
-TABLES = ["report_119", "alert", "event_media", "fire_event", "cctv", "agency", "users"]
+TABLES = ["report_log", "report_119", "alert", "event_media", "fire_event",
+          "cctv", "agency", "users"]
 
 
 def _admin_conn(dbname: str):
@@ -209,35 +210,34 @@ def make_event(cctv_no=1, status="CONFIRMED", event_class="FLAME",
     return row["event_no"]
 
 
-def make_media(event_no, media_type="FRAME", is_primary=False, url=None,
-               confidence=0.9123):
+def make_media(event_no, is_primary=False, url=None, confidence=0.9123):
     row = db.execute_returning(
         """
-        INSERT INTO event_media (event_no, media_type, media_url, media_detections,
+        INSERT INTO event_media (event_no, media_url, media_detections,
                                  media_confidence, media_captured_at, media_is_primary)
-        VALUES (%s, %s, %s,
+        VALUES (%s, %s,
                 '[{"cls":"flame","conf":0.91,"box":[0.238,0.259,0.047,0.113]}]'::jsonb,
                 %s, now(), %s)
         RETURNING media_no
         """,
-        (event_no, media_type, url or f"/media/events/{event_no}/f.jpg",
+        (event_no, url or f"/media/events/{event_no}/f.jpg",
          confidence, is_primary),
     )
     return row["media_no"]
 
 
-def make_alert(event_no, user_no=1, level=1, channel="PUSH", status="SENT",
+def make_alert(event_no, user_no=1, channel="PUSH", status="SENT",
                deadline_offset_sec=180, responded=False):
     row = db.execute_returning(
         """
-        INSERT INTO alert (event_no, user_no, alert_level, alert_channel, alert_status,
+        INSERT INTO alert (event_no, user_no, alert_channel, alert_status,
                            alert_sent_at, alert_deadline_at, alert_responded_at)
-        VALUES (%s, %s, %s, %s, %s, now(),
+        VALUES (%s, %s, %s, %s, now(),
                 now() + (%s || ' seconds')::interval,
                 CASE WHEN %s THEN now() ELSE NULL END)
         RETURNING alert_no
         """,
-        (event_no, user_no, level, channel, status, deadline_offset_sec, responded),
+        (event_no, user_no, channel, status, deadline_offset_sec, responded),
     )
     return row["alert_no"]
 
@@ -256,13 +256,13 @@ def make_alert_pair(event_no, user_no=1, status="SENT", sms_status=None,
     return push_no, sms_no
 
 
-def make_report(event_no, agency_no=1, sequence=1, status="DISPATCHED"):
+def make_report(event_no, agency_no=1, sequence=1, status="ACCEPTED"):
     row = db.execute_returning(
         """
         INSERT INTO report_119 (event_no, agency_no, report_sequence, report_external_id,
                                 report_trigger_reason, report_status, report_address,
                                 report_distance_km, report_attempt_count,
-                                reported_at, report_dispatched_at)
+                                reported_at, report_accepted_at)
         VALUES (%s, %s, %s, 'R-TEST-001', 'NO_RESPONSE_TIMEOUT', %s,
                 '서울시 종로구 세종대로 1', 1.234, 1, now(), now())
         RETURNING report_no

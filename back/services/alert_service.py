@@ -8,7 +8,7 @@
 - 전달: SMS 는 여기서 실제로 보내고, PUSH 는 프론트 폴링이 알림 목록에서 가져간다.
 - 마감: alert_deadline_at = alert_sent_at + ALERT_DEADLINE_SEC 초. 두 행이 동일하다.
   이 유예까지 무응답이면 에스컬레이션이 두 알림을 NO_RESPONSE 로 닫고 119 로 넘긴다.
-- alert_level 컬럼은 스키마 호환을 위해 남겨두고 항상 1 을 쓴다.
+- 승격 단계는 폐기됐고 alert_level 컬럼도 2026-08-10 삭제됐다.
 - 점검 모드(event_is_test) 이벤트는 어떤 알림도 만들지 않는다.
 """
 import logging
@@ -66,11 +66,11 @@ def send_alerts(event_no: int) -> list[int] | None:
     with db.get_cursor(commit=True) as cur:
         cur.execute(
             """
-            INSERT INTO alert (event_no, user_no, alert_level, alert_channel,
+            INSERT INTO alert (event_no, user_no, alert_channel,
                                alert_status, alert_sent_at, alert_deadline_at)
-            VALUES (%(event_no)s, %(user_no)s, 1, 'PUSH', 'SENT',
+            VALUES (%(event_no)s, %(user_no)s, 'PUSH', 'SENT',
                     now(), now() + make_interval(secs => %(secs)s)),
-                   (%(event_no)s, %(user_no)s, 1, 'SMS', 'SENT',
+                   (%(event_no)s, %(user_no)s, 'SMS', 'SENT',
                     now(), now() + make_interval(secs => %(secs)s))
             RETURNING alert_no
             """,

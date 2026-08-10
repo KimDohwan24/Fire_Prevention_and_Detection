@@ -14,8 +14,12 @@
   더 시도할 기관이 없으면 마지막 행만 FAILED(전송실패).
 - 점검 모드(event_is_test) 이벤트는 신고하지 않는다.
 """
+import base64
+import json
 import logging
+import time
 from datetime import datetime
+from pathlib import Path
 
 import psycopg2.errors
 import requests
@@ -27,7 +31,20 @@ from utils.geo import haversine_km
 logger = logging.getLogger("fireguard.report")
 
 # 진행 중으로 간주하는 상태 (부분 유니크 인덱스와 동일한 집합)
-ACTIVE_STATUSES = ("SENDING", "DISPATCHED")
+ACTIVE_STATUSES = ("SENDING", "ACCEPTED")
+
+
+def report_uid(event_no: int) -> str:
+    """119 에 보내는 신고 ID — 화재(이벤트) 하나에 하나.
+
+    재전송에도 승계에도 같은 값이라, 받는 쪽이 "아까 그 신고"임을 알 수 있다.
+    재전송은 상대가 못 받았다는 뜻이 아니라 응답이 안 왔다는 뜻일 뿐이다.
+    ID 가 없으면 3초 타임아웃 뒤 재전송한 4건이 같은 화재에 대한 출동 4건이 된다.
+
+    event_no 에서 바로 만든다 — 컬럼을 새로 두지 않아도 언제든 같은 값이 나오고,
+    로그에서 신고 ID 만 보고 이벤트를 찾을 수 있다.
+    """
+    return f"FG-{event_no}"
 
 
 def _real_post_report(endpoint: str, payload: dict) -> requests.Response:
@@ -48,13 +65,115 @@ def _post_report(endpoint: str, payload: dict) -> requests.Response:
     return _real_post_report(endpoint, payload)
 
 
+def _log_attempt(report_no: int, attempt: int, endpoint: str, request_body: dict,
+                 sent_at: datetime, elapsed_ms: int, result: str,
+                 http_status: int | None, response_body, error: str | None) -> None:
+    """전송 1회를 report_log 에 그대로 남긴다 (요구사항 N-04).
+
+    report_119 는 결과 요약만 갖고 있어서, 사후에 "몇 시에 뭘 보냈고 뭐라고
+    답이 왔는지"를 따질 수 없었다. 승계 판단의 근거도 여기 남는다.
+
+    이미지(base64)만은 예외로 생략한다 — 원본이 디스크(MEDIA_ROOT)에 있는데
+    로그 행마다 그대로 남기면 재전송 4회에 같은 이미지가 4번 DB 에 쌓인다.
+    검출 좌표(image_detections)는 작고 승계 판단에 유용해 그대로 남긴다.
+    """
+    if request_body.get("image_base64"):
+        request_body = dict(
+            request_body,
+            image_base64=f"<base64 {len(request_body['image_base64'])}자 생략"
+                         " — 원본은 event_media 대표 프레임 파일>",
+        )
+    db.execute(
+        """
+        INSERT INTO report_log (report_no, log_attempt, log_endpoint, log_request,
+                                log_result, log_http_status, log_response,
+                                log_error, log_elapsed_ms, log_sent_at)
+        VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s, %s)
+        """,
+        (report_no, attempt, endpoint, json.dumps(request_body), result, http_status,
+         None if response_body is None else json.dumps(response_body),
+         None if error is None else error[:500], elapsed_ms, sent_at),
+    )
+
+
+def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
+    """검출 상자(bbox)를 이미지에 그려 넣는다 — 받는 쪽이 좌표를 몰라도 되게.
+
+    좌표는 media_detections 의 YOLO xywhn(중심 x·y, 폭, 높이 — 0~1 비율).
+    화재 클래스(flame/smoke)만 그린다. 어떤 이유로든 실패하면 원본을 그대로
+    돌려준다 — 이미지 때문에 신고가 막히면 안 된다.
+    """
+    try:
+        import io
+
+        from PIL import Image, ImageDraw
+
+        im = Image.open(io.BytesIO(content)).convert("RGB")
+        draw = ImageDraw.Draw(im)
+        width, height = im.size
+        drew = False
+        for det in detections or []:
+            if not isinstance(det, dict) or det.get("cls") not in ("flame", "smoke"):
+                continue
+            box = det.get("box") or []
+            if len(box) != 4:
+                continue
+            cx, cy, w, h = (float(v) for v in box)
+            x1, y1 = (cx - w / 2) * width, (cy - h / 2) * height
+            x2, y2 = (cx + w / 2) * width, (cy + h / 2) * height
+            draw.rectangle([x1, y1, x2, y2], outline=(220, 30, 30),
+                           width=max(2, width // 300))
+            drew = True
+        if not drew:
+            return content
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=90)
+        return out.getvalue()
+    except Exception as exc:                       # noqa: BLE001
+        logger.warning("bbox 그리기 실패 — 원본 이미지로 전송: %s", exc)
+        return content
+
+
+def _primary_frame(event_no: int) -> tuple[str | None, list | None]:
+    """대표 프레임(media_is_primary)의 이미지(base64)와 검출 상자 좌표를 가져온다.
+
+    실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없으므로 이미지 자체를
+    페이로드에 싣는다. 이미지에는 검출 상자를 그려 넣는다. 파일이 없거나 못
+    읽으면 (None, None) — 이미지는 곁들이고 신고가 본체라, 이미지 때문에
+    신고가 막히면 안 된다.
+    """
+    row = db.query_one(
+        """
+        SELECT media_url, media_detections FROM event_media
+        WHERE event_no = %s AND media_is_primary
+        """,
+        (event_no,),
+    )
+    if row is None or not row["media_url"]:
+        return None, None
+    prefix = "/media/"
+    url = row["media_url"]
+    if not url.startswith(prefix):
+        logger.warning("대표 프레임 경로 형식이 예상과 다름 — 이미지 없이 신고 (event_no=%s, url=%s)",
+                       event_no, url)
+        return None, None
+    try:
+        content = (Path(config.MEDIA_ROOT) / url[len(prefix):]).read_bytes()
+    except OSError as exc:
+        logger.warning("대표 프레임 파일 읽기 실패 — 이미지 없이 신고 (event_no=%s): %s",
+                       event_no, exc)
+        return None, None
+    content = _draw_bboxes(content, row["media_detections"])
+    return base64.b64encode(content).decode("ascii"), row["media_detections"]
+
+
 def _find_active_report(event_no: int) -> dict | None:
-    """이벤트의 진행 중(SENDING/DISPATCHED) 신고를 찾는다."""
+    """이벤트의 진행 중(SENDING/ACCEPTED) 신고를 찾는다."""
     return db.query_one(
         """
         SELECT r.report_no, r.event_no, r.agency_no, ag.agency_name,
                r.report_sequence, r.report_status, r.report_external_id,
-               r.report_trigger_reason, r.reported_at, r.report_dispatched_at
+               r.report_trigger_reason, r.reported_at, r.report_accepted_at
         FROM report_119 r
         JOIN agency ag ON ag.agency_no = r.agency_no
         WHERE r.event_no = %s AND r.report_status IN %s
@@ -70,7 +189,7 @@ def _report_info(report_no: int) -> dict:
         SELECT r.report_no, r.event_no, r.agency_no, ag.agency_name,
                r.report_sequence, r.report_status, r.report_external_id,
                r.report_trigger_reason, r.report_distance_km,
-               r.report_attempt_count, r.reported_at, r.report_dispatched_at
+               r.report_attempt_count, r.reported_at, r.report_accepted_at
         FROM report_119 r
         JOIN agency ag ON ag.agency_no = r.agency_no
         WHERE r.report_no = %s
@@ -83,7 +202,7 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
                     trigger_reason: str, is_last: bool) -> dict | None:
     """한 기관에 대해 신고 행 생성 + 최대 MAX_REPORT_ATTEMPTS 회 전송을 시도한다.
 
-    반환: 최종 신고 정보 dict. 상태가 DISPATCHED(또는 동시성 가드로 찾은 기존
+    반환: 최종 신고 정보 dict. 상태가 ACCEPTED(또는 동시성 가드로 찾은 기존
     활성 신고)면 호출자는 승계를 멈춘다. NO_RESPONSE 면 다음 기관으로 넘어간다.
     """
     # 1) 행을 먼저 SENDING 으로 INSERT — 유니크 인덱스 슬롯 선점 (동시성 가드)
@@ -108,7 +227,7 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
             """
             SELECT r.report_no, r.event_no, r.agency_no, ag.agency_name,
                    r.report_sequence, r.report_status, r.report_external_id,
-                   r.report_trigger_reason, r.reported_at, r.report_dispatched_at
+                   r.report_trigger_reason, r.reported_at, r.report_accepted_at
             FROM report_119 r
             JOIN agency ag ON ag.agency_no = r.agency_no
             WHERE r.event_no = %s AND r.report_status IN %s
@@ -119,45 +238,74 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
 
     # 2) 안쪽 루프: 같은 기관에 최대 MAX_REPORT_ATTEMPTS 회 전송
     payload = {
+        # 신고 ID — 재전송·승계 내내 같은 값. 받는 쪽의 중복 접수 방지 키다.
+        "report_uid": report_uid(event["event_no"]),
         "event_no": event["event_no"],
         "address": event["cctv_location"],
         "lat": float(event["cctv_lat"]),
         "lng": float(event["cctv_lng"]),
         "event_class": event["event_class"],
         "confidence": float(event["event_confidence"]),
+        # 최초 검출 시각 — 유예 30초 + 승계가 겹치면 신고가 검출보다 1분 이상
+        # 늦을 수 있다. 소방 입장에선 신고 시각이 아니라 발화 시점이 중요하다.
+        "first_detected_at": event["event_first_detected_at"].isoformat(timespec="seconds")
+        if event.get("event_first_detected_at") else None,
         "reported_at": datetime.now().isoformat(timespec="seconds"),
+        # 대표 프레임(bbox 검출 좌표 포함) — 접수 서버가 화면에 띄울 수 있게 싣는다
+        "image_base64": event["image_base64"],
+        "image_detections": event["image_detections"],
     }
     max_attempts = config.MAX_REPORT_ATTEMPTS
+    endpoint = agency["agency_endpoint"]
     for attempt in range(1, max_attempts + 1):
+        sent_at = datetime.now()
+        started = time.monotonic()
+        http_status = body = error = None
         try:
-            resp = _post_report(agency["agency_endpoint"], payload)
-            ok = 200 <= resp.status_code < 300
+            resp = _post_report(endpoint, payload)
+        except requests.exceptions.Timeout as exc:
+            # 응답이 없었을 뿐, 상대는 접수했을 수도 있다 — 연결 실패와 뜻이 다르다
+            result, ok, error = "TIMEOUT", False, str(exc)
+            logger.warning("신고 응답 없음 (report_no=%s, attempt=%s/%s): %s",
+                           report_no, attempt, max_attempts, exc)
         except requests.exceptions.RequestException as exc:
-            # 타임아웃/연결 실패 등 전송 계층 실패 — 거절과 동일하게 재시도
+            # 연결 실패 등 — 전송 자체가 안 됐다
+            result, ok, error = "ERROR", False, str(exc)
             logger.warning("신고 전송 실패 (report_no=%s, attempt=%s/%s): %s",
                            report_no, attempt, max_attempts, exc)
-            ok = False
         else:
+            http_status = resp.status_code
+            ok = 200 <= http_status < 300
+            result = "ACCEPTED" if ok else "REJECTED"
+            try:
+                body = resp.json()
+            except (ValueError, AttributeError):
+                body = None       # 본문 없는 2xx 도 성공으로 본다
             if not ok:
                 logger.warning("신고 거절 응답 %s (report_no=%s, attempt=%s/%s)",
-                               resp.status_code, report_no, attempt, max_attempts)
+                               http_status, report_no, attempt, max_attempts)
+
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        try:
+            _log_attempt(report_no, attempt, endpoint, payload, sent_at,
+                         elapsed_ms, result, http_status, body, error)
+        except Exception:
+            # 증거를 남기려다 신고를 막으면 본말전도다
+            logger.exception("송수신 로그 기록 실패 — 신고는 계속한다 "
+                             "(report_no=%s, attempt=%s)", report_no, attempt)
 
         if ok:
-            # 2xx 성공 — 본문의 external_id 는 있으면 저장 (없는 2xx 도 성공)
-            try:
-                external_id = resp.json().get("external_id")
-            except (ValueError, AttributeError):
-                external_id = None
+            external_id = body.get("external_id") if isinstance(body, dict) else None
             db.execute(
                 """
                 UPDATE report_119
-                SET report_status = 'DISPATCHED', report_external_id = %s,
-                    report_dispatched_at = now(), report_attempt_count = %s
+                SET report_status = 'ACCEPTED', report_external_id = %s,
+                    report_accepted_at = now(), report_attempt_count = %s
                 WHERE report_no = %s
                 """,
                 (external_id, attempt, report_no),
             )
-            logger.info("119 출동 접수 (report_no=%s, agency=%s, attempt=%s)",
+            logger.info("119 접수 확인 (report_no=%s, agency=%s, attempt=%s)",
                         report_no, agency["agency_name"], attempt)
             return _report_info(report_no)
 
@@ -185,11 +333,12 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
     - trigger_reason: 'USER_CONFIRMED'(사용자 화재 확인) 또는
       'NO_RESPONSE_TIMEOUT'(무응답 에스컬레이션).
     - 반환: 최종 신고 정보 dict. 점검 모드 이벤트/이벤트 없음/활성 기관 없음이면 None.
-    - 멱등: 이미 진행 중(SENDING/DISPATCHED) 신고가 있으면 그 정보를 그대로 돌려준다.
+    - 멱등: 이미 진행 중(SENDING/ACCEPTED) 신고가 있으면 그 정보를 그대로 돌려준다.
     """
     event = db.query_one(
         """
         SELECT e.event_no, e.event_class, e.event_confidence, e.event_is_test,
+               e.event_first_detected_at,
                c.cctv_location, c.cctv_lat, c.cctv_lng
         FROM fire_event e
         JOIN cctv c ON c.cctv_no = e.cctv_no
@@ -210,6 +359,9 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
         logger.info("이미 진행 중인 신고 반환 (event_no=%s, report_no=%s)",
                     event_no, existing["report_no"])
         return existing
+
+    # 대표 프레임은 이벤트 단위 — 재전송·승계 내내 같으니 한 번만 읽는다
+    event["image_base64"], event["image_detections"] = _primary_frame(event_no)
 
     # 후보 기관: 활성 기관을 CCTV 좌표 기준 거리 오름차순으로
     agencies = db.query(
@@ -237,7 +389,7 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
         if result is None:
             continue
         if result["report_status"] in ACTIVE_STATUSES:
-            # DISPATCHED 성공, 또는 동시성 가드가 찾은 기존 활성 신고 — 승계 종료
+            # ACCEPTED 성공, 또는 동시성 가드가 찾은 기존 활성 신고 — 승계 종료
             return result
     # 전 기관 소진 — 마지막 행(FAILED) 정보를 돌려준다
     return result

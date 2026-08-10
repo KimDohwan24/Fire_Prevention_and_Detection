@@ -159,20 +159,17 @@
   <tr><td><code>cctv_status</code></td><td><code>ACTIVE</code>(정상) · <code>INACTIVE</code>(중지) · <code>ERROR</code>(오류)</td></tr>
   <tr><td><code>event_status</code></td><td><code>PENDING</code>(판정중 — 프레임 누적 중) · <code>CONFIRMED</code>(확정) · <code>DISMISSED</code>(기준미달)</td></tr>
   <tr><td><code>event_class</code></td><td><code>FLAME</code>(불꽃) · <code>SMOKE</code>(연기) · <code>FLAME_SMOKE</code>(둘다)</td></tr>
-  <tr><td><code>media_type</code></td><td><code>FRAME</code>(프레임 이미지) · <code>CLIP</code>(영상 클립)</td></tr>
-  <tr><td><code>alert_level</code></td><td><code>1</code> — <b>항상 1</b>. 단계 승격 개념이 없어졌다 (아래 주의 참고)</td></tr>
   <tr><td><code>alert_channel</code></td><td><code>PUSH</code>(앱알림) · <code>SMS</code>(문자)</td></tr>
   <tr><td><code>alert_status</code></td><td><code>SENT</code>(발송) · <code>READ</code>(확인) · <code>CANCELED</code>(취소) · <code>NO_RESPONSE</code>(무응답)</td></tr>
-  <tr><td><code>report_status</code></td><td><code>SENDING</code>(전송중) · <code>DISPATCHED</code>(출동접수) · <code>NO_RESPONSE</code>(무응답으로 승계) · <code>FAILED</code>(전송실패)</td></tr>
+  <tr><td><code>report_status</code></td><td><code>SENDING</code>(전송중) · <code>ACCEPTED</code>(접수확인) · <code>NO_RESPONSE</code>(무응답으로 승계) · <code>FAILED</code>(전송실패)</td></tr>
   <tr><td><code>report_trigger_reason</code></td><td><code>USER_CONFIRMED</code>(사용자가 알림에서 화재 확인) · <code>NO_RESPONSE_TIMEOUT</code>(유예 마감까지 무응답)</td></tr>
 </table>
 
 <div class="note">
-  ⚠️ <b>v0.3 변경 — <code>alert_level</code>은 이제 항상 <code>1</code>이다.</b>
-  이전 설계의 <code>2</code>(승격) · <code>3</code>(최종)은 폐기했다. 확정 시 PUSH 와 SMS 가
-  <b>동시에</b> 나가므로 단계를 나눠 승격시킬 대상이 없다 (<a href="#alerts">6. 관리자 알림</a>).
-  컬럼 자체는 DB 스키마 호환을 위해 남겨두었을 뿐이니,
-  <b>프론트는 이 값으로 정렬·분기하지 말 것</b>. 채널 구분은 <code>alert_channel</code>로 한다.
+  ⚠️ <b>v0.4 변경 — <code>alert_level</code> · <code>media_type</code> 필드는 삭제됐다.</b>
+  승격 단계 폐기로 <code>alert_level</code>은 항상 1, CLIP 폐기로 <code>media_type</code>은 항상
+  FRAME 이라 둘 다 상수였다. 응답에서 제거했으니 프론트는 이 키를 읽지 말 것.
+  채널 구분은 <code>alert_channel</code>, 미디어는 전부 검출 프레임 이미지다.
 </div>
 
 <div class="note">
@@ -593,7 +590,6 @@
   "media": [
     {
       "media_no": 30,
-      "media_type": "FRAME",
       "media_url": "/media/events/12/frame_001.jpg",
       "media_confidence": 0.9123,
       "media_captured_at": "2026-08-08T14:30:00",
@@ -605,12 +601,13 @@
     },
     {
       "media_no": 31,
-      "media_type": "CLIP",
-      "media_url": "/media/events/12/clip_001.mp4",
-      "media_confidence": null,
+      "media_url": "/media/events/12/frame_002.jpg",
+      "media_confidence": 0.8811,
       "media_captured_at": "2026-08-08T14:30:10",
       "media_is_primary": false,
-      "media_detections": null
+      "media_detections": [
+        { "cls": "flame", "conf": 0.881, "box": [0.241, 0.263, 0.051, 0.118] }
+      ]
     }
   ],
   "alerts": [
@@ -618,7 +615,6 @@
       "alert_no": 5,
       "user_no": 1,
       "user_name": "홍길동",
-      "alert_level": 1,
       "alert_channel": "PUSH",
       "alert_status": "NO_RESPONSE",
       "alert_sent_at": "2026-08-08T14:30:05",
@@ -629,7 +625,6 @@
       "alert_no": 6,
       "user_no": 1,
       "user_name": "홍길동",
-      "alert_level": 1,
       "alert_channel": "SMS",
       "alert_status": "NO_RESPONSE",
       "alert_sent_at": "2026-08-08T14:30:05",
@@ -646,17 +641,17 @@
       "report_status": "NO_RESPONSE",
       "report_distance_km": 0.617,
       "reported_at": "2026-08-08T14:33:10",
-      "report_dispatched_at": null
+      "report_accepted_at": null
     },
     {
       "report_no": 4,
       "agency_no": 2,
       "agency_name": "중부소방서",
       "report_sequence": 2,
-      "report_status": "DISPATCHED",
+      "report_status": "ACCEPTED",
       "report_distance_km": 1.601,
       "reported_at": "2026-08-08T14:33:24",
-      "report_dispatched_at": "2026-08-08T14:33:25"
+      "report_accepted_at": "2026-08-08T14:33:25"
     }
   ]
 }</pre>
@@ -679,7 +674,7 @@
 <ol style="margin-left:24px">
   <li><b>알림 행 2개를 동시에 만든다</b> — <code>PUSH</code>와 <code>SMS</code>. 같은 트랜잭션에서
       한 번에 INSERT 하므로 <code>alert_sent_at</code>과 <code>alert_deadline_at</code>이
-      <b>두 행 모두 완전히 같은 값</b>이다. <code>alert_level</code>은 둘 다 <code>1</code>.
+      <b>두 행 모두 완전히 같은 값</b>이다.
       실제 문자 발송은 SMS 행에 대해서만 일어나고, PUSH 는 프론트가 <code>GET /api/alerts</code>
       폴링으로 가져간다.</li>
   <li><b>유예는 한 번뿐이다</b> — <code>alert_deadline_at = alert_sent_at + ALERT_DEADLINE_SEC</code>
@@ -752,7 +747,6 @@
       "event_no": 12,
       "event_class": "FLAME",
       "cctv_name": "정문 카메라",
-      "alert_level": 1,
       "alert_channel": "PUSH",
       "alert_status": "SENT",
       "alert_sent_at": "2026-08-08T14:30:05",
@@ -884,10 +878,13 @@
   <li><b>전송 (안쪽 루프)</b> — 그 기관의 <code>agency_endpoint</code>로 신고 JSON 을 POST 한다.
       <code>MAX_REPORT_ATTEMPTS</code>(기본 4)회까지 시도하며, 매 시도마다 <code>report_attempt_count</code>가 올라간다.
       타임아웃(<code>REPORT_HTTP_TIMEOUT_SEC</code>, 기본 3초) · 연결 실패 · 2xx 아닌 응답은 모두 <b>실패</b>로 보고 재시도한다.</li>
-  <li><b>성공</b> — 2xx 를 받으면 그 행이 <code>DISPATCHED</code>가 되고
-      <code>report_dispatched_at</code>이 찍힌다. 응답 본문에 <code>external_id</code>가 있으면
+  <li><b>접수 확인</b> — 2xx 를 받으면 그 행이 <code>ACCEPTED</code>가 되고
+      <code>report_accepted_at</code>이 찍힌다. 응답 본문에 <code>external_id</code>가 있으면
       <code>report_external_id</code>에 저장한다 (본문 없는 2xx 도 성공으로 본다 — 이때는 <code>null</code>).
-      <b>여기서 승계는 멈춘다.</b></li>
+      <b>여기서 승계는 멈춘다.</b>
+      <br>⚠️ <code>ACCEPTED</code>는 <b>"119 서버가 신고를 받았다"까지</b>다.
+      소방차 배차 확인이 아니다 — 그건 119 가 별도 콜백으로 회신하는 값이고 아직 구현하지 않았다.
+      화면에 '출동'으로 표기하지 말 것.</li>
   <li><b>기관 소진 → 승계</b> — <code>MAX_REPORT_ATTEMPTS</code>회를 다 쓰고도 못 받으면
       그 행은 <code>NO_RESPONSE</code>(무응답으로 승계)로 닫고, <b>다음으로 가까운 기관</b>에 대해 2번으로 돌아간다.
       <code>report_sequence</code>가 1 늘어난다.</li>
@@ -897,17 +894,47 @@
 
 <p>기관에 전송하는 JSON 페이로드는 다음과 같다 (가상 119 서버 <code>mock-119</code>가 받는 형식).</p>
 <pre>{
+  "report_uid": "FG-12",
   "event_no": 12,
   "address": "본관 정문 앞",
   "lat": 37.5665,
   "lng": 126.978,
   "event_class": "FLAME",
   "confidence": 0.9123,
-  "reported_at": "2026-08-08T14:33:10"
+  "first_detected_at": "2026-08-08T14:32:05",
+  "reported_at": "2026-08-08T14:33:10",
+  "image_base64": "/9j/4AAQSkZJRg…(대표 프레임 JPEG, base64)",
+  "image_detections": [
+    { "cls": "flame", "conf": 0.910, "box": [0.238, 0.259, 0.047, 0.113] }
+  ]
 }</pre>
 
 <div class="note">
-  🔒 <b>이벤트당 진행 중 신고는 1건뿐</b>이다. <code>SENDING</code> · <code>DISPATCHED</code> 두 상태에
+  🕐 <b><code>first_detected_at</code> 은 최초 검출 시각</b>(<code>event_first_detected_at</code>)이다.
+  유예 30초에 승계까지 겹치면 신고(<code>reported_at</code>)가 검출보다 1분 이상 늦을 수 있는데,
+  소방 입장에서 중요한 건 발화 시점이다.
+  <br>🖼️ <b><code>image_base64</code> 는 대표 프레임</b>(최고 신뢰도, <code>media_is_primary</code>)에
+  <b>검출 상자(bbox)를 그려 넣은 이미지</b>다 — 받는 쪽이 좌표를 해석하지 않아도 발화 위치가 보인다.
+  <code>image_detections</code> 는 그 상자의 좌표 원본(0~1 비율)이다.
+  로그(<code>report_log.log_request</code>)에는 이미지 원본 대신 크기 표시만 남는다 —
+  파일은 디스크에 이미 있는데 재전송마다 DB 에 사본이 쌓이는 것을 막기 위해서다.
+  실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없어 이미지 자체를 싣는다 (시연은 모의 접수 서버 대상).
+  파일을 못 읽으면 둘 다 <code>null</code> 로 나가고 <b>신고는 그대로 진행된다</b>.
+</div>
+
+<div class="note">
+  🔑 <b><code>report_uid</code> 는 화재 하나에 하나</b>다(<code>FG-{event_no}</code>).
+  재시도 4회에도, 다음 기관으로 승계해도 <b>같은 값</b>이라 받는 쪽이 "아까 그 신고"임을 안다.
+  <br>이게 없으면 3초 타임아웃 뒤의 재전송이 <b>같은 화재에 대한 출동 4건</b>이 된다.
+  재전송은 상대가 못 받았다는 뜻이 아니라 응답이 안 왔다는 뜻일 뿐이기 때문이다
+  (<code>mock-119</code>의 <code>mode=timeout</code>이 딱 이 경우다 — 10초 뒤 200 을 주므로 접수는 된 것이다).
+  <br>받는 쪽은 이미 접수한 <code>report_uid</code>가 다시 오면 새로 접수하지 말고
+  먼저 발급한 접수번호만 재발신해야 한다. 중복 검사 범위는 <b>접수 서버 하나</b>다 —
+  기관이 다르면 같은 uid 라도 각자 접수해야 승계가 막히지 않는다.
+</div>
+
+<div class="note">
+  🔒 <b>이벤트당 진행 중 신고는 1건뿐</b>이다. <code>SENDING</code> · <code>ACCEPTED</code> 두 상태에
   걸린 DB 부분 유니크 인덱스(<code>UX_report_119_active ON report_119(event_no)</code>)가 강제한다.
   그래서 "사용자 READ"와 "에스컬레이션 무응답"이 동시에 신고를 시작해도 신고는 하나만 나가고,
   나중에 도착한 쪽은 이미 진행 중인 신고를 그대로 돌려받는다.
@@ -928,7 +955,7 @@
   <div class="label">Query Parameters</div>
   <table>
     <tr><th>파라미터</th><th>타입</th><th>필수</th><th>설명</th></tr>
-    <tr><td>report_status</td><td>string</td><td>X</td><td><code>DISPATCHED</code> 등으로 필터</td></tr>
+    <tr><td>report_status</td><td>string</td><td>X</td><td><code>ACCEPTED</code> 등으로 필터</td></tr>
     <tr><td>event_no</td><td>number</td><td>X</td><td>특정 이벤트의 승계 이력만</td></tr>
     <tr><td>page / size</td><td>number</td><td>X</td><td>기본 1 / 20</td></tr>
   </table>
@@ -944,17 +971,75 @@
       "report_sequence": 1,
       "report_external_id": "R-20260808-0012",
       "report_trigger_reason": "NO_RESPONSE_TIMEOUT",
-      "report_status": "DISPATCHED",
+      "report_status": "ACCEPTED",
       "report_address": "서울시 종로구 세종대로 1",
       "report_distance_km": 1.234,
       "report_attempt_count": 1,
       "reported_at": "2026-08-08T14:33:10",
-      "report_dispatched_at": "2026-08-08T14:33:40"
+      "report_accepted_at": "2026-08-08T14:33:40"
     }
   ],
   "page": 1, "size": 20, "total_count": 5, "total_pages": 1
 }</pre>
   <div class="note">💡 같은 <code>event_no</code>에 <code>report_sequence</code> 1, 2, 3… 으로 여러 행이 쌓이면 승계(다른 소방서로 재신고) 이력이다.</div>
+</div>
+
+<div class="endpoint">
+  <div class="method">GET <code>/api/reports/{report_no}/logs</code></div>
+  <div class="desc">신고 1건의 <b>119 송수신 로그</b>. 전송 시도 1회에 1행이고 시도 순서대로 내려간다.
+    위 목록 API 는 결과 요약만 주므로, "몇 시에 뭘 보냈고 뭐라고 답이 왔길래 승계했나"는 여기서 본다.
+    페이징 없다 — 한 신고의 시도는 <code>MAX_REPORT_ATTEMPTS</code>(기본 4)건으로 묶인다.</div>
+
+  <div class="label">Response 200</div>
+  <pre>{
+  "items": [
+    {
+      "log_no": 7,
+      "report_no": 3,
+      "log_attempt": 1,
+      "log_endpoint": "http://localhost:6000/report?mode=timeout&station=1",
+      "log_request": {
+        "report_uid": "FG-12", "event_no": 12,
+        "address": "서울시 종로구 세종대로 1",
+        "lat": 37.5665, "lng": 126.978,
+        "event_class": "FLAME", "confidence": 0.9123,
+        "first_detected_at": "2026-08-08T14:32:05",
+        "reported_at": "2026-08-08T14:33:10",
+        "image_base64": "&lt;base64 152340자 생략 — 원본은 event_media 대표 프레임 파일&gt;",
+        "image_detections": [
+          { "cls": "flame", "conf": 0.910, "box": [0.238, 0.259, 0.047, 0.113] }
+        ]
+      },
+      "log_result": "TIMEOUT",
+      "log_http_status": null,
+      "log_response": null,
+      "log_error": "HTTPConnectionPool(...): Read timed out. (read timeout=3)",
+      "log_elapsed_ms": 3004,
+      "log_sent_at": "2026-08-08T14:33:10"
+    }
+  ]
+}</pre>
+
+  <div class="label">log_result</div>
+  <table>
+    <tr><th>값</th><th>뜻</th></tr>
+    <tr><td><code>ACCEPTED</code></td><td>2xx — 119 가 신고를 받았다고 응답</td></tr>
+    <tr><td><code>REJECTED</code></td><td>2xx 아닌 응답 (거절·장애). <code>log_response</code> 에 본문이 남는다</td></tr>
+    <tr><td><code>TIMEOUT</code></td><td>응답이 안 왔다. <b>상대는 접수했을 수도 있다</b></td></tr>
+    <tr><td><code>ERROR</code></td><td>연결 자체가 안 돼 전송되지 않았다</td></tr>
+  </table>
+  <div class="note">
+    💡 <code>TIMEOUT</code> 과 <code>ERROR</code> 를 나눠 두는 이유가 여기 있다.
+    <code>TIMEOUT</code> 은 우리가 3초에 끊었을 뿐 119 는 접수했을 수 있어서,
+    재전송이 곧 중복 접수가 된다. 그래서 재전송에 같은
+    <code>report_uid</code> 를 실어 받는 쪽이 걸러내게 한다.
+  </div>
+  <div class="label">Error</div>
+  <table>
+    <tr><th>코드</th><th>code</th><th>설명</th></tr>
+    <tr><td>401</td><td>UNAUTHORIZED</td><td>토큰 없음·만료</td></tr>
+    <tr><td>404</td><td>REPORT_NOT_FOUND</td><td>없는 신고 번호. 로그가 0건인 것과 구분된다(그때는 200 + 빈 목록)</td></tr>
+  </table>
 </div>
 
 <!-- ===================================================== -->
@@ -1097,7 +1182,7 @@ Content-Type: application/json
         (<code>event_detected_frames = 1</code>), 있으면 <code>+1</code> 한다.
         <code>event_class</code>는 병합되고(<code>FLAME</code> + <code>SMOKE</code> → <code>FLAME_SMOKE</code>),
         <code>event_confidence</code>는 지금까지의 최고값을 유지한다.</li>
-    <li><b>미디어 저장</b> — 화재 프레임은 <code>event_media</code>에 <code>media_type = FRAME</code>으로 저장되고,
+    <li><b>미디어 저장</b> — 화재 프레임은 <code>event_media</code>에 <code>event_media</code>에 저장되고,
         <code>detections</code> 배열은 <b>원본 그대로</b> <code>media_detections</code>에 들어간다.
         지금까지 중 가장 신뢰도가 높은 프레임이 대표 이미지(<code>media_is_primary</code>)로 교체된다.</li>
     <li><b>확정</b> — <code>event_detected_frames &gt;= event_threshold_frames</code>가 되는 순간
@@ -1150,7 +1235,7 @@ Content-Type: application/json
     <span class="path">/media/&lt;path&gt;</span>
     <span class="auth-badge auth-no">인증 불필요</span>
   </div>
-  <div class="desc">검출 프레임 이미지(FRAME)와 영상 클립(CLIP) 파일을 그대로 내려준다.
+  <div class="desc">검출 프레임 이미지(FRAME) 파일을 그대로 내려준다.
   <b>유일하게 <code>/api</code> 아래가 아닌 경로</b>다.</div>
 
   <div class="label">URL 매핑</div>
@@ -1224,7 +1309,7 @@ Content-Type: application/json
   대시보드 통계 API 필요 여부.<br>
   ※ v0.2 반영 내역: users PUT 권한 규칙, 잘못된 파라미터 400 통일, 알림 늦은 READ 규칙, user_phone 숫자만 저장, user_id·비밀번호 작성규칙.<br>
   ※ v0.3 반영 내역: 내부 검출 수집 API(<code>POST /api/internal/detections</code>, <code>X-Internal-Key</code> 인증) 신설,
-  <code>event_status</code>에 <code>PENDING</code> 추가, <b>알림 단계 승격 폐기</b>(확정 시 PUSH+SMS 동시 발송·<code>alert_level</code>은 항상 1),
+  <code>event_status</code>에 <code>PENDING</code> 추가, <b>알림 단계 승격 폐기</b>(확정 시 PUSH+SMS 동시 발송, <code>alert_level</code>·<code>media_type</code> 컬럼 삭제),
   알림 응답의 이벤트 단위 적용 규칙, 119 신고 승계 알고리즘(하버사인 거리순 · 기관당 최대 4회 · 이벤트당 진행 중 신고 1건),
   미디어 파일 서빙(<code>GET /media/&lt;path&gt;</code>, 무인증 — 시연 범위 결정) 문서화, 환경변수 부록 추가,
   <code>cctv_stream_url</code>을 HLS(<code>.m3u8</code>)로 확정하고 재생 방법·CORS·지연 주의사항 명시.<br>

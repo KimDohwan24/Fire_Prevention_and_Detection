@@ -5,6 +5,7 @@ PyJWT==2.9.0
 bcrypt==4.2.0
 python-dotenv==1.0.1
 requests==2.32.*
+Pillow==11.*
 apscheduler==3.10.*
 flask-swagger-ui==5.32.12
 PyYAML==6.0.3

@@ -89,7 +89,7 @@ def get_report_rows(event_no):
 
 
 def test_report_dispatched_via_real_mock_server(mock119_server, monkeypatch):
-    """mode=ok: 실제 HTTP 왕복으로 DISPATCHED + R-접두 외부 접수번호 저장."""
+    """mode=ok: 실제 HTTP 왕복으로 ACCEPTED + R-접두 외부 접수번호 저장."""
     use_real_http(monkeypatch)
     set_agency_endpoints(f"{mock119_server}/report?mode=ok",
                          f"{mock119_server}/report?mode=ok")
@@ -98,11 +98,11 @@ def test_report_dispatched_via_real_mock_server(mock119_server, monkeypatch):
     result = report_service.start_report(event_no, "USER_CONFIRMED")
 
     assert result is not None
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
     assert re.fullmatch(r"R-\d+", result["report_external_id"])
 
     (row,) = get_report_rows(event_no)
-    assert row["report_status"] == "DISPATCHED"
+    assert row["report_status"] == "ACCEPTED"
     assert row["report_attempt_count"] == 1
     assert row["report_external_id"] == result["report_external_id"]
 
@@ -112,7 +112,7 @@ def test_report_dispatched_via_real_mock_server(mock119_server, monkeypatch):
 
 
 def test_takeover_between_two_real_agencies(mock119_server, monkeypatch):
-    """승계 시연: 기관1 mode=fail(즉시 500) → 4회 소진 NO_RESPONSE, 기관2 mode=ok → DISPATCHED."""
+    """승계 시연: 기관1 mode=fail(즉시 500) → 4회 소진 NO_RESPONSE, 기관2 mode=ok → ACCEPTED."""
     use_real_http(monkeypatch)
     set_agency_endpoints(f"{mock119_server}/report?mode=fail",
                          f"{mock119_server}/report?mode=ok")
@@ -128,8 +128,61 @@ def test_takeover_between_two_real_agencies(mock119_server, monkeypatch):
     assert first["report_attempt_count"] == 4
     assert second["agency_no"] == 2
     assert second["report_sequence"] == 2
-    assert second["report_status"] == "DISPATCHED"
+    assert second["report_status"] == "ACCEPTED"
     assert re.fullmatch(r"R-\d+", second["report_external_id"])
 
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
     assert result["agency_no"] == 2
+
+
+def test_same_report_uid_is_accepted_once_per_station(mock119_server, monkeypatch):
+    """같은 신고 ID 를 다시 보내면 새로 접수하지 않고 먼저 준 접수번호만 재발신한다.
+
+    3초 타임아웃 뒤의 재전송이 출동 여러 건이 되는 걸 막는 장치다.
+    여기서는 재전송을 직접 흉내내기 위해 같은 페이로드를 두 번 POST 한다.
+    """
+    use_real_http(monkeypatch)
+    event_no = make_event()
+    payload = {"report_uid": report_service.report_uid(event_no),
+               "event_no": event_no, "address": "본관 정문 앞",
+               "event_class": "FLAME", "confidence": 0.9}
+    # mock 서버는 모듈 스코프라 접수 대장이 테스트 간에 남는데, conftest 가 매
+    # 테스트마다 RESTART IDENTITY 로 event_no 를 1 로 되돌려 uid 가 겹친다.
+    # 이 테스트 전용 station 을 써서 대장을 분리한다.
+    url = f"{mock119_server}/report?mode=ok&station=dedupe-one"
+
+    first = requests.post(url, json=payload, timeout=2).json()
+    second = requests.post(url, json=payload, timeout=2).json()
+
+    assert re.fullmatch(r"R-\d+", first["external_id"])
+    assert first.get("duplicate") is None       # 첫 건은 진짜 접수
+    assert second["external_id"] == first["external_id"]
+    assert second["duplicate"] is True          # 두 번째는 재발신일 뿐
+
+    # 수신 기록에는 2건이 남지만 접수된 것은 1건이다
+    # (uid 는 다른 테스트와 겹칠 수 있으므로 이 테스트의 station 으로 걸러낸다)
+    received = requests.get(f"{mock119_server}/reports", timeout=2).json()
+    mine = [r for r in received if r.get("station") == "dedupe-one"]
+    assert len(mine) == 2
+    assert [r.get("duplicate") for r in mine] == [False, True]
+
+
+def test_different_stations_accept_the_same_report_uid(mock119_server, monkeypatch):
+    """소방서가 다르면 같은 신고 ID 라도 각자 접수한다 — 승계가 막히면 안 된다.
+
+    중복 검사는 접수 서버 안에서만 의미가 있다. 기관 1이 무응답이라 기관 2로
+    넘겼는데 "이미 접수됨"으로 튕기면 신고가 아무 데도 안 닿는다.
+    """
+    use_real_http(monkeypatch)
+    event_no = make_event()
+    payload = {"report_uid": report_service.report_uid(event_no),
+               "event_no": event_no, "address": "본관 정문 앞",
+               "event_class": "FLAME", "confidence": 0.9}
+
+    a = requests.post(f"{mock119_server}/report?mode=ok&station=dedupe-a",
+                      json=payload, timeout=2).json()
+    b = requests.post(f"{mock119_server}/report?mode=ok&station=dedupe-b",
+                      json=payload, timeout=2).json()
+
+    assert a["external_id"] != b["external_id"]
+    assert b.get("duplicate") is None

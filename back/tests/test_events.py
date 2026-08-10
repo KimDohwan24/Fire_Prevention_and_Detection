@@ -235,9 +235,9 @@ def test_list_events_pagination(client, admin_headers):
 def test_event_detail_full_payload(client, admin_headers):
     """상세: 이벤트 + 카메라 + 미디어(대표 먼저) + 알림 + 신고 이력을 한 번에."""
     ev = make_event(cctv_no=1)
-    clip_no = make_media(ev, media_type="CLIP", is_primary=False,
-                         url=f"/media/events/{ev}/clip.mp4")
-    frame_no = make_media(ev, media_type="FRAME", is_primary=True,
+    extra_no = make_media(ev, is_primary=False,
+                          url=f"/media/events/{ev}/frame_002.jpg")
+    frame_no = make_media(ev, is_primary=True,
                           url=f"/media/events/{ev}/frame.jpg")
     alert_no = make_alert(ev, user_no=1)
     report_no = make_report(ev, agency_no=1)
@@ -267,8 +267,8 @@ def test_event_detail_full_payload(client, admin_headers):
     assert len(media) == 2
     assert media[0]["media_no"] == frame_no
     assert media[0]["media_is_primary"] is True
-    assert media[0]["media_type"] == "FRAME"
-    assert media[1]["media_no"] == clip_no
+    assert "media_type" not in media[0]     # CLIP 폐기로 컬럼 삭제
+    assert media[1]["media_no"] == extra_no
     detections = media[0]["media_detections"]
     assert isinstance(detections, list)
     assert isinstance(detections[0], dict)
