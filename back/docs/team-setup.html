@@ -420,13 +420,39 @@ ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</cod
     <li><code>report_log</code> 테이블 신설 — 119 송수신 이력 (전송 시도 1회에 1행).
         ERD v4 에 없던 테이블입니다.</li>
   </ol>
-  <p><strong>기존 DB 를 유지하려면</strong> 저장소에 있는 마이그레이션 파일을 한 번 실행하세요.
-  전체가 한 트랜잭션이라 중간에 실패하면 아무것도 반영되지 않고,
-  이미 적용한 DB 에 또 돌리면 오류가 나며 전부 롤백됩니다 (안전합니다).</p>
-<pre><code>psql -U postgres -d fireguard -f db/migrations/2026-08-10-report-accepted-and-report-log.sql</code></pre>
-  <p>pgAdmin 을 쓰면 Query Tool 에 그 파일 내용을 통째로 붙여넣어도 됩니다.
-  파일 맨 아래에 <strong>적용 확인용 조회 3개</strong>가 주석으로 들어 있으니 실행 후 확인하세요.
-  SQL 원본은 <code>db/migrations/</code> 한 곳에만 두었습니다 — 문서에 복사해 두면 서로 어긋납니다.</p>
+  <p><strong>기존 DB 를 유지하려면</strong> 저장소의 마이그레이션 파일을 한 번 실행하세요.
+  SQL 원본은 <code>db/migrations/</code> 한 곳에만 둡니다 — 문서에 복사해 두면 서로 어긋납니다.</p>
+<pre><code>db/migrations/2026-08-10-report-accepted-and-report-log.sql</code></pre>
+
+  <p><b>방법 A — pgAdmin (권장)</b></p>
+  <ol>
+    <li>왼쪽 트리에서 <b>내 DB</b>(보통 <code>fireguard</code>)를 선택 — 여기를 틀리면 엉뚱한 DB 가 바뀝니다</li>
+    <li>Tools → Query Tool</li>
+    <li>폴더 아이콘(Open File)으로 위 파일을 열거나, 파일 내용을 통째로 붙여넣기</li>
+    <li>실행(F5). 마지막에 <code>COMMIT</code> 까지 나오면 성공입니다</li>
+  </ol>
+
+  <p><b>방법 B — psql</b><br>
+  <code>psql</code> 은 <b>PATH 에 없는 게 보통</b>입니다. 설치 경로를 그대로 쓰세요
+  (숫자는 설치한 PostgreSQL 버전 — <code>C:\Program Files\PostgreSQL\</code> 를 열어 확인).
+  <b>저장소 루트에서</b> 실행해야 상대경로가 맞습니다. 비밀번호는 물어봅니다.</p>
+<pre><code>cd D:\Fire_Prevention_and_Detection
+"C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -d fireguard ^
+  -f db/migrations/2026-08-10-report-accepted-and-report-log.sql</code></pre>
+  <p><code>-U</code> 와 <code>-d</code> 는 <b>자기 <code>.env</code> 의 <code>DB_USER</code> ·
+  <code>DB_NAME</code> 과 같은 값</b>을 넣으세요. 기본값은 <code>postgres</code> · <code>fireguard</code> 입니다.</p>
+
+  <div class="note">
+    💡 <b>확인</b> — 파일 맨 아래에 적용 확인용 조회 3개가 주석으로 들어 있습니다.
+    주석을 풀어 실행하면 <code>DISPATCHED</code> 가 0건, 인덱스 조건이
+    <code>('SENDING','ACCEPTED')</code>, <code>report_log</code> 가 0행으로 나와야 합니다.
+    <br><b>이미 적용한 DB 에 또 돌려도 안전합니다.</b> 첫 문장에서 "report_dispatched_at
+    칼럼은 없습니다" 오류가 나고 나머지는 전부 무시되며 <b>통째로 롤백</b>됩니다.
+    오류가 여러 줄 쏟아지지만 DB 는 그대로입니다.
+    <br>⚠️ 한글이 들어간 SQL 을 <code>psql -c "..."</code> 로 <b>직접 입력하면</b>
+    한국어 윈도우 콘솔(코드페이지 949)에서 인코딩 오류가 납니다.
+    파일로 넘기는 <code>-f</code> 는 문제없으니 위 방식 그대로 쓰세요.
+  </div>
 
   <p><strong>DB 를 새로 만들 거면</strong> <code>db/schema.sql</code> 하나면 되고 이 파일은 필요 없습니다.
   다만 <code>schema.sql</code> 은 첫 줄이 <code>DROP SCHEMA fireguard CASCADE</code> 라
