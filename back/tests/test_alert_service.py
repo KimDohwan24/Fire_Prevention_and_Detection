@@ -5,7 +5,7 @@
 - 이벤트 확정 시 PUSH 와 SMS 를 **동시에** 한 트랜잭션으로 만든다 (단계 승격 없음).
   두 채널 모두 같은 사람의 같은 휴대폰으로 가므로 단계를 나누면 시간만 낭비된다.
 - 두 행 모두 alert_level=1, alert_status='SENT', alert_sent_at/alert_deadline_at 동일.
-- alert_deadline_at = alert_sent_at + ALERT_DEADLINE_MIN 분. 유예는 이 한 번뿐이고,
+- alert_deadline_at = alert_sent_at + ALERT_DEADLINE_SEC 초. 유예는 이 한 번뿐이고,
   마감까지 무응답이면 에스컬레이션이 곧바로 119 신고로 넘어간다.
 - 점검 모드(event_is_test) 이벤트는 알림을 만들지 않는다.
 - 확정 훅(on_event_confirmed)은 두 알림을 만들고, 예외를 절대 밖으로 던지지 않는다.
@@ -64,7 +64,7 @@ def test_send_sms_without_phone_returns_false():
 
 def test_send_alerts_creates_push_and_sms_rows(monkeypatch):
     """확정 알림 = PUSH 1행 + SMS 1행. 둘 다 level 1 / SENT, 발송·마감 시각이 동일."""
-    monkeypatch.setattr(config, "ALERT_DEADLINE_MIN", 7)
+    monkeypatch.setattr(config, "ALERT_DEADLINE_SEC", 45)
     spy_send_sms(monkeypatch)
     event_no = make_event(cctv_no=1)
 
@@ -81,13 +81,33 @@ def test_send_alerts_creates_push_and_sms_rows(monkeypatch):
         assert a["alert_status"] == "SENT"
         assert a["alert_sent_at"] is not None
         assert a["alert_responded_at"] is None
-        # 마감은 발송 시각 + 정확히 ALERT_DEADLINE_MIN 분
-        assert a["alert_deadline_at"] - a["alert_sent_at"] == timedelta(minutes=7)
+        # 마감은 발송 시각 + 정확히 ALERT_DEADLINE_SEC 초
+        assert a["alert_deadline_at"] - a["alert_sent_at"] == timedelta(seconds=45)
 
     # 두 행은 같은 트랜잭션에서 만들어지므로 시각이 완전히 같아야 한다
     push, sms_row = rows if rows[0]["alert_channel"] == "PUSH" else rows[::-1]
     assert push["alert_sent_at"] == sms_row["alert_sent_at"]
     assert push["alert_deadline_at"] == sms_row["alert_deadline_at"]
+
+
+def test_deadline_supports_sub_minute_grace(monkeypatch):
+    """유예를 1분 미만으로 잡을 수 있다 — 발표 슬라이드 11 의 타임라인이 30초다.
+
+    분 단위 설정으로는 표현 자체가 불가능했던 값이라 회귀로 남긴다.
+    """
+    monkeypatch.setattr(config, "ALERT_DEADLINE_SEC", 30)
+    spy_send_sms(monkeypatch)
+    event_no = make_event(cctv_no=1)
+
+    alert_service.send_alerts(event_no)
+
+    for a in get_alert_rows(event_no):
+        assert a["alert_deadline_at"] - a["alert_sent_at"] == timedelta(seconds=30)
+
+
+def test_default_deadline_is_30_seconds():
+    """기본 유예는 30초 (슬라이드 11 타임라인: 알림 02:14:08 → 신고 02:14:38)."""
+    assert config.ALERT_DEADLINE_SEC == 30
 
 
 def test_send_alerts_sends_sms_once_to_owner_phone(monkeypatch):

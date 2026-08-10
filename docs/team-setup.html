@@ -226,8 +226,9 @@ fetch(`${import.meta.env.VITE_API_BASE_URL}/api/auth/login`, ...)</code></pre>
   <tr><th>방식</th><th>평가</th></tr>
   <tr><td><strong>폴링</strong> (권장)</td>
       <td>기존 <code>GET /api/alerts</code> 재사용 → <strong>추가 개발 0</strong>.
-          알림 유예가 분 단위라 몇 초 지연은 체감되지 않고, 동시 사용자도 소수라 부하 문제 없음.
-          연결이 끊길 일이 없어 시연에서 가장 안전</td></tr>
+          동시 사용자가 소수라 부하 문제 없고, 연결이 끊길 일이 없어 시연에서 가장 안전.
+          다만 유예가 30초라 폴링 주기는 그에 맞춰 짧게(3~5초) 잡아야 한다 —
+          주기가 길면 관리자가 알림을 보기도 전에 유예가 지나간다</td></tr>
   <tr><td>WebSocket</td><td>양방향이 필요 없는 구조라 오버스펙</td></tr>
   <tr><td>SSE</td><td>동기 Flask 와 궁합이 나쁨 (연결 하나가 워커 하나를 점유)</td></tr>
 </table>
@@ -349,9 +350,11 @@ X-Internal-Key: &lt;INTERNAL_API_KEY 값&gt;
 </table>
 
 <div class="note">
-  💡 <strong>판정 규칙</strong>: 화재 검출이 일정 프레임 수(<code>EVENT_THRESHOLD_FRAMES</code>, 기본 30)
+  💡 <strong>판정 규칙</strong>: 최초로 화재가 검출된 순간부터 <code>EVENT_WINDOW_SEC</code>(기본 60초)
+  <strong>관측 창</strong>이 열리고, 그 창 안에서 검출이 일정 프레임 수(<code>EVENT_THRESHOLD_FRAMES</code>, 기본 30)
   만큼 쌓이면 <strong>화재 확정(CONFIRMED)</strong> 되고 자동으로 알림이 나갑니다.
-  검출이 <code>EVENT_WINDOW_SEC</code>(기본 60초) 이상 끊기면 기준미달(DISMISSED)로 정리됩니다.
+  창은 최초 감지 시각에 고정되어 이후 검출로 연장되지 않으며,
+  미달인 채로 창이 닫히면 기준미달(DISMISSED)로 정리되고 이후 검출은 새 이벤트로 다시 셉니다.
   시연 때는 이 값들을 낮춰서 빨리 확정시킬 수 있습니다.
 </div>
 
@@ -384,10 +387,24 @@ UPDATE fireguard.agency SET agency_endpoint = 'http://localhost:6000/report?mode
 <p><code>mode</code> 값: <code>ok</code>(접수) · <code>fail</code>(장애) · <code>timeout</code>(무응답) · <code>reject</code>(거절)</p>
 
 <h3>시간 단축</h3>
-<p>기본 설정으로는 알림 후 3분을 기다려야 자동 신고가 나갑니다. 시연에서는 <code>.env</code> 를 조정하세요.</p>
-<pre><code>ALERT_DEADLINE_MIN=1        # 알림 유예를 1분으로
-EVENT_THRESHOLD_FRAMES=5    # 5프레임만 쌓여도 화재 확정
-ESCALATION_INTERVAL_SEC=5   # 무응답 감지 주기를 5초로</code></pre>
+<p>기본 설정으로는 알림 후 30초를 기다려야 자동 신고가 나갑니다. 더 짧게 돌리려면
+<code>.env</code> 를 조정하세요.</p>
+<pre><code>ALERT_DEADLINE_SEC=10       # 알림 유예를 10초로 (기본 30)
+EVENT_THRESHOLD_FRAMES=5    # 5프레임만 쌓여도 화재 확정 (기본 30)
+ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</code></pre>
+<p>스윕 주기(<code>ESCALATION_INTERVAL_SEC</code>)만큼 신고가 늦어지므로,
+유예를 짧게 잡을수록 주기도 같이 줄여야 실제 유예가 의도한 값에 가까워집니다.
+기본값(유예 30초 · 주기 5초)에서 실제 유예는 30~35초입니다.</p>
+
+<div class="warn">
+  ⚠️ <strong>2026-08-10 기본값 변경</strong> — 알림 유예가
+  <code>ALERT_DEADLINE_MIN=3</code>(3분)에서 <code>ALERT_DEADLINE_SEC=30</code>(30초)으로,
+  스윕 주기가 10초에서 5초로 바뀌었습니다.
+  <strong>내 <code>.env</code> 에 옛 이름(<code>ALERT_DEADLINE_MIN</code>)이나
+  <code>ESCALATION_INTERVAL_SEC=10</code> 이 적혀 있다면 지우세요.</strong>
+  옛 이름은 조용히 무시되고(기본 30초가 적용되므로 동작은 정상),
+  <code>ESCALATION_INTERVAL_SEC</code> 는 적어 둔 값이 그대로 쓰여 혼자만 10초로 돕니다.
+</div>
 
 <h3>시연 순서 예시</h3>
 <ol>
