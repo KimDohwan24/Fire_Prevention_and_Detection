@@ -803,7 +803,7 @@ if __name__ == "__main__":
         model_name="yolov10n.pt",
 
         # 팀원 전처리 코드가 만든 data.yaml
-        yaml_path="./dataset/data.yaml",
+        yaml_path="./data.yaml",
 
         # 전처리 Letterbox 크기와 동일
         image_size=640,
