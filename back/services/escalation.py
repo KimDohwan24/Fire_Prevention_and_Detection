@@ -66,7 +66,7 @@ def run_escalation_tick(now: datetime | None = None) -> dict:
     """
     summary = {"dismissed_pending": 0, "reported": 0}
 
-    # 1) 검출이 끊긴 PENDING 이벤트 정리
+    # 1) 관측 창이 닫힌 PENDING 이벤트 정리
     try:
         summary["dismissed_pending"] = event_service.sweep_stale_pending(now)
     except Exception:
