@@ -389,11 +389,22 @@ UPDATE fireguard.agency SET agency_endpoint = 'http://localhost:6000/report?mode
 <h3>시간 단축</h3>
 <p>기본 설정으로는 알림 후 30초를 기다려야 자동 신고가 나갑니다. 더 짧게 돌리려면
 <code>.env</code> 를 조정하세요.</p>
-<pre><code>ALERT_DEADLINE_SEC=10       # 알림 유예를 10초로
-EVENT_THRESHOLD_FRAMES=5    # 5프레임만 쌓여도 화재 확정
-ESCALATION_INTERVAL_SEC=5   # 무응답 감지 주기를 5초로</code></pre>
-<p>스윕 주기(<code>ESCALATION_INTERVAL_SEC</code>)만큼 신고가 늦어질 수 있으므로,
-유예를 짧게 잡을수록 주기도 같이 줄여야 실제 유예가 의도한 값에 가까워집니다.</p>
+<pre><code>ALERT_DEADLINE_SEC=10       # 알림 유예를 10초로 (기본 30)
+EVENT_THRESHOLD_FRAMES=5    # 5프레임만 쌓여도 화재 확정 (기본 30)
+ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</code></pre>
+<p>스윕 주기(<code>ESCALATION_INTERVAL_SEC</code>)만큼 신고가 늦어지므로,
+유예를 짧게 잡을수록 주기도 같이 줄여야 실제 유예가 의도한 값에 가까워집니다.
+기본값(유예 30초 · 주기 5초)에서 실제 유예는 30~35초입니다.</p>
+
+<div class="warn">
+  ⚠️ <strong>2026-08-10 기본값 변경</strong> — 알림 유예가
+  <code>ALERT_DEADLINE_MIN=3</code>(3분)에서 <code>ALERT_DEADLINE_SEC=30</code>(30초)으로,
+  스윕 주기가 10초에서 5초로 바뀌었습니다.
+  <strong>내 <code>.env</code> 에 옛 이름(<code>ALERT_DEADLINE_MIN</code>)이나
+  <code>ESCALATION_INTERVAL_SEC=10</code> 이 적혀 있다면 지우세요.</strong>
+  옛 이름은 조용히 무시되고(기본 30초가 적용되므로 동작은 정상),
+  <code>ESCALATION_INTERVAL_SEC</code> 는 적어 둔 값이 그대로 쓰여 혼자만 10초로 돕니다.
+</div>
 
 <h3>시연 순서 예시</h3>
 <ol>
