@@ -159,8 +159,6 @@
   <tr><td><code>cctv_status</code></td><td><code>ACTIVE</code>(정상) · <code>INACTIVE</code>(중지) · <code>ERROR</code>(오류)</td></tr>
   <tr><td><code>event_status</code></td><td><code>PENDING</code>(판정중 — 프레임 누적 중) · <code>CONFIRMED</code>(확정) · <code>DISMISSED</code>(기준미달)</td></tr>
   <tr><td><code>event_class</code></td><td><code>FLAME</code>(불꽃) · <code>SMOKE</code>(연기) · <code>FLAME_SMOKE</code>(둘다)</td></tr>
-  <tr><td><code>media_type</code></td><td><code>FRAME</code>(프레임 이미지) — <code>CLIP</code>(영상 클립)은 2026-08-10 폐기, 프레임만 저장한다</td></tr>
-  <tr><td><code>alert_level</code></td><td><code>1</code> — <b>항상 1</b>. 단계 승격 개념이 없어졌다 (아래 주의 참고)</td></tr>
   <tr><td><code>alert_channel</code></td><td><code>PUSH</code>(앱알림) · <code>SMS</code>(문자)</td></tr>
   <tr><td><code>alert_status</code></td><td><code>SENT</code>(발송) · <code>READ</code>(확인) · <code>CANCELED</code>(취소) · <code>NO_RESPONSE</code>(무응답)</td></tr>
   <tr><td><code>report_status</code></td><td><code>SENDING</code>(전송중) · <code>ACCEPTED</code>(접수확인) · <code>NO_RESPONSE</code>(무응답으로 승계) · <code>FAILED</code>(전송실패)</td></tr>
@@ -168,11 +166,10 @@
 </table>
 
 <div class="note">
-  ⚠️ <b>v0.3 변경 — <code>alert_level</code>은 이제 항상 <code>1</code>이다.</b>
-  이전 설계의 <code>2</code>(승격) · <code>3</code>(최종)은 폐기했다. 확정 시 PUSH 와 SMS 가
-  <b>동시에</b> 나가므로 단계를 나눠 승격시킬 대상이 없다 (<a href="#alerts">6. 관리자 알림</a>).
-  컬럼 자체는 DB 스키마 호환을 위해 남겨두었을 뿐이니,
-  <b>프론트는 이 값으로 정렬·분기하지 말 것</b>. 채널 구분은 <code>alert_channel</code>로 한다.
+  ⚠️ <b>v0.4 변경 — <code>alert_level</code> · <code>media_type</code> 필드는 삭제됐다.</b>
+  승격 단계 폐기로 <code>alert_level</code>은 항상 1, CLIP 폐기로 <code>media_type</code>은 항상
+  FRAME 이라 둘 다 상수였다. 응답에서 제거했으니 프론트는 이 키를 읽지 말 것.
+  채널 구분은 <code>alert_channel</code>, 미디어는 전부 검출 프레임 이미지다.
 </div>
 
 <div class="note">
@@ -593,7 +590,6 @@
   "media": [
     {
       "media_no": 30,
-      "media_type": "FRAME",
       "media_url": "/media/events/12/frame_001.jpg",
       "media_confidence": 0.9123,
       "media_captured_at": "2026-08-08T14:30:00",
@@ -605,7 +601,6 @@
     },
     {
       "media_no": 31,
-      "media_type": "FRAME",
       "media_url": "/media/events/12/frame_002.jpg",
       "media_confidence": 0.8811,
       "media_captured_at": "2026-08-08T14:30:10",
@@ -620,7 +615,6 @@
       "alert_no": 5,
       "user_no": 1,
       "user_name": "홍길동",
-      "alert_level": 1,
       "alert_channel": "PUSH",
       "alert_status": "NO_RESPONSE",
       "alert_sent_at": "2026-08-08T14:30:05",
@@ -631,7 +625,6 @@
       "alert_no": 6,
       "user_no": 1,
       "user_name": "홍길동",
-      "alert_level": 1,
       "alert_channel": "SMS",
       "alert_status": "NO_RESPONSE",
       "alert_sent_at": "2026-08-08T14:30:05",
@@ -681,7 +674,7 @@
 <ol style="margin-left:24px">
   <li><b>알림 행 2개를 동시에 만든다</b> — <code>PUSH</code>와 <code>SMS</code>. 같은 트랜잭션에서
       한 번에 INSERT 하므로 <code>alert_sent_at</code>과 <code>alert_deadline_at</code>이
-      <b>두 행 모두 완전히 같은 값</b>이다. <code>alert_level</code>은 둘 다 <code>1</code>.
+      <b>두 행 모두 완전히 같은 값</b>이다.
       실제 문자 발송은 SMS 행에 대해서만 일어나고, PUSH 는 프론트가 <code>GET /api/alerts</code>
       폴링으로 가져간다.</li>
   <li><b>유예는 한 번뿐이다</b> — <code>alert_deadline_at = alert_sent_at + ALERT_DEADLINE_SEC</code>
@@ -754,7 +747,6 @@
       "event_no": 12,
       "event_class": "FLAME",
       "cctv_name": "정문 카메라",
-      "alert_level": 1,
       "alert_channel": "PUSH",
       "alert_status": "SENT",
       "alert_sent_at": "2026-08-08T14:30:05",
@@ -1190,7 +1182,7 @@ Content-Type: application/json
         (<code>event_detected_frames = 1</code>), 있으면 <code>+1</code> 한다.
         <code>event_class</code>는 병합되고(<code>FLAME</code> + <code>SMOKE</code> → <code>FLAME_SMOKE</code>),
         <code>event_confidence</code>는 지금까지의 최고값을 유지한다.</li>
-    <li><b>미디어 저장</b> — 화재 프레임은 <code>event_media</code>에 <code>media_type = FRAME</code>으로 저장되고,
+    <li><b>미디어 저장</b> — 화재 프레임은 <code>event_media</code>에 <code>event_media</code>에 저장되고,
         <code>detections</code> 배열은 <b>원본 그대로</b> <code>media_detections</code>에 들어간다.
         지금까지 중 가장 신뢰도가 높은 프레임이 대표 이미지(<code>media_is_primary</code>)로 교체된다.</li>
     <li><b>확정</b> — <code>event_detected_frames &gt;= event_threshold_frames</code>가 되는 순간
@@ -1317,7 +1309,7 @@ Content-Type: application/json
   대시보드 통계 API 필요 여부.<br>
   ※ v0.2 반영 내역: users PUT 권한 규칙, 잘못된 파라미터 400 통일, 알림 늦은 READ 규칙, user_phone 숫자만 저장, user_id·비밀번호 작성규칙.<br>
   ※ v0.3 반영 내역: 내부 검출 수집 API(<code>POST /api/internal/detections</code>, <code>X-Internal-Key</code> 인증) 신설,
-  <code>event_status</code>에 <code>PENDING</code> 추가, <b>알림 단계 승격 폐기</b>(확정 시 PUSH+SMS 동시 발송·<code>alert_level</code>은 항상 1),
+  <code>event_status</code>에 <code>PENDING</code> 추가, <b>알림 단계 승격 폐기</b>(확정 시 PUSH+SMS 동시 발송, <code>alert_level</code>·<code>media_type</code> 컬럼 삭제),
   알림 응답의 이벤트 단위 적용 규칙, 119 신고 승계 알고리즘(하버사인 거리순 · 기관당 최대 4회 · 이벤트당 진행 중 신고 1건),
   미디어 파일 서빙(<code>GET /media/&lt;path&gt;</code>, 무인증 — 시연 범위 결정) 문서화, 환경변수 부록 추가,
   <code>cctv_stream_url</code>을 HLS(<code>.m3u8</code>)로 확정하고 재생 방법·CORS·지연 주의사항 명시.<br>

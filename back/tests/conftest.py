@@ -210,35 +210,34 @@ def make_event(cctv_no=1, status="CONFIRMED", event_class="FLAME",
     return row["event_no"]
 
 
-def make_media(event_no, media_type="FRAME", is_primary=False, url=None,
-               confidence=0.9123):
+def make_media(event_no, is_primary=False, url=None, confidence=0.9123):
     row = db.execute_returning(
         """
-        INSERT INTO event_media (event_no, media_type, media_url, media_detections,
+        INSERT INTO event_media (event_no, media_url, media_detections,
                                  media_confidence, media_captured_at, media_is_primary)
-        VALUES (%s, %s, %s,
+        VALUES (%s, %s,
                 '[{"cls":"flame","conf":0.91,"box":[0.238,0.259,0.047,0.113]}]'::jsonb,
                 %s, now(), %s)
         RETURNING media_no
         """,
-        (event_no, media_type, url or f"/media/events/{event_no}/f.jpg",
+        (event_no, url or f"/media/events/{event_no}/f.jpg",
          confidence, is_primary),
     )
     return row["media_no"]
 
 
-def make_alert(event_no, user_no=1, level=1, channel="PUSH", status="SENT",
+def make_alert(event_no, user_no=1, channel="PUSH", status="SENT",
                deadline_offset_sec=180, responded=False):
     row = db.execute_returning(
         """
-        INSERT INTO alert (event_no, user_no, alert_level, alert_channel, alert_status,
+        INSERT INTO alert (event_no, user_no, alert_channel, alert_status,
                            alert_sent_at, alert_deadline_at, alert_responded_at)
-        VALUES (%s, %s, %s, %s, %s, now(),
+        VALUES (%s, %s, %s, %s, now(),
                 now() + (%s || ' seconds')::interval,
                 CASE WHEN %s THEN now() ELSE NULL END)
         RETURNING alert_no
         """,
-        (event_no, user_no, level, channel, status, deadline_offset_sec, responded),
+        (event_no, user_no, channel, status, deadline_offset_sec, responded),
     )
     return row["alert_no"]
 

@@ -93,7 +93,7 @@ def get_event(event_no: int):
     )
     media = db.query(
         """
-        SELECT media_no, media_type, media_url, media_confidence,
+        SELECT media_no, media_url, media_confidence,
                media_captured_at, media_is_primary, media_detections
         FROM event_media WHERE event_no = %s
         ORDER BY media_is_primary DESC, media_no
@@ -103,12 +103,12 @@ def get_event(event_no: int):
     alerts = db.query(
         """
         SELECT a.alert_no, a.user_no, u.user_name,
-               a.alert_level, a.alert_channel, a.alert_status,
+               a.alert_channel, a.alert_status,
                a.alert_sent_at, a.alert_deadline_at, a.alert_responded_at
         FROM alert a
         JOIN users u ON u.user_no = a.user_no
         WHERE a.event_no = %s
-        ORDER BY a.alert_level, a.alert_no
+        ORDER BY a.alert_no
         """,
         (event_no,),
     )

@@ -113,7 +113,7 @@ def test_no_response_timeout_triggers_automatic_report(client, admin_headers,
     assert [a["alert_channel"] for a in alerts] == ["PUSH", "SMS"]
     assert {a["alert_status"] for a in alerts} == {"SENT"}
     assert {a["user_no"] for a in alerts} == {OWNER_NO}
-    assert {a["alert_level"] for a in alerts} == {1}          # 승격 개념 없음
+    assert all("alert_level" not in a for a in alerts)        # 승격 폐기 — 컬럼 삭제됨
     assert alerts[0]["alert_sent_at"] == alerts[1]["alert_sent_at"]
     assert alerts[0]["alert_deadline_at"] == alerts[1]["alert_deadline_at"]
 

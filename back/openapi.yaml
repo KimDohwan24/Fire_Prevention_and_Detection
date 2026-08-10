@@ -1343,10 +1343,6 @@ components:
       type: string
       description: 불꽃·연기가 함께 잡히면 `FLAME_SMOKE`
       enum: [FLAME, SMOKE, FLAME_SMOKE]
-    MediaType:
-      type: string
-      description: CLIP(영상 클립)은 2026-08-10 폐기 — 프레임만 저장한다
-      enum: [FRAME]
     AlertChannel:
       type: string
       description: 확정 시 두 채널이 동시에 나간다 (PUSH = 프론트 폴링, SMS = 실제 발송)
@@ -1767,8 +1763,6 @@ components:
         media_no:
           type: integer
           format: int64
-        media_type:
-          $ref: "#/components/schemas/MediaType"
         media_url:
           type: string
           nullable: true
@@ -1804,10 +1798,6 @@ components:
         user_name:
           type: string
           nullable: true
-        alert_level:
-          type: integer
-          nullable: true
-          description: 단계 (1차, 2차 …)
         alert_channel:
           $ref: "#/components/schemas/AlertChannel"
         alert_status:
@@ -1840,9 +1830,6 @@ components:
           $ref: "#/components/schemas/EventClass"
         cctv_name:
           type: string
-          nullable: true
-        alert_level:
-          type: integer
           nullable: true
         alert_channel:
           $ref: "#/components/schemas/AlertChannel"

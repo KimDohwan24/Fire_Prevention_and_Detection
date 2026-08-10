@@ -137,8 +137,6 @@
   <tr><td><code>cctv_status</code></td><td><code>ACTIVE</code>(정상) · <code>INACTIVE</code>(중지) · <code>ERROR</code>(오류)</td></tr>
   <tr><td><code>event_status</code></td><td><code>CONFIRMED</code>(확정) · <code>DISMISSED</code>(기준미달)</td></tr>
   <tr><td><code>event_class</code></td><td><code>FLAME</code>(불꽃) · <code>SMOKE</code>(연기) · <code>FLAME_SMOKE</code>(둘다)</td></tr>
-  <tr><td><code>media_type</code></td><td><code>FRAME</code>(프레임 이미지) — <code>CLIP</code>(영상 클립)은 2026-08-10 폐기, 프레임만 저장한다</td></tr>
-  <tr><td><code>alert_level</code></td><td><code>1</code>(1차 알림) · <code>2</code>(승격) · <code>3</code>(최종)</td></tr>
   <tr><td><code>alert_channel</code></td><td><code>PUSH</code>(앱알림) · <code>SMS</code>(문자)</td></tr>
   <tr><td><code>alert_status</code></td><td><code>SENT</code>(발송) · <code>READ</code>(확인) · <code>CANCELED</code>(취소) · <code>NO_RESPONSE</code>(무응답)</td></tr>
   <tr><td><code>report_status</code></td><td><code>SENDING</code>(전송중) · <code>ACCEPTED</code>(접수확인) · <code>NO_RESPONSE</code>(무응답으로 승계) · <code>FAILED</code>(전송실패)</td></tr>
@@ -448,7 +446,6 @@
   "media": [
     {
       "media_no": 30,
-      "media_type": "FRAME",
       "media_url": "/media/events/12/frame_001.jpg",
       "media_confidence": 0.9123,
       "media_captured_at": "2026-08-08T14:30:00",
@@ -460,7 +457,6 @@
     },
     {
       "media_no": 31,
-      "media_type": "FRAME",
       "media_url": "/media/events/12/frame_002.jpg",
       "media_confidence": 0.8811,
       "media_captured_at": "2026-08-08T14:30:10",
@@ -475,7 +471,6 @@
       "alert_no": 5,
       "user_no": 1,
       "user_name": "홍길동",
-      "alert_level": 1,
       "alert_channel": "PUSH",
       "alert_status": "NO_RESPONSE",
       "alert_sent_at": "2026-08-08T14:30:05",
@@ -525,7 +520,6 @@
       "event_no": 12,
       "event_class": "FLAME",
       "cctv_name": "정문 카메라",
-      "alert_level": 1,
       "alert_channel": "PUSH",
       "alert_status": "SENT",
       "alert_sent_at": "2026-08-08T14:30:05",
