@@ -55,7 +55,8 @@ def respond_alert(alert_no: int):
     body = request.get_json(silent=True) or {}
     action = body.get("action")
     if action not in ("READ", "CANCEL"):
-        raise ApiError(400, "BAD_REQUEST", "action 은 READ 또는 CANCEL 이어야 합니다.")
+        raise ApiError(400, "BAD_REQUEST", "action 은 READ 또는 CANCEL 이어야 합니다.",
+                       field="action")
 
     alert = db.query_one(
         """

@@ -58,6 +58,37 @@ def test_spec_declares_both_security_schemes(spec):
     assert schemes["internalKey"]["name"] == "X-Internal-Key"
 
 
+def _resolve(spec: dict, node: dict) -> dict:
+    """$ref 를 따라가 실제 노드를 돌려준다 (내부 참조만 쓴다)."""
+    while "$ref" in node:
+        target = spec
+        for part in node["$ref"].lstrip("#/").split("/"):
+            target = target[part]
+        node = target
+    return node
+
+
+def test_error_responses_declare_example(spec):
+    """4xx 응답은 저마다 실제로 나가는 code/message 예시를 들고 있어야 한다.
+
+    예시가 없으면 Swagger UI 가 공통 Error 스키마로 본문을 만들어 내서
+    400·401·403 이 전부 똑같이 보인다. 프론트는 그 화면을 보고 분기할 code 를
+    정하므로, 예시가 없는 게 아니라 '틀린 예시가 있는' 상태가 된다.
+    """
+    missing = []
+    for path, item in spec["paths"].items():
+        for method, op in item.items():
+            if method not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            for status, res in op["responses"].items():
+                if not status.startswith(("4", "5")):
+                    continue
+                body = _resolve(spec, res).get("content", {}).get("application/json", {})
+                if not ({"example", "examples"} & set(body)):
+                    missing.append(f"{method.upper()} {path} → {status}")
+    assert not missing, "에러 응답 예시 누락:\n" + "\n".join(missing)
+
+
 # ---------- 2·3. 라우트와 스펙이 일치하는가 ----------
 
 def test_every_route_is_documented(app, spec):
