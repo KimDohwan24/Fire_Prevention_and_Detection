@@ -44,7 +44,7 @@ class YOLOv10FireTrainer:
     def __init__(
         self,
         model_name="yolov10n.pt",
-        yaml_path="./data.yaml",
+       yaml_path="/workspace/sec_project/Fire_Prevention_and_Detection/ai-model/data.yaml",
         image_size=640,
         epochs=30,
         batch=8,
