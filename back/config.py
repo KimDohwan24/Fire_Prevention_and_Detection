@@ -29,9 +29,10 @@ JWT_EXPIRES_HOURS = int(os.getenv("JWT_EXPIRES_HOURS", "12"))
 # AI 모델 → 백엔드 내부 API 인증 키 (X-Internal-Key 헤더로 비교)
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key")
 
-# 화재 확정 기준: 윈도우 안에서 이 프레임 수만큼 검출이 쌓이면 CONFIRMED
+# 화재 확정 기준: 관측 창 안에서 이 프레임 수만큼 검출이 쌓이면 CONFIRMED
 EVENT_THRESHOLD_FRAMES = int(os.getenv("EVENT_THRESHOLD_FRAMES", "30"))
-# 마지막 검출로부터 이 시간(초)이 지나면 PENDING 이벤트를 기준미달(DISMISSED) 처리
+# 관측 창 길이(초). 창은 최초 감지 시각(event_first_detected_at)에 고정되며
+# 이후 검출로 연장되지 않는다 — 미달인 채로 창이 닫히면 기준미달(DISMISSED)
 EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "60"))
 
 # 알림 응답 유예 시간(분): alert_deadline_at = alert_sent_at + 이 값

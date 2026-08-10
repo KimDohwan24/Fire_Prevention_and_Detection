@@ -349,9 +349,11 @@ X-Internal-Key: &lt;INTERNAL_API_KEY 값&gt;
 </table>
 
 <div class="note">
-  💡 <strong>판정 규칙</strong>: 화재 검출이 일정 프레임 수(<code>EVENT_THRESHOLD_FRAMES</code>, 기본 30)
+  💡 <strong>판정 규칙</strong>: 최초로 화재가 검출된 순간부터 <code>EVENT_WINDOW_SEC</code>(기본 60초)
+  <strong>관측 창</strong>이 열리고, 그 창 안에서 검출이 일정 프레임 수(<code>EVENT_THRESHOLD_FRAMES</code>, 기본 30)
   만큼 쌓이면 <strong>화재 확정(CONFIRMED)</strong> 되고 자동으로 알림이 나갑니다.
-  검출이 <code>EVENT_WINDOW_SEC</code>(기본 60초) 이상 끊기면 기준미달(DISMISSED)로 정리됩니다.
+  창은 최초 감지 시각에 고정되어 이후 검출로 연장되지 않으며,
+  미달인 채로 창이 닫히면 기준미달(DISMISSED)로 정리되고 이후 검출은 새 이벤트로 다시 셉니다.
   시연 때는 이 값들을 낮춰서 빨리 확정시킬 수 있습니다.
 </div>
 

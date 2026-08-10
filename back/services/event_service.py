@@ -1,8 +1,18 @@
 """화재 이벤트 누적/확정 로직 — POST /api/internal/detections 의 본체.
 
+판정 규칙은 발표 슬라이드 10 의 "고정 관측 창"이다:
+최초로 화재·연기를 감지한 순간 판정이 시작되고, 그 시각에 **고정된**
+EVENT_WINDOW_SEC 초 창 안에서 검출 프레임이 임계값만큼 쌓이면 화재 확정,
+미달인 채로 창이 닫히면 판정 종료(DISMISSED) 후 감시 상태로 복귀한다.
+
+창을 최초 감지 시각에 못 박는 것이 핵심이다. 마지막 검출 기준으로 창을 재면
+검출이 들어올 때마다 창이 연장돼서, 창 간격보다 조금씩 빠르게 튀는 신호가
+시간만 충분하면 결국 확정된다 — 이 로직이 걸러내려던 바로 그 신호다.
+
 프레임 단위 검출 결과를 받아:
 - flame/smoke 검출이 있으면 카메라별 열린(PENDING) 이벤트에 누적
-- 마지막 활동에서 EVENT_WINDOW_SEC 를 넘긴 PENDING 은 기준미달(DISMISSED) 처리
+- 최초 감지에서 EVENT_WINDOW_SEC 를 넘긴 PENDING 은 기준미달(DISMISSED) 처리
+  (이후 검출은 쿨다운 없이 새 이벤트로 처음부터 다시 센다)
 - 누적 프레임이 임계값(event_threshold_frames)에 도달하면 CONFIRMED 확정
   → 커밋 후 services.hooks.on_event_confirmed(event_no) 호출 (2단계 알림 훅)
 """
@@ -61,18 +71,16 @@ def _event_state(row: dict) -> dict:
 
 
 def _find_open_event(cur, cctv_no: int) -> dict | None:
-    """카메라의 최신 PENDING 이벤트와 마지막 활동 시각을 가져온다.
+    """카메라의 최신 PENDING 이벤트를 관측 창 시작 시각과 함께 가져온다.
 
-    마지막 활동 = 미디어 중 가장 늦은 media_captured_at,
-    미디어가 없으면 event_first_detected_at.
+    창의 기준점은 event_first_detected_at — 이후 프레임이 아무리 들어와도
+    움직이지 않는다.
     """
     cur.execute(
         """
         SELECT e.event_no, e.event_status, e.event_class, e.event_confidence,
                e.event_detected_frames, e.event_threshold_frames,
-               coalesce((SELECT max(m.media_captured_at)
-                         FROM event_media m WHERE m.event_no = e.event_no),
-                        e.event_first_detected_at) AS last_activity_at
+               e.event_first_detected_at AS window_started_at
         FROM fire_event e
         WHERE e.cctv_no = %s AND e.event_status = 'PENDING'
         ORDER BY e.event_no DESC
@@ -94,9 +102,11 @@ def process_detection(cctv_no: int, captured_at: datetime,
     with db.get_cursor(commit=True) as cur:
         event = _find_open_event(cur, cctv_no)
 
-        # 윈도우 초과: 끊긴 PENDING 은 기준미달 처리하고 없는 것으로 본다
-        if event and event["last_activity_at"] is not None \
-                and event["last_activity_at"] < captured_at - window:
+        # 창 종료: 임계값에 미달한 채 창이 닫혔으므로 기준미달 처리하고 없는 것으로 본다.
+        # (여기까지 PENDING 으로 살아 있다는 건 임계값을 못 채웠다는 뜻)
+        # 이 프레임은 아래에서 새 이벤트의 최초 감지 프레임이 된다.
+        if event and event["window_started_at"] is not None \
+                and event["window_started_at"] < captured_at - window:
             cur.execute(
                 "UPDATE fire_event SET event_status = 'DISMISSED' WHERE event_no = %s",
                 (event["event_no"],),
@@ -196,9 +206,11 @@ def process_detection(cctv_no: int, captured_at: datetime,
 
 
 def sweep_stale_pending(now: datetime | None = None) -> int:
-    """마지막 활동에서 EVENT_WINDOW_SEC 를 넘긴 모든 PENDING 을 DISMISSED 처리.
+    """최초 감지에서 EVENT_WINDOW_SEC 를 넘긴 모든 PENDING 을 DISMISSED 처리.
 
-    4단계 스케줄러가 주기적으로 호출한다. 처리한 건수를 돌려준다.
+    다음 프레임이 도착해야 정리되는 걸 기다리지 않고, 창이 닫히는 시점에
+    판정을 끝내는 경로다. 4단계 스케줄러가 주기적으로 호출한다.
+    처리한 건수를 돌려준다.
     """
     cutoff = (now or datetime.now()) - timedelta(seconds=config.EVENT_WINDOW_SEC)
     with db.get_cursor(commit=True) as cur:
@@ -207,9 +219,7 @@ def sweep_stale_pending(now: datetime | None = None) -> int:
             UPDATE fire_event e
             SET event_status = 'DISMISSED'
             WHERE e.event_status = 'PENDING'
-              AND coalesce((SELECT max(m.media_captured_at)
-                            FROM event_media m WHERE m.event_no = e.event_no),
-                           e.event_first_detected_at) < %s
+              AND e.event_first_detected_at < %s
             """,
             (cutoff,),
         )
