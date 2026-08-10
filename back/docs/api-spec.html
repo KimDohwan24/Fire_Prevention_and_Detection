@@ -163,7 +163,7 @@
   <tr><td><code>alert_level</code></td><td><code>1</code> — <b>항상 1</b>. 단계 승격 개념이 없어졌다 (아래 주의 참고)</td></tr>
   <tr><td><code>alert_channel</code></td><td><code>PUSH</code>(앱알림) · <code>SMS</code>(문자)</td></tr>
   <tr><td><code>alert_status</code></td><td><code>SENT</code>(발송) · <code>READ</code>(확인) · <code>CANCELED</code>(취소) · <code>NO_RESPONSE</code>(무응답)</td></tr>
-  <tr><td><code>report_status</code></td><td><code>SENDING</code>(전송중) · <code>DISPATCHED</code>(출동접수) · <code>NO_RESPONSE</code>(무응답으로 승계) · <code>FAILED</code>(전송실패)</td></tr>
+  <tr><td><code>report_status</code></td><td><code>SENDING</code>(전송중) · <code>ACCEPTED</code>(접수확인) · <code>NO_RESPONSE</code>(무응답으로 승계) · <code>FAILED</code>(전송실패)</td></tr>
   <tr><td><code>report_trigger_reason</code></td><td><code>USER_CONFIRMED</code>(사용자가 알림에서 화재 확인) · <code>NO_RESPONSE_TIMEOUT</code>(유예 마감까지 무응답)</td></tr>
 </table>
 
@@ -646,17 +646,17 @@
       "report_status": "NO_RESPONSE",
       "report_distance_km": 0.617,
       "reported_at": "2026-08-08T14:33:10",
-      "report_dispatched_at": null
+      "report_accepted_at": null
     },
     {
       "report_no": 4,
       "agency_no": 2,
       "agency_name": "중부소방서",
       "report_sequence": 2,
-      "report_status": "DISPATCHED",
+      "report_status": "ACCEPTED",
       "report_distance_km": 1.601,
       "reported_at": "2026-08-08T14:33:24",
-      "report_dispatched_at": "2026-08-08T14:33:25"
+      "report_accepted_at": "2026-08-08T14:33:25"
     }
   ]
 }</pre>
@@ -884,10 +884,13 @@
   <li><b>전송 (안쪽 루프)</b> — 그 기관의 <code>agency_endpoint</code>로 신고 JSON 을 POST 한다.
       <code>MAX_REPORT_ATTEMPTS</code>(기본 4)회까지 시도하며, 매 시도마다 <code>report_attempt_count</code>가 올라간다.
       타임아웃(<code>REPORT_HTTP_TIMEOUT_SEC</code>, 기본 3초) · 연결 실패 · 2xx 아닌 응답은 모두 <b>실패</b>로 보고 재시도한다.</li>
-  <li><b>성공</b> — 2xx 를 받으면 그 행이 <code>DISPATCHED</code>가 되고
-      <code>report_dispatched_at</code>이 찍힌다. 응답 본문에 <code>external_id</code>가 있으면
+  <li><b>접수 확인</b> — 2xx 를 받으면 그 행이 <code>ACCEPTED</code>가 되고
+      <code>report_accepted_at</code>이 찍힌다. 응답 본문에 <code>external_id</code>가 있으면
       <code>report_external_id</code>에 저장한다 (본문 없는 2xx 도 성공으로 본다 — 이때는 <code>null</code>).
-      <b>여기서 승계는 멈춘다.</b></li>
+      <b>여기서 승계는 멈춘다.</b>
+      <br>⚠️ <code>ACCEPTED</code>는 <b>"119 서버가 신고를 받았다"까지</b>다.
+      소방차 배차 확인이 아니다 — 그건 119 가 별도 콜백으로 회신하는 값이고 아직 구현하지 않았다.
+      화면에 '출동'으로 표기하지 말 것.</li>
   <li><b>기관 소진 → 승계</b> — <code>MAX_REPORT_ATTEMPTS</code>회를 다 쓰고도 못 받으면
       그 행은 <code>NO_RESPONSE</code>(무응답으로 승계)로 닫고, <b>다음으로 가까운 기관</b>에 대해 2번으로 돌아간다.
       <code>report_sequence</code>가 1 늘어난다.</li>
@@ -897,6 +900,7 @@
 
 <p>기관에 전송하는 JSON 페이로드는 다음과 같다 (가상 119 서버 <code>mock-119</code>가 받는 형식).</p>
 <pre>{
+  "report_uid": "FG-12",
   "event_no": 12,
   "address": "본관 정문 앞",
   "lat": 37.5665,
@@ -907,7 +911,18 @@
 }</pre>
 
 <div class="note">
-  🔒 <b>이벤트당 진행 중 신고는 1건뿐</b>이다. <code>SENDING</code> · <code>DISPATCHED</code> 두 상태에
+  🔑 <b><code>report_uid</code> 는 화재 하나에 하나</b>다(<code>FG-{event_no}</code>).
+  재시도 4회에도, 다음 기관으로 승계해도 <b>같은 값</b>이라 받는 쪽이 "아까 그 신고"임을 안다.
+  <br>이게 없으면 3초 타임아웃 뒤의 재전송이 <b>같은 화재에 대한 출동 4건</b>이 된다.
+  재전송은 상대가 못 받았다는 뜻이 아니라 응답이 안 왔다는 뜻일 뿐이기 때문이다
+  (<code>mock-119</code>의 <code>mode=timeout</code>이 딱 이 경우다 — 10초 뒤 200 을 주므로 접수는 된 것이다).
+  <br>받는 쪽은 이미 접수한 <code>report_uid</code>가 다시 오면 새로 접수하지 말고
+  먼저 발급한 접수번호만 재발신해야 한다. 중복 검사 범위는 <b>접수 서버 하나</b>다 —
+  기관이 다르면 같은 uid 라도 각자 접수해야 승계가 막히지 않는다.
+</div>
+
+<div class="note">
+  🔒 <b>이벤트당 진행 중 신고는 1건뿐</b>이다. <code>SENDING</code> · <code>ACCEPTED</code> 두 상태에
   걸린 DB 부분 유니크 인덱스(<code>UX_report_119_active ON report_119(event_no)</code>)가 강제한다.
   그래서 "사용자 READ"와 "에스컬레이션 무응답"이 동시에 신고를 시작해도 신고는 하나만 나가고,
   나중에 도착한 쪽은 이미 진행 중인 신고를 그대로 돌려받는다.
@@ -928,7 +943,7 @@
   <div class="label">Query Parameters</div>
   <table>
     <tr><th>파라미터</th><th>타입</th><th>필수</th><th>설명</th></tr>
-    <tr><td>report_status</td><td>string</td><td>X</td><td><code>DISPATCHED</code> 등으로 필터</td></tr>
+    <tr><td>report_status</td><td>string</td><td>X</td><td><code>ACCEPTED</code> 등으로 필터</td></tr>
     <tr><td>event_no</td><td>number</td><td>X</td><td>특정 이벤트의 승계 이력만</td></tr>
     <tr><td>page / size</td><td>number</td><td>X</td><td>기본 1 / 20</td></tr>
   </table>
@@ -944,12 +959,12 @@
       "report_sequence": 1,
       "report_external_id": "R-20260808-0012",
       "report_trigger_reason": "NO_RESPONSE_TIMEOUT",
-      "report_status": "DISPATCHED",
+      "report_status": "ACCEPTED",
       "report_address": "서울시 종로구 세종대로 1",
       "report_distance_km": 1.234,
       "report_attempt_count": 1,
       "reported_at": "2026-08-08T14:33:10",
-      "report_dispatched_at": "2026-08-08T14:33:40"
+      "report_accepted_at": "2026-08-08T14:33:40"
     }
   ],
   "page": 1, "size": 20, "total_count": 5, "total_pages": 1

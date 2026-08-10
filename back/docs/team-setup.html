@@ -406,6 +406,30 @@ ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</cod
   <code>ESCALATION_INTERVAL_SEC</code> 는 적어 둔 값이 그대로 쓰여 혼자만 10초로 돕니다.
 </div>
 
+<div class="warn">
+  ⚠️ <strong>2026-08-10 DB 스키마 변경 — 기존 개발 DB 는 마이그레이션이 필요합니다</strong>
+  <p><code>report_119</code> 의 신고 상태 <code>DISPATCHED</code> 가 <code>ACCEPTED</code> 로,
+  <code>report_dispatched_at</code> 컬럼이 <code>report_accepted_at</code> 으로 바뀌었습니다.
+  2xx 응답은 "119 가 신고를 받았다"이지 "소방차가 배차됐다"가 아니라서, 이름이
+  실제 뜻과 맞지 않았습니다.</p>
+  <p><strong>DB 를 새로 만들 거면</strong> <code>db/schema.sql</code> 을 다시 돌리면 끝입니다.
+  <strong>기존 DB 를 유지하려면</strong> 아래를 한 번 실행하세요.</p>
+<pre><code>ALTER TABLE fireguard.report_119
+    RENAME COLUMN report_dispatched_at TO report_accepted_at;
+
+UPDATE fireguard.report_119
+    SET report_status = 'ACCEPTED' WHERE report_status = 'DISPATCHED';
+
+DROP INDEX IF EXISTS fireguard.ux_report_119_active;
+CREATE UNIQUE INDEX UX_report_119_active ON fireguard.report_119 (event_no)
+    WHERE report_status IN ('SENDING', 'ACCEPTED');
+
+COMMENT ON COLUMN fireguard.report_119.report_accepted_at
+    IS '119 접수 확인 일시 (출동 배차 확인이 아님)';</code></pre>
+  <p>부분 유니크 인덱스가 <code>'DISPATCHED'</code> 문자열을 직접 담고 있어서
+  인덱스도 반드시 다시 만들어야 합니다. 안 그러면 이벤트당 진행 중 신고 1건 보장이 깨집니다.</p>
+</div>
+
 <h3>시연 순서 예시</h3>
 <ol>
   <li>백엔드 · mock-119 · 프론트를 모두 띄운다</li>

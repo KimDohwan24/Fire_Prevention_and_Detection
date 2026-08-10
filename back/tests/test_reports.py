@@ -9,7 +9,7 @@ REPORT_FIELDS = {
     "report_no", "event_no", "agency_no", "agency_name",
     "report_sequence", "report_external_id", "report_trigger_reason",
     "report_status", "report_address", "report_distance_km",
-    "report_attempt_count", "reported_at", "report_dispatched_at",
+    "report_attempt_count", "reported_at", "report_accepted_at",
 }
 
 
@@ -46,13 +46,13 @@ def test_list_reports_item_has_all_spec_fields(client, admin_headers):
     assert item["agency_no"] == 1
     assert item["agency_name"] == "종로소방서"  # JOIN 필드
     assert item["report_sequence"] == 1
-    assert item["report_status"] == "DISPATCHED"
+    assert item["report_status"] == "ACCEPTED"
     assert item["report_trigger_reason"] == "NO_RESPONSE_TIMEOUT"
     # numeric 은 JSON 숫자로 직렬화된다
     assert isinstance(item["report_distance_km"], (int, float))
     assert abs(item["report_distance_km"] - 1.234) < 1e-6
     assert item["reported_at"] is not None
-    assert item["report_dispatched_at"] is not None
+    assert item["report_accepted_at"] is not None
 
 
 def test_list_reports_filter_by_event_no(client, admin_headers):
@@ -77,17 +77,17 @@ def test_list_reports_invalid_event_no_returns_400(client, admin_headers):
 
 
 def test_list_reports_filter_by_status(client, admin_headers):
-    """?report_status= 필터: FAILED 만 / DISPATCHED 만 골라낸다."""
+    """?report_status= 필터: FAILED 만 / ACCEPTED 만 골라낸다."""
     event_no = make_event()
     failed_no = make_report(event_no, sequence=1, status="FAILED")
-    dispatched_no = make_report(event_no, agency_no=2, sequence=2, status="DISPATCHED")
+    dispatched_no = make_report(event_no, agency_no=2, sequence=2, status="ACCEPTED")
 
     r = client.get("/api/reports?report_status=FAILED", headers=admin_headers)
     body = r.get_json()
     assert body["total_count"] == 1
     assert body["items"][0]["report_no"] == failed_no
 
-    r = client.get("/api/reports?report_status=DISPATCHED", headers=admin_headers)
+    r = client.get("/api/reports?report_status=ACCEPTED", headers=admin_headers)
     body = r.get_json()
     assert body["total_count"] == 1
     assert body["items"][0]["report_no"] == dispatched_no
@@ -100,7 +100,7 @@ def test_list_reports_escalation_history_for_event(client, admin_headers):
     """
     event_no = make_event()
     first = make_report(event_no, agency_no=1, sequence=1, status="NO_RESPONSE")
-    second = make_report(event_no, agency_no=2, sequence=2, status="DISPATCHED")
+    second = make_report(event_no, agency_no=2, sequence=2, status="ACCEPTED")
 
     r = client.get(f"/api/reports?event_no={event_no}", headers=admin_headers)
     assert r.status_code == 200
@@ -116,11 +116,11 @@ def test_list_reports_escalation_history_for_event(client, admin_headers):
 def test_list_reports_paged_shape(client, admin_headers):
     """페이징 공통 형식과 페이지 분할."""
     event_no = make_event()
-    # 활성(SENDING/DISPATCHED) 신고는 이벤트당 1건만 허용된다 (UX_report_119_active).
-    # 승계 이력답게 이전 순번은 NO_RESPONSE, 마지막만 DISPATCHED 로 만든다.
+    # 활성(SENDING/ACCEPTED) 신고는 이벤트당 1건만 허용된다 (UX_report_119_active).
+    # 승계 이력답게 이전 순번은 NO_RESPONSE, 마지막만 ACCEPTED 로 만든다.
     for seq in range(1, 4):
         make_report(event_no, sequence=seq,
-                    status="DISPATCHED" if seq == 3 else "NO_RESPONSE")
+                    status="ACCEPTED" if seq == 3 else "NO_RESPONSE")
 
     r = client.get("/api/reports?page=1&size=2", headers=admin_headers)
     body = r.get_json()

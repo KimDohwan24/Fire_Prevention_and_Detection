@@ -137,7 +137,7 @@ CREATE TABLE fireguard.report_119 (
     report_distance_km    numeric(6,3)  NULL,
     report_attempt_count  integer       NULL  DEFAULT 0,
     reported_at           timestamp     NULL,
-    report_dispatched_at  timestamp     NULL
+    report_accepted_at  timestamp     NULL
 );
 
 
@@ -196,7 +196,7 @@ CREATE INDEX IX_report_119_01  ON fireguard.report_119  (event_no, report_sequen
 -- 진행 중인 신고가 이벤트당 하나만 있도록 DB 에서 강제한다
 -- PostgreSQL 부분 인덱스 (MySQL 에는 없는 기능)
 CREATE UNIQUE INDEX UX_report_119_active ON fireguard.report_119 (event_no)
-    WHERE report_status IN ('SENDING', 'DISPATCHED');
+    WHERE report_status IN ('SENDING', 'ACCEPTED');
 
 
 -- =====================================================
@@ -288,7 +288,7 @@ COMMENT ON COLUMN fireguard.report_119.report_address        IS '신고 지점 �
 COMMENT ON COLUMN fireguard.report_119.report_distance_km    IS '기관까지 거리';
 COMMENT ON COLUMN fireguard.report_119.report_attempt_count  IS '전송 시도 횟수';
 COMMENT ON COLUMN fireguard.report_119.reported_at           IS '전송 일시';
-COMMENT ON COLUMN fireguard.report_119.report_dispatched_at  IS '출동 접수 일시';
+COMMENT ON COLUMN fireguard.report_119.report_accepted_at  IS '119 접수 확인 일시 (출동 배차 확인이 아님)';
 
 
 -- =====================================================
@@ -303,7 +303,7 @@ COMMENT ON COLUMN fireguard.report_119.report_dispatched_at  IS '출동 접수 �
 -- alert.alert_level        : 1(1차 알림) 2(승격) 3(최종)
 -- alert.alert_channel      : PUSH(앱알림) SMS(문자)
 -- alert.alert_status       : SENT(발송) READ(확인) CANCELED(취소) NO_RESPONSE(무응답)
--- report_119.report_status : SENDING(전송중) DISPATCHED(출동접수)
+-- report_119.report_status : SENDING(전송중) ACCEPTED(접수확인)
 --                            NO_RESPONSE(무응답으로 승계) FAILED(전송실패)
 --
 -- media_detections 저장 형태 (좌표는 0~1 비율, YOLO 의 xywhn)

@@ -80,7 +80,7 @@ def test_haversine_agency1_closer_than_agency2():
 # ---------- 성공 경로 ----------
 
 def test_start_report_success_first_try(monkeypatch):
-    """첫 시도 성공: 가장 가까운 기관(1)으로 DISPATCHED 행 1개, 거리/주소/외부ID 저장."""
+    """첫 시도 성공: 가장 가까운 기관(1)으로 ACCEPTED 행 1개, 거리/주소/외부ID 저장."""
     calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-2026-0001"}))
     event_no = make_event()
 
@@ -91,7 +91,7 @@ def test_start_report_success_first_try(monkeypatch):
     r = rows[0]
     assert r["agency_no"] == 1
     assert r["report_sequence"] == 1
-    assert r["report_status"] == "DISPATCHED"
+    assert r["report_status"] == "ACCEPTED"
     assert r["report_external_id"] == "R-2026-0001"
     assert r["report_trigger_reason"] == "USER_CONFIRMED"
     assert r["report_attempt_count"] == 1
@@ -99,11 +99,11 @@ def test_start_report_success_first_try(monkeypatch):
     assert float(r["report_distance_km"]) == pytest.approx(
         haversine_km(*CCTV1, *AGENCY1), abs=0.002)
     assert r["reported_at"] is not None
-    assert r["report_dispatched_at"] is not None
+    assert r["report_accepted_at"] is not None
 
     assert result is not None
     assert result["report_no"] == r["report_no"]
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
     assert result["agency_no"] == 1
 
     # 페이로드 계약 확인
@@ -119,7 +119,7 @@ def test_start_report_success_first_try(monkeypatch):
 
 
 def test_start_report_retry_then_success(monkeypatch):
-    """2번 실패(타임아웃/거절) 후 3번째 성공 → 같은 기관, attempt_count=3, DISPATCHED."""
+    """2번 실패(타임아웃/거절) 후 3번째 성공 → 같은 기관, attempt_count=3, ACCEPTED."""
     def fn(ep, pl, n):
         if n == 1:
             raise requests.exceptions.Timeout("모의 타임아웃")
@@ -135,11 +135,11 @@ def test_start_report_retry_then_success(monkeypatch):
     rows = get_report_rows(event_no)
     assert len(rows) == 1
     assert rows[0]["agency_no"] == 1
-    assert rows[0]["report_status"] == "DISPATCHED"
+    assert rows[0]["report_status"] == "ACCEPTED"
     assert rows[0]["report_attempt_count"] == 3
     assert rows[0]["report_external_id"] == "R-RETRY-01"
     assert len(calls) == 3
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
 
 
 def test_start_report_accepts_2xx_without_body(monkeypatch):
@@ -150,15 +150,76 @@ def test_start_report_accepts_2xx_without_body(monkeypatch):
     result = report_service.start_report(event_no, "USER_CONFIRMED")
 
     (r,) = get_report_rows(event_no)
-    assert r["report_status"] == "DISPATCHED"
+    assert r["report_status"] == "ACCEPTED"
     assert r["report_external_id"] is None
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
+
+
+# ---------- 신고 ID (멱등 키) ----------
+#
+# 재전송은 "상대가 못 받았다"가 아니라 "응답이 안 왔다"일 뿐이다. 같은 신고를
+# 식별할 ID 가 없으면 119 쪽에서 같은 화재가 여러 건으로 접수된다.
+# 발표 슬라이드 12: "동일 ID 로 최대 4회 재전송", "동일 신고 ID 유지로 중복 접수 방지".
+
+def test_payload_carries_report_uid(monkeypatch):
+    """페이로드에 신고 ID 가 실린다 — 이벤트에서 결정되는 값이라 재현 가능하다."""
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-1"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert payload["report_uid"] == report_service.report_uid(event_no)
+    assert payload["report_uid"] == f"FG-{event_no}"
+
+
+def test_report_uid_identical_across_retries(monkeypatch):
+    """같은 기관에 재전송할 때 신고 ID 는 바뀌지 않는다."""
+    def fn(ep, pl, n):
+        if n < 3:
+            raise requests.exceptions.Timeout("모의 타임아웃")
+        return FakeResponse(200, {"external_id": "R-RETRY"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    uids = {pl["report_uid"] for _, pl in calls}
+    assert len(calls) == 3
+    assert uids == {f"FG-{event_no}"}
+
+
+def test_report_uid_survives_agency_takeover(monkeypatch):
+    """기관을 승계해도 신고 ID 는 그대로다 — 다음 기관도 같은 화재임을 알 수 있다.
+
+    report_119 행은 기관마다 새로 생기지만(순번 +1), 신고 ID 는 이벤트 단위다.
+    """
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            raise requests.exceptions.ConnectionError("모의 연결 실패")
+        return FakeResponse(200, {"external_id": "R-TAKEOVER"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    assert len(calls) == 5  # 기관1에 4회 + 기관2에 1회
+    assert {pl["report_uid"] for _, pl in calls} == {f"FG-{event_no}"}
+
+
+def test_report_uid_differs_between_events():
+    """다른 화재는 다른 신고 ID 를 받는다."""
+    assert report_service.report_uid(11) != report_service.report_uid(12)
 
 
 # ---------- 승계 (기관 교체) ----------
 
 def test_takeover_to_second_agency(monkeypatch):
-    """기관 1이 4회 모두 실패 → 그 행은 NO_RESPONSE(승계), 기관 2가 sequence 2 로 DISPATCHED."""
+    """기관 1이 4회 모두 실패 → 그 행은 NO_RESPONSE(승계), 기관 2가 sequence 2 로 ACCEPTED."""
     set_distinct_endpoints()
 
     def fn(ep, pl, n):
@@ -178,17 +239,17 @@ def test_takeover_to_second_agency(monkeypatch):
     assert first["report_sequence"] == 1
     assert first["report_status"] == "NO_RESPONSE"
     assert first["report_attempt_count"] == 4
-    assert first["report_dispatched_at"] is None
+    assert first["report_accepted_at"] is None
     assert second["agency_no"] == 2
     assert second["report_sequence"] == 2
-    assert second["report_status"] == "DISPATCHED"
+    assert second["report_status"] == "ACCEPTED"
     assert second["report_external_id"] == "R-TAKEOVER-02"
     assert float(second["report_distance_km"]) == pytest.approx(
         haversine_km(*CCTV1, *AGENCY2), abs=0.002)
 
     # 기관 1에 4번, 기관 2에 1번
     assert [ep for ep, _ in calls] == ["http://a1/report"] * 4 + ["http://a2/report"]
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
     assert result["agency_no"] == 2
 
 
@@ -240,7 +301,7 @@ def test_inactive_agency_excluded(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["agency_no"] == 2
     assert rows[0]["report_sequence"] == 1
-    assert rows[0]["report_status"] == "DISPATCHED"
+    assert rows[0]["report_status"] == "ACCEPTED"
     assert result["agency_no"] == 2
 
 
@@ -258,16 +319,16 @@ def test_no_active_agencies_returns_none(monkeypatch):
 # ---------- 멱등성 · 동시성 가드 ----------
 
 def test_start_report_idempotent_existing_active(monkeypatch):
-    """이미 진행 중(DISPATCHED) 신고가 있으면 그 정보를 돌려주고 아무 것도 안 한다."""
+    """이미 진행 중(ACCEPTED) 신고가 있으면 그 정보를 돌려주고 아무 것도 안 한다."""
     event_no = make_event()
-    existing_no = make_report(event_no, agency_no=1, status="DISPATCHED")
+    existing_no = make_report(event_no, agency_no=1, status="ACCEPTED")
     calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200))
 
     result = report_service.start_report(event_no, "USER_CONFIRMED")
 
     assert result is not None
     assert result["report_no"] == existing_no
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
     assert len(get_report_rows(event_no)) == 1  # 새 행 없음
     assert calls == []                          # HTTP 호출 없음
 
@@ -317,7 +378,7 @@ def test_read_on_sent_alert_triggers_report(client, admin_headers, monkeypatch):
     rows = get_report_rows(event_no)
     assert len(rows) == 1
     assert rows[0]["report_trigger_reason"] == "USER_CONFIRMED"
-    assert rows[0]["report_status"] == "DISPATCHED"
+    assert rows[0]["report_status"] == "ACCEPTED"
 
 
 def test_read_on_one_of_paired_alerts_reports_once(client, admin_headers, monkeypatch):

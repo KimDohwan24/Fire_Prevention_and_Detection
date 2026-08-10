@@ -116,7 +116,7 @@ def get_event(event_no: int):
         """
         SELECT r.report_no, r.agency_no, ag.agency_name,
                r.report_sequence, r.report_status, r.report_distance_km,
-               r.reported_at, r.report_dispatched_at
+               r.reported_at, r.report_accepted_at
         FROM report_119 r
         JOIN agency ag ON ag.agency_no = r.agency_no
         WHERE r.event_no = %s

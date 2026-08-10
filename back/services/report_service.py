@@ -27,7 +27,20 @@ from utils.geo import haversine_km
 logger = logging.getLogger("fireguard.report")
 
 # 진행 중으로 간주하는 상태 (부분 유니크 인덱스와 동일한 집합)
-ACTIVE_STATUSES = ("SENDING", "DISPATCHED")
+ACTIVE_STATUSES = ("SENDING", "ACCEPTED")
+
+
+def report_uid(event_no: int) -> str:
+    """119 에 보내는 신고 ID — 화재(이벤트) 하나에 하나.
+
+    재전송에도 승계에도 같은 값이라, 받는 쪽이 "아까 그 신고"임을 알 수 있다.
+    재전송은 상대가 못 받았다는 뜻이 아니라 응답이 안 왔다는 뜻일 뿐이다.
+    ID 가 없으면 3초 타임아웃 뒤 재전송한 4건이 같은 화재에 대한 출동 4건이 된다.
+
+    event_no 에서 바로 만든다 — 컬럼을 새로 두지 않아도 언제든 같은 값이 나오고,
+    로그에서 신고 ID 만 보고 이벤트를 찾을 수 있다.
+    """
+    return f"FG-{event_no}"
 
 
 def _real_post_report(endpoint: str, payload: dict) -> requests.Response:
@@ -49,12 +62,12 @@ def _post_report(endpoint: str, payload: dict) -> requests.Response:
 
 
 def _find_active_report(event_no: int) -> dict | None:
-    """이벤트의 진행 중(SENDING/DISPATCHED) 신고를 찾는다."""
+    """이벤트의 진행 중(SENDING/ACCEPTED) 신고를 찾는다."""
     return db.query_one(
         """
         SELECT r.report_no, r.event_no, r.agency_no, ag.agency_name,
                r.report_sequence, r.report_status, r.report_external_id,
-               r.report_trigger_reason, r.reported_at, r.report_dispatched_at
+               r.report_trigger_reason, r.reported_at, r.report_accepted_at
         FROM report_119 r
         JOIN agency ag ON ag.agency_no = r.agency_no
         WHERE r.event_no = %s AND r.report_status IN %s
@@ -70,7 +83,7 @@ def _report_info(report_no: int) -> dict:
         SELECT r.report_no, r.event_no, r.agency_no, ag.agency_name,
                r.report_sequence, r.report_status, r.report_external_id,
                r.report_trigger_reason, r.report_distance_km,
-               r.report_attempt_count, r.reported_at, r.report_dispatched_at
+               r.report_attempt_count, r.reported_at, r.report_accepted_at
         FROM report_119 r
         JOIN agency ag ON ag.agency_no = r.agency_no
         WHERE r.report_no = %s
@@ -83,7 +96,7 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
                     trigger_reason: str, is_last: bool) -> dict | None:
     """한 기관에 대해 신고 행 생성 + 최대 MAX_REPORT_ATTEMPTS 회 전송을 시도한다.
 
-    반환: 최종 신고 정보 dict. 상태가 DISPATCHED(또는 동시성 가드로 찾은 기존
+    반환: 최종 신고 정보 dict. 상태가 ACCEPTED(또는 동시성 가드로 찾은 기존
     활성 신고)면 호출자는 승계를 멈춘다. NO_RESPONSE 면 다음 기관으로 넘어간다.
     """
     # 1) 행을 먼저 SENDING 으로 INSERT — 유니크 인덱스 슬롯 선점 (동시성 가드)
@@ -108,7 +121,7 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
             """
             SELECT r.report_no, r.event_no, r.agency_no, ag.agency_name,
                    r.report_sequence, r.report_status, r.report_external_id,
-                   r.report_trigger_reason, r.reported_at, r.report_dispatched_at
+                   r.report_trigger_reason, r.reported_at, r.report_accepted_at
             FROM report_119 r
             JOIN agency ag ON ag.agency_no = r.agency_no
             WHERE r.event_no = %s AND r.report_status IN %s
@@ -119,6 +132,8 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
 
     # 2) 안쪽 루프: 같은 기관에 최대 MAX_REPORT_ATTEMPTS 회 전송
     payload = {
+        # 신고 ID — 재전송·승계 내내 같은 값. 받는 쪽의 중복 접수 방지 키다.
+        "report_uid": report_uid(event["event_no"]),
         "event_no": event["event_no"],
         "address": event["cctv_location"],
         "lat": float(event["cctv_lat"]),
@@ -151,13 +166,13 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
             db.execute(
                 """
                 UPDATE report_119
-                SET report_status = 'DISPATCHED', report_external_id = %s,
-                    report_dispatched_at = now(), report_attempt_count = %s
+                SET report_status = 'ACCEPTED', report_external_id = %s,
+                    report_accepted_at = now(), report_attempt_count = %s
                 WHERE report_no = %s
                 """,
                 (external_id, attempt, report_no),
             )
-            logger.info("119 출동 접수 (report_no=%s, agency=%s, attempt=%s)",
+            logger.info("119 접수 확인 (report_no=%s, agency=%s, attempt=%s)",
                         report_no, agency["agency_name"], attempt)
             return _report_info(report_no)
 
@@ -185,7 +200,7 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
     - trigger_reason: 'USER_CONFIRMED'(사용자 화재 확인) 또는
       'NO_RESPONSE_TIMEOUT'(무응답 에스컬레이션).
     - 반환: 최종 신고 정보 dict. 점검 모드 이벤트/이벤트 없음/활성 기관 없음이면 None.
-    - 멱등: 이미 진행 중(SENDING/DISPATCHED) 신고가 있으면 그 정보를 그대로 돌려준다.
+    - 멱등: 이미 진행 중(SENDING/ACCEPTED) 신고가 있으면 그 정보를 그대로 돌려준다.
     """
     event = db.query_one(
         """
@@ -237,7 +252,7 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
         if result is None:
             continue
         if result["report_status"] in ACTIVE_STATUSES:
-            # DISPATCHED 성공, 또는 동시성 가드가 찾은 기존 활성 신고 — 승계 종료
+            # ACCEPTED 성공, 또는 동시성 가드가 찾은 기존 활성 신고 — 승계 종료
             return result
     # 전 기관 소진 — 마지막 행(FAILED) 정보를 돌려준다
     return result

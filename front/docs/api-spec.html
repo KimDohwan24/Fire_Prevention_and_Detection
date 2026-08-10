@@ -141,7 +141,7 @@
   <tr><td><code>alert_level</code></td><td><code>1</code>(1차 알림) · <code>2</code>(승격) · <code>3</code>(최종)</td></tr>
   <tr><td><code>alert_channel</code></td><td><code>PUSH</code>(앱알림) · <code>SMS</code>(문자)</td></tr>
   <tr><td><code>alert_status</code></td><td><code>SENT</code>(발송) · <code>READ</code>(확인) · <code>CANCELED</code>(취소) · <code>NO_RESPONSE</code>(무응답)</td></tr>
-  <tr><td><code>report_status</code></td><td><code>SENDING</code>(전송중) · <code>DISPATCHED</code>(출동접수) · <code>NO_RESPONSE</code>(무응답으로 승계) · <code>FAILED</code>(전송실패)</td></tr>
+  <tr><td><code>report_status</code></td><td><code>SENDING</code>(전송중) · <code>ACCEPTED</code>(접수확인) · <code>NO_RESPONSE</code>(무응답으로 승계) · <code>FAILED</code>(전송실패)</td></tr>
 </table>
 
 <!-- ===================================================== -->
@@ -487,10 +487,10 @@
       "agency_no": 2,
       "agency_name": "종로소방서",
       "report_sequence": 1,
-      "report_status": "DISPATCHED",
+      "report_status": "ACCEPTED",
       "report_distance_km": 1.234,
       "reported_at": "2026-08-08T14:33:10",
-      "report_dispatched_at": "2026-08-08T14:33:40"
+      "report_accepted_at": "2026-08-08T14:33:40"
     }
   ]
 }</pre>
@@ -637,7 +637,7 @@
   <div class="label">Query Parameters</div>
   <table>
     <tr><th>파라미터</th><th>타입</th><th>필수</th><th>설명</th></tr>
-    <tr><td>report_status</td><td>string</td><td>X</td><td><code>DISPATCHED</code> 등으로 필터</td></tr>
+    <tr><td>report_status</td><td>string</td><td>X</td><td><code>ACCEPTED</code> 등으로 필터</td></tr>
     <tr><td>event_no</td><td>number</td><td>X</td><td>특정 이벤트의 승계 이력만</td></tr>
     <tr><td>page / size</td><td>number</td><td>X</td><td>기본 1 / 20</td></tr>
   </table>
@@ -653,12 +653,12 @@
       "report_sequence": 1,
       "report_external_id": "R-20260808-0012",
       "report_trigger_reason": "NO_RESPONSE_TIMEOUT",
-      "report_status": "DISPATCHED",
+      "report_status": "ACCEPTED",
       "report_address": "서울시 종로구 세종대로 1",
       "report_distance_km": 1.234,
       "report_attempt_count": 1,
       "reported_at": "2026-08-08T14:33:10",
-      "report_dispatched_at": "2026-08-08T14:33:40"
+      "report_accepted_at": "2026-08-08T14:33:40"
     }
   ],
   "page": 1, "size": 20, "total_count": 5, "total_pages": 1

@@ -1307,9 +1307,14 @@ components:
     ReportStatus:
       type: string
       description: |
-        `SENDING` 전송 중 · `DISPATCHED` 출동 접수 ·
+        `SENDING` 전송 중 · `ACCEPTED` 119 서버가 신고를 받았다고 응답 ·
         `NO_RESPONSE` 무응답이라 다음 기관으로 승계 · `FAILED` 모든 기관 소진
-      enum: [SENDING, DISPATCHED, NO_RESPONSE, FAILED]
+
+        `ACCEPTED` 는 **접수 확인까지**를 뜻한다. 2xx 응답은 "신고를 받았다"이지
+        "소방차가 배차됐다"가 아니다. 출동 배차 확인은 119 가 별도 콜백으로
+        회신하는 값이고, 실제 연동 전까지는 구현하지 않는다 —
+        화면에 '출동'으로 표기하지 말 것.
+      enum: [SENDING, ACCEPTED, NO_RESPONSE, FAILED]
 
     # ---------- 계정 ----------
     LoginUser:
@@ -1852,7 +1857,7 @@ components:
           type: string
           format: date-time
           nullable: true
-        report_dispatched_at:
+        report_accepted_at:
           type: string
           format: date-time
           nullable: true
@@ -1883,7 +1888,7 @@ components:
           type: string
           format: date-time
           nullable: true
-        report_dispatched_at:
+        report_accepted_at:
           type: string
           format: date-time
           nullable: true

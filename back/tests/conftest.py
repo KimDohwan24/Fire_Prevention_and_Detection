@@ -256,13 +256,13 @@ def make_alert_pair(event_no, user_no=1, status="SENT", sms_status=None,
     return push_no, sms_no
 
 
-def make_report(event_no, agency_no=1, sequence=1, status="DISPATCHED"):
+def make_report(event_no, agency_no=1, sequence=1, status="ACCEPTED"):
     row = db.execute_returning(
         """
         INSERT INTO report_119 (event_no, agency_no, report_sequence, report_external_id,
                                 report_trigger_reason, report_status, report_address,
                                 report_distance_km, report_attempt_count,
-                                reported_at, report_dispatched_at)
+                                reported_at, report_accepted_at)
         VALUES (%s, %s, %s, 'R-TEST-001', 'NO_RESPONSE_TIMEOUT', %s,
                 '서울시 종로구 세종대로 1', 1.234, 1, now(), now())
         RETURNING report_no

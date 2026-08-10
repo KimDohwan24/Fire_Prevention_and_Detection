@@ -35,7 +35,7 @@ def list_reports():
         SELECT r.report_no, r.event_no, r.agency_no, ag.agency_name,
                r.report_sequence, r.report_external_id, r.report_trigger_reason,
                r.report_status, r.report_address, r.report_distance_km,
-               r.report_attempt_count, r.reported_at, r.report_dispatched_at
+               r.report_attempt_count, r.reported_at, r.report_accepted_at
         FROM report_119 r
         JOIN agency ag ON ag.agency_no = r.agency_no
         {where}
