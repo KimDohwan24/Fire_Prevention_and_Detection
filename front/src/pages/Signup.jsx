@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useDaumPostcodePopup } from 'react-daum-postcode';
 
 const Signup = () => {
+  const navigate = useNavigate();
   const [formData, setFormData] = useState({
     id: '',
     password: '',
@@ -53,6 +54,7 @@ const Signup = () => {
     // TODO: Implement actual signup logic
     console.log(formData);
     alert('회원가입이 완료되었습니다.');
+    navigate('/');
   };
 
   // Generate options for birthdate
