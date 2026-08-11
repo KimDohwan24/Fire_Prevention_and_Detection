@@ -2,7 +2,6 @@
 
 쿼리스트링용:
     int_param("cctv_no")     정수 파라미터 (없으면 None)
-    float_param("min_x")     실수 파라미터 (없으면 None)
     date_param("date_from")  YYYY-MM-DD 파라미터 (없으면 None)
 
 JSON 본문용:
@@ -22,7 +21,6 @@ JSON 본문용:
       (1234·abcd 등) 4자 이상, 키보드 배열 문자열(qwer·asdf 등),
       아이디 포함을 추가로 금지한다.
 """
-import math
 import re
 from datetime import datetime
 
@@ -40,24 +38,6 @@ def int_param(name: str) -> int | None:
         return int(v)
     except ValueError:
         raise ApiError(400, "BAD_REQUEST", f"{name} 는 정수여야 합니다.", field=name)
-
-
-def float_param(name: str) -> float | None:
-    """쿼리스트링에서 실수 파라미터를 읽는다. 없으면 None, 형식 오류면 400.
-
-    int_param 과 달리 "0" 을 '없음'으로 보지 않는다 — 경위도는 0 도 정상값이다.
-    nan·inf 도 거부한다 (float() 은 통과시키지만 비교·직렬화에서 사고가 난다).
-    """
-    v = request.args.get(name)
-    if v is None or not v.strip():
-        return None
-    try:
-        parsed = float(v)
-    except ValueError:
-        raise ApiError(400, "BAD_REQUEST", f"{name} 는 숫자여야 합니다.", field=name)
-    if not math.isfinite(parsed):
-        raise ApiError(400, "BAD_REQUEST", f"{name} 는 숫자여야 합니다.", field=name)
-    return parsed
 
 
 def date_param(name: str) -> str | None:

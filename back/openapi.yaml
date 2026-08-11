@@ -633,56 +633,34 @@ paths:
       summary: 연동 가능한 ITS 공공 CCTV 목록
       description: |
         우리 DB 가 아니라 **ITS 오픈 API 를 그 자리에서 조회**해 돌려준다.
-        카메라를 등록하려는 관리자가 "지금 붙일 수 있는 카메라"를 고르는 화면용이다.
+        카메라를 등록하려는 사용자가 "지금 붙일 수 있는 카메라"를 고르는 화면용이다.
 
+        - **인증이 필요 없다.** 공개 개방 데이터를 중계하는 것이라 토큰 없이 부를 수 있다.
         - 좌표는 ITS 원본(`coordy`=위도, `coordx`=경도)을 우리 이름으로 정규화해 내려간다.
-        - `is_registered` 는 같은 `cctv_name` 이 이미 `cctv` 테이블에 있는지다.
-          이미 등록된 카메라를 또 등록하지 않도록 화면에서 걸러 쓰라고 넣었다.
-        - `cctv_location` 은 ITS 가 주소를 주지 않아 **이름을 그대로 넣는다**
-          (이름이 노선+지점 표기라 위치 설명을 겸한다). `cctv_type` 은 스트림 형식이다.
-          두 필드 모두 null 이 아닌 문자열을 보장한다.
+        - **바로 쓸 수 없는 항목은 빼고 준다** — 이름이 없거나, 스트림 주소가 없거나,
+          좌표가 숫자로 읽히지 않는 항목은 목록에서 제외된다. 화면에서 고를 수 없는 것을
+          보여줘 봐야 사용자가 눌렀을 때 실패할 뿐이다.
+        - `total` 은 **페이지가 아니라 걸러낸 뒤의 전체 건수**다. `items` 는 그중 한 페이지다.
 
-        **실패 정책이 `/api/cctvs` 와 정반대다.** 저 쪽은 ITS 가 죽어도 저장된 주소로
-        폴백해 200 을 내지만, 여기는 폴백할 저장분이 없다. 실패를 0건으로 위장하면
-        "카메라가 없음"과 "서버 고장"을 구분할 수 없으므로 **502 로 실패를 알린다**.
-        다만 ITS 가 정상적으로 0건을 준 경우는 성공이라 200 + 빈 `items` 다.
-      security:
-        - bearerAuth: []
+        실패하면 **503** 이다. `/api/cctvs` 는 ITS 가 죽어도 저장된 주소로 폴백해 200 을 내지만,
+        여기는 폴백할 저장분이 없다. 빈 목록으로 위장하면 "카메라 없음"과 "서버 고장"을
+        구분할 수 없다.
       parameters:
-        - name: min_x
+        - name: limit
           in: query
-          description: 조회 박스 최소 경도. **네 개를 전부 보내거나 전부 생략해야 한다** (일부만 보내면 400). 생략 시 전국 기본 박스.
+          description: 한 번에 받을 개수 (1~100). 벗어나면 400
           schema:
-            type: number
-            format: double
-            example: 126.9
-        - name: max_x
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+        - name: offset
           in: query
-          description: 조회 박스 최대 경도
+          description: 건너뛸 개수 (0 이상). 음수면 400
           schema:
-            type: number
-            format: double
-            example: 127.2
-        - name: min_y
-          in: query
-          description: 조회 박스 최소 위도
-          schema:
-            type: number
-            format: double
-            example: 37.3
-        - name: max_y
-          in: query
-          description: 조회 박스 최대 위도
-          schema:
-            type: number
-            format: double
-            example: 37.6
-        - name: q
-          in: query
-          description: 카메라 이름 부분 일치 필터 (대소문자 무시). 서버에서 걸러 내려간다.
-          schema:
-            type: string
-            example: 판교
+            type: integer
+            default: 0
+            minimum: 0
       responses:
         "200":
           description: 조회 성공 (0건도 성공이다)
@@ -695,27 +673,29 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/ItsCctv"
+                  total:
+                    type: integer
+                    description: 걸러낸 뒤의 전체 건수 (items 는 그중 한 페이지)
+                    example: 83
         "400":
-          description: 조회 박스를 일부만 보냈거나 숫자가 아님 (`BAD_REQUEST`)
+          description: limit·offset 이 정수가 아니거나 허용 범위 밖 (`BAD_REQUEST`)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               example:
                 code: BAD_REQUEST
-                message: "조회 영역은 min_x, max_x, min_y, max_y 네 개를 모두 보내야 합니다. (누락: max_y)"
-                field: max_y
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "502":
-          description: ITS 오픈 API 조회 실패 또는 인증키 미설정 (`ITS_UNAVAILABLE`)
+                message: limit must be 1-100 and offset must be non-negative.
+        "503":
+          description: ITS 오픈 API 조회 실패 (`ITS_UNAVAILABLE`)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               example:
                 code: ITS_UNAVAILABLE
-                message: ITS 오픈 API 조회에 실패했습니다. 잠시 후 다시 시도해주세요.
+                message: ITS CCTV 목록을 조회할 수 없습니다.
+
 
   # ---------------------------------------------------------------- 이벤트
   /api/events:
@@ -1841,41 +1821,33 @@ components:
       description: |
         ITS 오픈 API 항목을 우리 스키마 이름으로 정규화한 것. **DB 행이 아니다** —
         `cctv_no` 가 없고, 등록하려면 이 값들로 `POST /api/cctvs` 를 부르면 된다.
+        이름·스트림 주소·좌표가 온전한 항목만 목록에 실리므로 이 필드들은 null 이 아니다.
       properties:
         cctv_name:
           type: string
           description: ITS `cctvname`. 노선+지점 표기다
-          example: "[경부선] 판교분기점"
+          example: "[경부선] 양재IC"
         cctv_location:
           type: string
-          description: ITS 가 주소를 주지 않아 이름을 그대로 넣는다 (null 아님 보장)
-          example: "[경부선] 판교분기점"
+          description: ITS `roadsectionid` — 없으면 이름을 그대로 넣는다
+          example: "[경부선] 양재IC"
         cctv_type:
           type: string
-          description: 스트림 형식 (ITS `cctvformat`). 값이 없으면 빈 문자열
+          description: 스트림 형식 (ITS `cctvformat`). 값이 없으면 `ITS`
           example: HLS
         cctv_lat:
           type: number
           format: double
-          nullable: true
           description: ITS `coordy` (**위도**)
-          example: 37.391245
+          example: 37.472145
         cctv_lng:
           type: number
           format: double
-          nullable: true
           description: ITS `coordx` (**경도**)
-          example: 127.096
+          example: 127.042125
         cctv_stream_url:
           type: string
-          nullable: true
           description: HLS 주소. 시간 제한 토큰이 박혀 있어 오래 두면 만료된다
-        cctv_resolution:
-          type: string
-          description: ITS `cctvresolution`. 값이 없으면 빈 문자열
-        is_registered:
-          type: boolean
-          description: 같은 `cctv_name` 이 이미 `cctv` 테이블에 있는지 — 중복 등록 방지용
 
     Cctv:
       type: object

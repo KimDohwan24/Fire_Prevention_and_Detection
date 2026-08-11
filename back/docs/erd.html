@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<title>fireguard ERD — 테이블 8개 (2026-08-10 최종)</title>
+<title>fireguard ERD — 테이블 8개 (2026-08-11 최종)</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Malgun Gothic','Segoe UI',sans-serif; background: #eef1f6; padding: 24px; }
@@ -59,8 +59,11 @@
 <body>
 
 <h1>fireguard ERD — 테이블 8개</h1>
-<div class="sub">기준: <code>db/schema.sql</code> @ dev <code>8520be2</code> (2026-08-10 최종) ·
-관계선: ─┼ 1 쪽 · 까마귀발 N 쪽 (1:1 관계 없음) · ERDCloud 갱신용 참고 그림</div>
+<div class="sub">기준: <code>db/schema.sql</code> (2026-08-11 최종) ·
+관계선: ─┼ 1 쪽 · 까마귀발 N 쪽 (1:1 관계 없음) · ERDCloud 갱신용 참고 그림<br>
+<code>GEN</code> = 생성 컬럼(<code>GENERATED ALWAYS AS ... STORED</code>) — 다른 컬럼에서 자동 파생되므로
+앱이 직접 넣지 않는다. 2026-08-11 PostGIS 도입으로 <code>cctv_geog</code>·<code>agency_geog</code> 추가
+(위경도에서 파생, 최근접 소방서 탐색에 쓴다).</div>
 
 <div class="canvas">
 
@@ -134,6 +137,7 @@
       <tr><td class="k"></td><td class="ko">해상도 높이</td><td class="n">cctv_height</td><td class="t">integer</td></tr>
       <tr><td class="k"></td><td class="ko">cctv 상태</td><td class="n">cctv_status</td><td class="t">varchar(20)</td></tr>
       <tr><td class="k"></td><td class="ko">등록일시</td><td class="n">cctv_created_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k">GEN</td><td class="ko">좌표점 (위경도에서 자동 생성)</td><td class="n">cctv_geog</td><td class="t">geography(Point,4326)</td></tr>
     </table>
   </div>
 
@@ -179,6 +183,7 @@
       <tr><td class="k"></td><td class="ko">경도</td><td class="n">agency_lng</td><td class="t">numeric(10,7)</td></tr>
       <tr><td class="k"></td><td class="ko">전송 주소</td><td class="n">agency_endpoint</td><td class="t">varchar(255)</td></tr>
       <tr><td class="k"></td><td class="ko">활성 여부</td><td class="n">agency_is_active</td><td class="t">boolean</td></tr>
+      <tr><td class="k">GEN</td><td class="ko">좌표점 (위경도에서 자동 생성, 최근접 탐색용)</td><td class="n">agency_geog</td><td class="t">geography(Point,4326)</td></tr>
     </table>
   </div>
 

@@ -30,9 +30,36 @@ import requests
 
 import config
 import db
-from utils.geo import haversine_km
 
 logger = logging.getLogger("fireguard.report")
+
+# 최근접 소방서 탐색 — 거리 계산과 정렬을 DB(PostGIS)에 맡긴다.
+#
+# `<->` 는 GiST 인덱스를 타는 KNN 연산자다. 기관 수가 늘어도 전 건을 재지 않고
+# 인덱스로 후보를 좁힌다. geography 타입이라 거리는 **미터**이고 구면이 아니라
+# 타원체(WGS84) 기준이라 하버사인보다 정확하다.
+#
+# 좌표가 없는 행은 제외한다 — 거리를 모르는 것과 먼 것은 다르다. NULL 을 그냥 두면
+# 정렬 맨 뒤에 붙어 '가장 먼 기관'처럼 승계 후보에 남는다.
+_NEAREST_AGENCIES_SQL = """
+    SELECT a.agency_no, a.agency_name, a.agency_endpoint,
+           public.ST_Distance(a.agency_geog, c.cctv_geog) / 1000.0 AS distance_km
+    FROM fireguard.agency a
+    JOIN fireguard.cctv c ON c.cctv_no = %s
+    WHERE a.agency_is_active
+      AND a.agency_geog IS NOT NULL
+      AND c.cctv_geog IS NOT NULL
+    ORDER BY a.agency_geog <-> c.cctv_geog, a.agency_no
+"""
+
+
+def nearest_agencies(cctv_no: int) -> list[dict]:
+    """활성 기관을 CCTV 에서 가까운 순으로 돌려준다 (거리 km 포함).
+
+    승계 순서가 곧 이 순서다. 좌표가 없는 기관, 좌표 없는 카메라는 결과가 비거나
+    빠진다 — 그 경우 신고할 곳이 없다는 뜻이고 호출자가 판단한다.
+    """
+    return db.query(_NEAREST_AGENCIES_SQL, (cctv_no,))
 
 # 진행 중으로 간주하는 상태 (부분 유니크 인덱스와 동일한 집합)
 ACTIVE_STATUSES = ("SENDING", "ACCEPTED")
@@ -370,7 +397,7 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
         """
         SELECT e.event_no, e.event_class, e.event_confidence, e.event_is_test,
                e.event_first_detected_at,
-               c.cctv_location, c.cctv_lat, c.cctv_lng
+               c.cctv_no, c.cctv_location, c.cctv_lat, c.cctv_lng
         FROM fire_event e
         JOIN cctv c ON c.cctv_no = e.cctv_no
         WHERE e.event_no = %s
@@ -394,22 +421,11 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
     # 대표 프레임은 이벤트 단위 — 재전송·승계 내내 같으니 한 번만 읽는다
     event["image_base64"], event["image_detections"] = _primary_frame(event_no)
 
-    # 후보 기관: 활성 기관을 CCTV 좌표 기준 거리 오름차순으로
-    agencies = db.query(
-        """
-        SELECT agency_no, agency_name, agency_lat, agency_lng, agency_endpoint
-        FROM agency
-        WHERE agency_is_active
-        """
-    )
-    for a in agencies:
-        a["distance_km"] = haversine_km(
-            float(event["cctv_lat"]), float(event["cctv_lng"]),
-            float(a["agency_lat"]), float(a["agency_lng"]),
-        )
-    agencies.sort(key=lambda a: a["distance_km"])
+    # 후보 기관: PostGIS 공간 질의로 가까운 순 (좌표 없는 행은 애초에 빠진다)
+    agencies = nearest_agencies(event["cctv_no"])
     if not agencies:
-        logger.warning("신고 불가 — 활성 기관 없음 (event_no=%s)", event_no)
+        logger.warning("신고 불가 — 좌표로 찾을 수 있는 활성 기관 없음 (event_no=%s)",
+                       event_no)
         return None
 
     # 바깥 루프: 기관 승계 (sequence 1, 2, ...)
