@@ -20,17 +20,6 @@ const Login = () => {
       navigate('/dashboard');
     } catch (err) {
       console.error('로그인 실패:', err);
-      // 백엔드 오프라인 혹은 로컬 개발 환경용 fallback 로그인 처리
-      if (id.trim()) {
-        const isAdminUser = id.trim().toLowerCase() === 'admin';
-        localStorage.setItem('currentUser', JSON.stringify({
-          id: id.trim(),
-          name: isAdminUser ? '최고 관리자' : `${id.trim()}님`,
-          role: isAdminUser ? 'admin' : 'user'
-        }));
-        navigate('/dashboard');
-        return;
-      }
       setErrorMsg(err.message || '로그인에 실패했습니다. 아이디와 비밀번호를 확인해주세요.');
     } finally {
       setIsLoading(false);
@@ -85,10 +74,6 @@ const Login = () => {
               onInput={(e) => e.target.setCustomValidity('')}
               required
             />
-          </div>
-
-          <div className="text-xs text-mute text-center">
-            💡 테스트 정보: 관리자 계정 <code className="bg-surface-soft px-1.5 py-0.5 rounded text-ink font-semibold">admin / 1234</code>
           </div>
 
           <div className="flex flex-col space-y-2 pt-2">

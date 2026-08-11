@@ -9,38 +9,8 @@ import { cctvApi, agencyApi, eventApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 import ItsCctvModal from '../components/ItsCctvModal';
 
-// 가상의 CCTV 더미 mock 데이터 완전 제거 (DB 실시간 연동)
+// 초기 CCTV 데이터
 const INITIAL_CCTVS = [];
-
-// 가상의 회원 목록 데이터 (관리자 전용)
-const MOCK_USERS = [
-  { id: 'admin', name: '최고 관리자', email: 'admin@fireguard.or.kr', role: 'admin', status: '승인' },
-  { id: 'user01', name: '홍길동 (관제1팀)', email: 'gildong@fireguard.or.kr', role: 'user', status: '승인' },
-  { id: 'user02', name: '김철수 (시설팀)', email: 'chulsoo@fireguard.or.kr', role: 'user', status: '승인' },
-  { id: 'user03', name: '이영희 (보안팀)', email: 'younghee@fireguard.or.kr', role: 'user', status: '대기' },
-];
-
-const INITIAL_LOGS = [
-  { id: 1, time: '14:45:00', message: 'A동 1층 로비 화재 의심 감지', type: 'fire' },
-  { id: 2, time: '14:10:00', message: 'CCTV-05 옥상 카메라 연결 끊김', type: 'offline' },
-  { id: 3, time: '12:00:00', message: '시스템 정기 점검 완료', type: 'normal' },
-];
-
-// 기본 소방서 위치
-const MOCK_FIRE_STATION = {
-  agency_no: 1,
-  name: '종로소방서',
-  agency_name: '종로소방서',
-  lat: 37.5730,
-  lng: 126.9790,
-  agency_lat: 37.5730,
-  agency_lng: 126.9790,
-  x: 50,
-  y: 35,
-  address: '서울특별시 종로구 종로1길 28',
-  phone: '02-760-0119',
-  agency_is_active: true,
-};
 
 function Dashboard() {
   const navigate = useNavigate();
@@ -50,10 +20,10 @@ function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
-  // 관할 소방서 및 이벤트 로그 목록 State
-  const [agencyList, setAgencyList] = useState([MOCK_FIRE_STATION]);
-  const [fireStation, setFireStation] = useState(MOCK_FIRE_STATION);
-  const [eventLogs, setEventLogs] = useState(INITIAL_LOGS);
+  // 관할 소방서 및 이벤트 로그 목록 State (실시간 DB 연동)
+  const [agencyList, setAgencyList] = useState([]);
+  const [fireStation, setFireStation] = useState(null);
+  const [eventLogs, setEventLogs] = useState([]);
 
   // 지도 오버레이 및 탭 조작 UI State
   const [showFireStation, setShowFireStation] = useState(true);
@@ -63,7 +33,7 @@ function Dashboard() {
 
   // 관리자 전용 모달 상태
   const [activeAdminTab, setActiveAdminTab] = useState(null);
-  const [userList, setUserList] = useState(MOCK_USERS);
+  const [userList, setUserList] = useState([]);
   const [newCCTVName, setNewCCTVName] = useState('');
   const [autoNotify119, setAutoNotify119] = useState(true);
 
@@ -80,9 +50,6 @@ function Dashboard() {
       } catch (e) {
         console.error(e);
       }
-    } else {
-      const defaultUser = { id: 'user01', name: '홍길동', role: 'user' };
-      setCurrentUser(defaultUser);
     }
 
     // 2. 백엔드 REST API (agencyApi, cctvApi, eventApi) 동적 DB 조회
@@ -112,13 +79,13 @@ function Dashboard() {
           setAgencyList(mappedAgencies);
           setFireStation(mappedAgencies[0]);
         } else {
-          setAgencyList([MOCK_FIRE_STATION]);
-          setFireStation(MOCK_FIRE_STATION);
+          setAgencyList([]);
+          setFireStation(null);
         }
       } catch (err) {
-        console.error('소방서 DB 조회 실패, fallback 기본 소방서 설정:', err.message);
-        setAgencyList([MOCK_FIRE_STATION]);
-        setFireStation(MOCK_FIRE_STATION);
+        console.error('소방서 DB 조회 실패:', err.message);
+        setAgencyList([]);
+        setFireStation(null);
       }
 
       // 2-2. CCTV 목록 수신 (DB 및 로컬 저장소 중복 없는 병합 동기화)

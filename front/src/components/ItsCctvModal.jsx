@@ -92,10 +92,16 @@ export default function ItsCctvModal({ isOpen, onClose, onSelectCctv }) {
     setLoadError('');
     try {
       const response = await itsCctvApi.list();
-      setCctvs(Array.isArray(response?.items) ? response.items : []);
+      const items = Array.isArray(response?.items) ? response.items : (Array.isArray(response) ? response : []);
+      setCctvs(items);
     } catch (error) {
+      console.warn('ITS API 호출 실패:', error.message);
       setCctvs([]);
-      setLoadError(error.message || 'ITS CCTV 정보를 불러오지 못했습니다.');
+      if (error.status === 404 || error.message?.includes('404')) {
+        setLoadError('백엔드 REST API 서버(/api/its/cctvs) 라우트가 아직 구현되지 않았습니다. (HTTP 404 Not Found)');
+      } else {
+        setLoadError(error.message || 'ITS CCTV 정보를 불러오지 못했습니다.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -218,9 +224,35 @@ export default function ItsCctvModal({ isOpen, onClose, onSelectCctv }) {
               </button>
             </div>
 
-            {loadError && <p className="rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-xs text-red-600">{loadError}</p>}
-            {isLoading && <div className="py-8 text-center text-xs text-mute"><Loader2 className="inline w-4 h-4 mr-2 animate-spin" />ITS CCTV를 조회 중입니다.</div>}
-            {!isLoading && !loadError && filtered.length === 0 && <p className="py-8 text-center text-xs text-mute">현재 영역에서 재생 가능한 ITS CCTV가 없습니다.</p>}
+            {loadError && (
+              <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-4 space-y-2">
+                <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-bold text-xs">
+                  <span className="text-base">🔌</span>
+                  <span>백엔드 API 미연동 안내 (HTTP 404)</span>
+                </div>
+                <p className="text-xs text-ink/80 leading-relaxed">
+                  현재 백엔드 서버에 <code className="bg-canvas px-1.5 py-0.5 rounded border border-hairline font-mono text-[11px]">/api/its/cctvs</code> 엔드포인트가 연결되어 있지 않아 CCTV 목록을 표시할 수 없습니다.
+                </p>
+                <p className="text-[11px] text-mute">
+                  💡 백엔드에서 국토교통부 ITS OpenAPI 라우트 구현을 완료하면 DB 기반 실시간 CCTV 목록이 이곳에 자동으로 불러와집니다.
+                </p>
+              </div>
+            )}
+
+            {isLoading && (
+              <div className="py-12 text-center text-xs text-mute space-y-2">
+                <Loader2 className="inline w-6 h-6 animate-spin text-amber-500" />
+                <p>ITS 공공 CCTV 목록을 백엔드 서버에서 조회하는 중입니다...</p>
+              </div>
+            )}
+
+            {!isLoading && !loadError && filtered.length === 0 && (
+              <div className="py-12 text-center text-xs text-mute space-y-2 bg-surface-soft/30 rounded-xl border border-hairline p-6">
+                <Video className="w-8 h-8 mx-auto text-mute opacity-50" />
+                <p className="font-medium text-ink">조회 가능한 ITS CCTV 데이터가 없습니다.</p>
+                <p className="text-[11px]">검색어를 변경하거나 백엔드 DB 등록 상태를 확인해주세요.</p>
+              </div>
+            )}
 
             {!isLoading && filtered.map((item, idx) => (
               <div

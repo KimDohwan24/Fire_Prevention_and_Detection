@@ -4,84 +4,34 @@ import {
   User, ShieldCheck, Mail, Phone, Building, Calendar,
   Lock, Bell, Shield, Key, CheckCircle, Clock,
   LogOut, ArrowLeft, Edit3, Camera, Save, X, AlertTriangle,
-  FileText, Activity, Smartphone, Monitor, ShieldAlert, Video, MapPin, ExternalLink
+  FileText, Activity, Smartphone, Monitor, ShieldAlert, Video, MapPin, ExternalLink, Loader2
 } from 'lucide-react';
 
-// 가상의 초기 유저 정보 (localStorage에 없을 경우 기본값)
-const DEFAULT_USER = {
-  id: 'admin',
-  name: '최고 관리자',
-  email: 'admin@fireguard.or.kr',
-  role: 'admin',
-  dept: '관제총괄팀',
-  phone: '010-1234-5678',
-  position: '총괄 관제 책임자',
-  joinedAt: '2026-01-02',
-  lastLogin: '2026-08-10 10:25:12',
-  assignedZone: '전체 관제 구역 (A동, B동, 외곽 및 옥상)',
-  avatar: null
-};
-
-// 가상의 담당 CCTV 및 히스토리 데이터
-const MY_CCTVS = [
-  {
-    id: 'CCTV-01',
-    name: '정문 주차장',
-    status: 'normal',
-    location: '1F 외부 주차장 1열',
-    installedAt: '2026-02-10',
-    lat: 37.5665,
-    lng: 126.9780,
-    history: [
-      { id: 1, time: '2026-08-10 10:00:00', type: 'normal', message: '카메라 실시간 입력 상태 정상 (24fps)' },
-      { id: 2, time: '2026-08-08 12:00:00', type: 'normal', message: '시설팀 정기 화소 및 클리닝 점검 완료' },
-      { id: 3, time: '2026-08-01 09:30:00', type: 'system', message: 'CCTV 신규 등록 및 AI 추론 모델 할당' }
-    ]
-  },
-  {
-    id: 'CCTV-02',
-    name: '후문 분리수거장',
-    status: 'normal',
-    location: '1F 외부 후문 담장',
-    installedAt: '2026-03-01',
-    lat: 37.5668,
-    lng: 126.9785,
-    history: [
-      { id: 1, time: '2026-08-09 18:20:00', type: 'normal', message: '담배 연기 오탐지 해제 (현장 점검 이상없음)' },
-      { id: 2, time: '2026-08-07 14:10:00', type: 'system', message: '야간 인공지능 탐지 감도 자가 교정' }
-    ]
-  },
-  {
-    id: 'CCTV-04',
-    name: 'B동 뒷골목',
-    status: 'normal',
-    location: 'B동 외곽 통로',
-    installedAt: '2026-04-12',
-    lat: 37.5670,
-    lng: 126.9770,
-    history: [
-      { id: 1, time: '2026-08-09 08:00:00', type: 'normal', message: '시스템 헬스체크 응답 정상 (Ping 12ms)' }
-    ]
-  }
-];
-
-// 가상의 활동 내역
-const INITIAL_ACTIVITIES = [
-  { id: 1, time: '2026-08-10 10:25:12', type: 'login', title: '시스템 로그인', detail: '웹 관제 콘솔 접속 (IP: 192.168.1.100)' },
-  { id: 2, time: '2026-08-10 09:15:40', type: 'system', title: 'CCTV 실시간 감지 점검', detail: 'A동 1층 로비 (CCTV-03) 상태 점검' },
-  { id: 3, time: '2026-08-08 14:45:05', type: 'fire', title: '화재 알림 즉시 확인', detail: 'A동 1층 로비 화재 감지 경보 119 접수 승인' },
-  { id: 4, time: '2026-08-08 12:00:00', type: 'admin', title: '관제 회원 권한 승인', detail: '신규 회원 (이영희 - 보안팀) 계정 승인 완료' },
-  { id: 5, time: '2026-08-05 14:20:00', type: 'setting', title: '알림 수신 설정 변경', detail: '긴급 SMS 알림 및 브라우저 푸시 수신 설정' }
-];
+import CctvPlayer from '../components/CctvPlayer';
+import { authApi, cctvApi, eventApi, getCurrentUserFromStorage } from '../api';
 
 export default function MyPage() {
   const navigate = useNavigate();
 
-  // 사용자 프로필 정보
-  const [currentUser, setCurrentUser] = useState(DEFAULT_USER);
+  // 사용자 프로필 정보 (실시간 DB / 세션 복원 및 안전한 초기값)
+  const [currentUser, setCurrentUser] = useState(() => {
+    return getCurrentUserFromStorage() || {
+      id: 'admin',
+      name: '최고 관리자',
+      email: 'admin@fireguard.or.kr',
+      role: 'admin',
+      dept: '관제총괄팀',
+      phone: '010-1234-5678',
+      position: '총괄 관제 책임자',
+      joinedAt: '2026-01-01',
+      lastLogin: '접속 중',
+      assignedZone: '전체 관제 구역'
+    };
+  });
   
-  // 내 관리 CCTV 모달 선택 상태
-  const [myCctvs] = useState(MY_CCTVS);
+  // 내 관리 CCTV 모달 및 로딩 상태
+  const [myCctvs, setMyCctvs] = useState([]);
+  const [isCctvsLoading, setIsCctvsLoading] = useState(true);
   const [selectedMyCctv, setSelectedMyCctv] = useState(null);
   
   // 알림 및 시스템 설정
@@ -94,7 +44,7 @@ export default function MyPage() {
   });
 
   // 활동 내역 목록
-  const [activities] = useState(INITIAL_ACTIVITIES);
+  const [activities, setActivities] = useState([]);
 
   // 모달 상태
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
@@ -121,23 +71,72 @@ export default function MyPage() {
   const [toastMessage, setToastMessage] = useState(null);
 
   useEffect(() => {
-    // localStorage에서 유저 데이터 가져오기
-    const storedUser = localStorage.getItem('currentUser');
-    if (storedUser) {
-      try {
-        const parsed = JSON.parse(storedUser);
-        if (parsed.name) {
-          parsed.name = parsed.name.replace(/\s*님$/, '');
-        }
-        // 기본 프로필 필드가 누락된 경우 기본값 병합
-        setCurrentUser({
-          ...DEFAULT_USER,
-          ...parsed
-        });
-      } catch (e) {
-        console.error('사용자 정보 로드 실패:', e);
+    // 1. 세션 복원 또는 localStorage 정보 활용
+    authApi.me().then(res => {
+      if (res) {
+        const user = {
+          id: res.user_id,
+          user_no: res.user_no,
+          name: res.user_name || res.user_id,
+          email: res.user_email || `${res.user_id}@fireguard.or.kr`,
+          phone: res.user_phone || '',
+          role: res.user_role === 'ADMIN' ? 'admin' : 'user',
+          dept: res.user_role === 'ADMIN' ? '관제총괄팀' : '관제팀',
+          position: res.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원',
+          joinedAt: '2026-01-01',
+          lastLogin: '최근 접속 중',
+          assignedZone: 'A동 및 외곽 관제 구역'
+        };
+        setCurrentUser(user);
+        localStorage.setItem('currentUser', JSON.stringify(user));
       }
-    }
+    }).catch(() => {
+      const storedUser = localStorage.getItem('currentUser');
+      if (storedUser) {
+        try {
+          const parsed = JSON.parse(storedUser);
+          if (parsed.name) parsed.name = parsed.name.replace(/\s*님$/, '');
+          setCurrentUser(prev => ({ ...prev, ...parsed }));
+        } catch (e) {
+          console.error('사용자 정보 로드 실패:', e);
+        }
+      }
+    });
+
+    // 2. CCTV 목록 수신
+    cctvApi.list().then(res => {
+      const items = res?.items || res || [];
+      if (Array.isArray(items)) {
+        const mapped = items.map(item => ({
+          id: `CCTV-${String(item.cctv_no).padStart(2, '0')}`,
+          name: item.cctv_name,
+          status: item.cctv_status === 'ACTIVE' ? 'normal' : 'offline',
+          location: item.cctv_location,
+          installedAt: item.cctv_created_at ? item.cctv_created_at.substring(0, 10) : '2026-01-01',
+          lat: parseFloat(item.cctv_lat) || 37.5665,
+          lng: parseFloat(item.cctv_lng) || 126.9780,
+          stream_url: item.cctv_stream_url,
+          history: []
+        }));
+        setMyCctvs(mapped);
+      }
+    }).catch(err => console.warn('MyPage CCTV 로드 오류:', err))
+      .finally(() => setIsCctvsLoading(false));
+
+    // 3. 최근 활동 이력 수신
+    eventApi.list({ size: 10 }).then(res => {
+      const items = res?.items || [];
+      if (Array.isArray(items)) {
+        const mappedActs = items.map(ev => ({
+          id: ev.event_no,
+          time: ev.event_first_detected_at || '2026-08-10 14:00:00',
+          type: ev.event_status === 'CONFIRMED' ? 'fire' : 'system',
+          title: ev.event_class === 'FLAME_SMOKE' ? '화재 및 연기 감지' : '화재 의심 상태 감지',
+          detail: `${ev.cctv_name || '카메라'} 위치 (${ev.cctv_location || '관제 구역'})`
+        }));
+        setActivities(mappedActs);
+      }
+    }).catch(err => console.warn('MyPage 활동이력 로드 오류:', err));
   }, []);
 
   const showToast = (msg) => {
@@ -167,6 +166,18 @@ export default function MyPage() {
     setIsEditProfileOpen(true);
   };
 
+  // 관리자 승격 승인 요청 보내기
+  const handleRequestAdmin = () => {
+    const updated = {
+      ...currentUser,
+      adminRequested: true,
+      adminRequestStatus: 'PENDING'
+    };
+    setCurrentUser(updated);
+    localStorage.setItem('currentUser', JSON.stringify(updated));
+    showToast('관리자 승격 요청이 제출되었습니다! 관리자의 승인 후 관리자로 승격됩니다.');
+  };
+
   // 프로필 수정 저장
   const handleSaveProfile = (e) => {
     e.preventDefault();
@@ -177,7 +188,7 @@ export default function MyPage() {
     setCurrentUser(updated);
     localStorage.setItem('currentUser', JSON.stringify(updated));
     setIsEditProfileOpen(false);
-    showToast('프로필 정보가 성공적으로 수정되었습니다.');
+    showToast('프로필 정보(직책 포함)가 성공적으로 수정되었습니다.');
   };
 
   // 비밀번호 변경 저장
@@ -215,7 +226,7 @@ export default function MyPage() {
       
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-primary text-on-primary px-5 py-3 rounded-full text-body-sm font-medium shadow-lg flex items-center gap-2 animate-bounce">
+        <div className="fixed bottom-6 right-6 z-50 bg-primary text-on-primary px-5 py-3 rounded-full text-body-sm font-medium shadow-lg flex items-center gap-2">
           <CheckCircle className="w-4 h-4 text-emerald-400" />
           <span>{toastMessage}</span>
         </div>
@@ -316,7 +327,7 @@ export default function MyPage() {
             {/* 프로필 이미지/아바타 */}
             <div className="relative group">
               <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-surface-soft border-2 border-hairline flex items-center justify-center text-3xl font-bold text-ink shrink-0 overflow-hidden shadow-inner">
-                {currentUser.avatar ? (
+                {currentUser?.avatar ? (
                   <img src={currentUser.avatar} alt="Profile" className="w-full h-full object-cover" />
                 ) : (
                   <User className="w-12 h-12 text-mute" />
@@ -334,59 +345,96 @@ export default function MyPage() {
             {/* 유저 이름 & 직책 정보 */}
             <div className="flex-1 space-y-2">
               <div className="flex flex-wrap items-center gap-3">
-                <h2 className="text-heading-lg font-bold text-ink">{currentUser.name}</h2>
+                <h2 className="text-heading-lg font-bold text-ink">{currentUser?.name || '사용자'}</h2>
                 {isAdmin ? (
                   <span className="bg-amber-500/10 text-amber-600 dark:text-amber-400 font-semibold text-xs px-3 py-1 rounded-full border border-amber-500/30 flex items-center gap-1">
                     <ShieldCheck className="w-3.5 h-3.5" /> 총괄 관리자
                   </span>
                 ) : (
                   <span className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold text-xs px-3 py-1 rounded-full border border-emerald-500/30 flex items-center gap-1">
-                    <User className="w-3.5 h-3.5" /> {currentUser.dept || '관제 요원'}
+                    <User className="w-3.5 h-3.5" /> {currentUser?.dept || '관제 요원'}
                   </span>
                 )}
                 <span className="text-caption-sm text-mute border border-hairline px-2.5 py-0.5 rounded-full bg-surface-soft">
-                  ID: {currentUser.id}
+                  ID: {currentUser?.id || '-'}
                 </span>
               </div>
 
-              <p className="text-body-md text-mute flex items-center gap-2">
+              <p className="text-body-md text-mute flex items-center gap-2 flex-wrap">
                 <Building className="w-4 h-4 text-mute shrink-0" />
-                <span>{currentUser.dept || '부서 미지정'}</span>
+                <span>{currentUser?.dept || '부서 미지정'}</span>
                 <span className="text-hairline">|</span>
-                <span>{currentUser.position || '관제 요원'}</span>
+                <span className="font-semibold text-ink">직책: {currentUser?.position || '직책 미입력'}</span>
               </p>
+
+              {/* 관리자 승인 요청 상태 배지 및 버튼 */}
+              <div className="pt-2 flex items-center gap-3">
+                {!isAdmin && (
+                  currentUser?.adminRequested || currentUser?.adminRequestStatus === 'PENDING' ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-600 bg-amber-500/10 border border-amber-500/30 px-3.5 py-1.5 rounded-full">
+                      <span>⏳</span>
+                      <span>관리자 승격 승인 요청 대기 중</span>
+                    </span>
+                  ) : (
+                    <button
+                      onClick={handleRequestAdmin}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-600 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3.5 py-1.5 rounded-full transition-all cursor-pointer shadow-xs"
+                    >
+                      <span>👑</span>
+                      <span>관리자 승인 요청 보내기</span>
+                    </button>
+                  )
+                )}
+              </div>
 
               <div className="pt-2 flex flex-wrap gap-y-2 gap-x-6 text-body-sm text-mute">
                 <div className="flex items-center gap-1.5">
                   <Mail className="w-4 h-4 text-mute" />
-                  <span>{currentUser.email}</span>
+                  <span>{currentUser?.email || '이메일 없음'}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Phone className="w-4 h-4 text-mute" />
-                  <span>{currentUser.phone || '연락처 미등록'}</span>
+                  <span>{currentUser?.phone || '연락처 미등록'}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Calendar className="w-4 h-4 text-mute" />
-                  <span>가입일: {currentUser.joinedAt || '2026-01-01'}</span>
+                  <span>가입일: {currentUser?.joinedAt || '2026-01-01'}</span>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* 담당 관제 구역 알림 박스 */}
+          {/* 내가 설치/등록한 카메라 자산 현황 박스 */}
           <div className="mt-6 pt-6 border-t border-hairline flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-surface-soft p-4 rounded-xl">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-canvas rounded-lg border border-hairline text-ink">
-                <ShieldAlert className="w-5 h-5 text-amber-500" />
+                <Video className="w-5 h-5 text-amber-500" />
               </div>
               <div>
-                <p className="text-caption-sm text-mute uppercase tracking-wider font-semibold">담당 지정 관제 구역</p>
-                <p className="text-body-sm font-semibold text-ink mt-0.5">{currentUser.assignedZone || '전체 미션 구역'}</p>
+                <p className="text-caption-sm text-mute uppercase tracking-wider font-semibold">내가 직접 설치 / 등록한 CCTV 카메라</p>
+                <div className="text-body-sm font-semibold text-ink mt-0.5 flex items-center gap-2 flex-wrap">
+                  <span className="text-amber-600 dark:text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                    총 {myCctvs.length}대 등록됨 (클릭 시 실시간 비디오)
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {myCctvs.map(c => (
+                      <button
+                        key={c.id}
+                        onClick={() => setSelectedMyCctv(c)}
+                        className="text-xs font-semibold text-ink bg-canvas hover:bg-surface-soft hover:border-amber-500 px-2 py-0.5 rounded border border-hairline transition-colors cursor-pointer inline-flex items-center gap-1"
+                        title={`${c.name} 실시간 비디오 재생`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        <span>{c.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
             <div className="text-xs text-mute flex items-center gap-1">
               <Clock className="w-3.5 h-3.5" />
-              <span>최근 접속: {currentUser.lastLogin || '2026-08-10 10:25:12'}</span>
+              <span>최근 접속: {currentUser?.lastLogin || '2026-08-10 10:25:12'}</span>
             </div>
           </div>
         </section>
@@ -397,7 +445,7 @@ export default function MyPage() {
             <div>
               <h3 className="text-heading-md font-bold text-ink flex items-center gap-2">
                 <Video className="w-5 h-5 text-ink" />
-                <span>내 등록/담당 CCTV 목록 ({myCctvs.length}대)</span>
+                <span>내 등록/담당 CCTV 목록 ({isCctvsLoading ? '조회중...' : `${myCctvs.length}대`})</span>
               </h3>
               <p className="text-body-sm text-mute mt-0.5">내가 직접 등록했거나 전담 관제 중인 CCTV 카메라 및 상태 변동 이력입니다.</p>
             </div>
@@ -410,49 +458,61 @@ export default function MyPage() {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {myCctvs.map((cctv) => (
-              <div
-                key={cctv.id}
-                onClick={() => setSelectedMyCctv(cctv)}
-                className="p-4 rounded-xl border border-hairline bg-canvas hover:bg-surface-soft/60 hover:border-ink transition-all cursor-pointer space-y-3 shadow-xs group"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-caption-sm font-mono text-mute bg-surface-soft px-2 py-0.5 rounded border border-hairline">
-                    {cctv.id}
-                  </span>
-                  {cctv.status === 'fire' ? (
-                    <span className="px-2.5 py-0.5 bg-terminal-red/10 text-terminal-red rounded-full text-caption-sm font-bold border border-terminal-red/20 animate-pulse">
-                      위험 (화재)
+          {isCctvsLoading ? (
+            <div className="flex flex-col items-center justify-center py-12 text-mute space-y-3 bg-surface-soft/40 border border-hairline rounded-xl">
+              <Loader2 className="w-8 h-8 animate-spin text-amber-500" />
+              <span className="text-xs font-semibold text-body">백엔드 DB에서 담당 CCTV 자산 목록을 불러오는 중입니다...</span>
+            </div>
+          ) : myCctvs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl text-center">
+              <Video className="w-8 h-8 text-mute/50" />
+              <span className="text-xs font-medium">등록되거나 담당 중인 CCTV 카메라가 없습니다.</span>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {myCctvs.map((cctv) => (
+                <div
+                  key={cctv.id}
+                  onClick={() => setSelectedMyCctv(cctv)}
+                  className="p-4 rounded-xl border border-hairline bg-canvas hover:bg-surface-soft/60 hover:border-ink transition-all cursor-pointer space-y-3 shadow-xs group"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-caption-sm font-mono text-mute bg-surface-soft px-2 py-0.5 rounded border border-hairline">
+                      {cctv.id}
                     </span>
-                  ) : cctv.status === 'offline' ? (
-                    <span className="px-2.5 py-0.5 bg-surface-soft text-mute rounded-full text-caption-sm font-medium border border-hairline">
-                      오프라인
-                    </span>
-                  ) : (
-                    <span className="px-2.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded-full text-caption-sm font-semibold border border-emerald-500/20">
-                      정상 작동중
-                    </span>
-                  )}
-                </div>
+                    {cctv.status === 'fire' ? (
+                      <span className="px-2.5 py-0.5 bg-terminal-red/10 text-terminal-red rounded-full text-caption-sm font-bold border border-terminal-red/20 animate-pulse">
+                        위험 (화재)
+                      </span>
+                    ) : cctv.status === 'offline' ? (
+                      <span className="px-2.5 py-0.5 bg-surface-soft text-mute rounded-full text-caption-sm font-medium border border-hairline">
+                        오프라인
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded-full text-caption-sm font-semibold border border-emerald-500/20">
+                        정상 작동중
+                      </span>
+                    )}
+                  </div>
 
-                <div>
-                  <h4 className="text-body-sm-strong text-ink group-hover:text-primary transition-colors font-bold">{cctv.name}</h4>
-                  <p className="text-caption-sm text-mute flex items-center gap-1 mt-1">
-                    <MapPin className="w-3.5 h-3.5 text-mute" />
-                    <span>{cctv.location}</span>
-                  </p>
-                </div>
+                  <div>
+                    <h4 className="text-body-sm-strong text-ink group-hover:text-primary transition-colors font-bold">{cctv.name}</h4>
+                    <p className="text-caption-sm text-mute flex items-center gap-1 mt-1">
+                      <MapPin className="w-3.5 h-3.5 text-mute" />
+                      <span>{cctv.location}</span>
+                    </p>
+                  </div>
 
-                <div className="pt-2 border-t border-hairline/60 flex items-center justify-between text-caption-sm text-mute">
-                  <span>감지 이력 {cctv.history?.length || 0}건</span>
-                  <span className="text-ink font-semibold group-hover:underline flex items-center gap-1">
-                    이력 보기 &rarr;
-                  </span>
+                  <div className="pt-2 border-t border-hairline/60 flex items-center justify-between text-caption-sm text-mute">
+                    <span>감지 이력 {cctv.history?.length || 0}건</span>
+                    <span className="text-ink font-semibold group-hover:underline flex items-center gap-1">
+                      이력 보기 &rarr;
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
 
         {/* 2컬럼 레이아웃: 좌측(알림 설정) / 우측(최근 활동 로그) */}
@@ -609,7 +669,24 @@ export default function MyPage() {
             </div>
 
             {/* Modal Body */}
-            <div className="p-6 max-h-[70vh] overflow-y-auto space-y-5">
+            <div className="p-6 max-h-[75vh] overflow-y-auto space-y-4">
+              {/* 실시간 HLS 비디오 스트리밍 플레이어 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-ink flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                    <span>실시간 HLS 비디오 스트림</span>
+                  </span>
+                  <span className="text-caption-sm text-mute font-mono">24 FPS · Live</span>
+                </div>
+                <CctvPlayer
+                  key={selectedMyCctv.id}
+                  streamUrl={selectedMyCctv.stream_url || selectedMyCctv.cctv_stream_url || 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4'}
+                  cctvName={selectedMyCctv.name}
+                  isFire={selectedMyCctv.status === 'fire'}
+                />
+              </div>
+
               <div className="bg-surface-soft p-4 rounded-xl space-y-2 border border-hairline text-body-sm">
                 <div className="flex justify-between">
                   <span className="text-mute">현재 카메라 상태:</span>
@@ -754,29 +831,75 @@ export default function MyPage() {
                       value={editForm.dept}
                       onChange={(e) => setEditForm({ ...editForm, dept: e.target.value })}
                       className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
+                      placeholder="예: 관제1팀, 시설팀"
                     />
                   </div>
                   <div>
-                    <label className="block text-body-sm font-semibold text-ink mb-1">직책</label>
+                    <label className="block text-body-sm font-semibold text-ink mb-1">직책 (사용자 입력)</label>
                     <input
                       type="text"
                       value={editForm.position}
                       onChange={(e) => setEditForm({ ...editForm, position: e.target.value })}
                       className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
+                      placeholder="예: 관제팀장, 보안담당관"
                     />
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-body-sm font-semibold text-ink mb-1">담당 관제 구역</label>
-                  <input
-                    type="text"
-                    value={editForm.assignedZone}
-                    onChange={(e) => setEditForm({ ...editForm, assignedZone: e.target.value })}
-                    className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
-                    placeholder="예: A동 1층 ~ 5층 실내 구역"
-                  />
+                <div className="p-3.5 bg-surface-soft border border-hairline rounded-xl space-y-1">
+                  <span className="block text-caption-sm text-mute font-semibold">📹 내가 설치 / 등록한 CCTV 카메라 ({myCctvs.length}대 - 클릭시 실시간 재생)</span>
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {myCctvs.map(c => (
+                      <button
+                        type="button"
+                        key={c.id}
+                        onClick={() => {
+                          setIsEditProfileOpen(false);
+                          setSelectedMyCctv(c);
+                        }}
+                        className="text-xs font-semibold text-ink bg-canvas hover:bg-surface-soft hover:border-amber-500 px-2.5 py-1 rounded-lg border border-hairline flex items-center gap-1 transition-colors cursor-pointer"
+                        title={`${c.name} 실시간 비디오 모니터링`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        <span>{c.name} ({c.id})</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
+
+                {/* 👑 관리자 승인 요청 섹션 (일반 사용자일 경우에만 노출) */}
+                {!isAdmin && (
+                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-2 mt-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-bold text-xs">
+                        <span>👑</span>
+                        <span>관리자 권한 승격 신청</span>
+                      </div>
+                      {currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING' ? (
+                        <span className="text-[11px] font-bold text-amber-500 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 animate-pulse">
+                          ⏳ 승인 대기 중
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="text-caption-sm text-ink/80 leading-relaxed">
+                      최고 관리자에게 승인 요청을 전송합니다. 관리자가 승인하면 관리자 전용 대시보드 및 시스템 설정 권한으로 승격됩니다.
+                    </p>
+
+                    <button
+                      type="button"
+                      onClick={handleRequestAdmin}
+                      disabled={currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING'}
+                      className="w-full h-10 mt-1 bg-amber-500 hover:bg-amber-600 active:scale-[0.99] text-white font-bold text-xs rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <span>👑</span>
+                      <span>
+                        {currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING'
+                          ? '관리자 승인 요청됨 (대기 중)'
+                          : '관리자 승인 요청 보내기'}
+                      </span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Modal Footer (shrink-0) */}

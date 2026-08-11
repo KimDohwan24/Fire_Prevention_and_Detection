@@ -8,187 +8,21 @@ import {
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
   BadgeCheck, ChevronRight, Edit3, MapPin
 } from 'lucide-react';
-import { cctvApi } from '../api';
+import { cctvApi, userApi, eventApi, reportApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 
-// 가상의 초기 CCTV 데이터
+// 초기 CCTV 데이터
 const INITIAL_CCTVS = [];
-
-// 가상의 회원 목록 데이터 (상세 정보 확장)
-const INITIAL_USERS = [
-  {
-    id: 'admin',
-    name: '최고 관리자',
-    email: 'admin@fireguard.or.kr',
-    role: 'admin',
-    status: '승인',
-    dept: '관제총괄팀',
-    phone: '010-1234-5678',
-    position: '총괄 관제 책임자',
-    joinedAt: '2026-01-02',
-    lastLogin: '2026-08-10 10:25:12',
-    assignedZone: '전체 관제 구역 (A동, B동, 외곽 및 옥상)',
-    activities: [
-      { time: '2026-08-10 10:25:12', action: '관리자 센터 로그인 성공' },
-      { time: '2026-08-08 12:00:00', action: '신규 관제회원(이영희) 승인 및 접근 권한 부여' },
-      { time: '2026-08-08 09:30:00', action: '전체 시스템 통합 정기 자가 점검 지시' },
-      { time: '2026-08-05 14:20:00', action: '신규 카메라(CCTV-05) 모니터링 시스템 등록' }
-    ]
-  },
-  {
-    id: 'user01',
-    name: '홍길동',
-    email: 'gildong@fireguard.or.kr',
-    role: 'user',
-    status: '승인',
-    dept: '관제1팀',
-    phone: '010-9876-5432',
-    position: '주간 관제 전담 요원',
-    joinedAt: '2026-03-15',
-    lastLogin: '2026-08-10 09:12:00',
-    assignedZone: 'A동 1층 ~ 5층 실내 관제 구역',
-    activities: [
-      { time: '2026-08-10 09:12:00', action: '관제1팀 시스템 로그인' },
-      { time: '2026-08-08 14:45:05', action: 'A동 1층 로비 화재 경보 알림 수신 및 119 자동신고 확인' },
-      { time: '2026-08-08 14:46:00', action: 'A동 현장 요원에게 긴급 출동 지시 전달' }
-    ]
-  },
-  {
-    id: 'user02',
-    name: '김철수',
-    email: 'chulsoo@fireguard.or.kr',
-    role: 'user',
-    status: '승인',
-    dept: '시설관리팀',
-    phone: '010-5555-1111',
-    position: '시설 및 장비 유지보수 기사',
-    joinedAt: '2026-04-10',
-    lastLogin: '2026-08-09 17:30:45',
-    assignedZone: 'B동 전 구역 및 옥상 패널 구역',
-    activities: [
-      { time: '2026-08-09 17:30:45', action: '시설관리 로그아웃' },
-      { time: '2026-08-08 14:11:30', action: 'CCTV-05 옥상 카메라 네트워크 끊김 장애 점검 티켓 수신' },
-      { time: '2026-08-07 18:22:10', action: '후문 분리수거장 연기 오탐지 현장 수증기 확인 완료 보고' }
-    ]
-  },
-  {
-    id: 'user03',
-    name: '이영희',
-    email: 'younghee@fireguard.or.kr',
-    role: 'user',
-    status: '승인대기',
-    dept: '보안팀',
-    phone: '010-3333-7777',
-    position: '야간 보안 관제 담당 (신규)',
-    joinedAt: '2026-08-08',
-    lastLogin: '미접속 (가입 승인 대기중)',
-    assignedZone: '배정 대기중',
-    activities: [
-      { time: '2026-08-08 11:58:10', action: 'FireGuard 관제 시스템 회원 가입 신청 제출' }
-    ]
-  },
-];
-
-// 감사 및 시스템 감지 상세 로그 (백엔드 연동용 확장 데이터 구조)
-const SYSTEM_LOGS = [
-  {
-    id: 1,
-    time: '2026-08-08 14:45:00',
-    message: 'A동 1층 로비 화재 의심 감지 (화재 확률 98%)',
-    level: 'error',
-    cctvId: 'CCTV-03',
-    location: 'A동 1F 로비 (중앙 서측)',
-    confidence: 98,
-    eventType: '화재/연기 감지',
-    status: '조치중 (119 신고 완료)',
-    videoUrl: 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4',
-    thumbnail: 'https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?w=800&auto=format&fit=crop&q=80',
-    history: [
-      { timestamp: '2026-08-08 14:45:00', event: 'AI 모듈 - 연기 및 불꽃 패턴 감지 (신뢰도 98%)' },
-      { timestamp: '2026-08-08 14:45:03', event: '관제센터 실시간 대시보드 경보 팝업 출력' },
-      { timestamp: '2026-08-08 14:45:10', event: '119 긴급 자동 비상 신고 연동 발송 (사건번호 #2026-0808-1445)' },
-      { timestamp: '2026-08-08 14:46:00', event: 'A동 관제 담당자 현장 확인 조치 요청 접수' }
-    ]
-  },
-  {
-    id: 2,
-    time: '2026-08-08 14:10:00',
-    message: 'CCTV-05 옥상 카메라 연결 끊김',
-    level: 'warning',
-    cctvId: 'CCTV-05',
-    location: 'A동 R층 옥상 파노라마',
-    confidence: 0,
-    eventType: '장비 네트워크 장애',
-    status: '점검 진행중',
-    videoUrl: null,
-    thumbnail: null,
-    history: [
-      { timestamp: '2026-08-08 14:10:00', event: 'RTSP 비디오 스트림 응답 시간 초과 (Ping Timeout)' },
-      { timestamp: '2026-08-08 14:11:30', event: '시설관리팀 네트워크 점검 자동 티켓 발행' }
-    ]
-  },
-  {
-    id: 3,
-    time: '2026-08-08 12:00:00',
-    message: '관리자(admin)가 보안팀 이영희 회원 가입 승인 처리',
-    level: 'info',
-    cctvId: '-',
-    location: '관제센터 관리자 콘솔',
-    confidence: 0,
-    eventType: '계정 권한 관리',
-    status: '처리 완료',
-    videoUrl: null,
-    thumbnail: null,
-    history: [
-      { timestamp: '2026-08-08 11:58:10', event: '이영희(younghee) 회원가입 요청' },
-      { timestamp: '2026-08-08 12:00:00', event: '최고 관리자(admin) 승인 및 접근 권한 부여' }
-    ]
-  },
-  {
-    id: 4,
-    time: '2026-08-08 09:30:00',
-    message: '전체 5개 CCTV 카메라 및 AI 가속 엔진 정기 자가 점검 완료 (정상)',
-    level: 'info',
-    cctvId: 'ALL',
-    location: '전체 모니터링 구역',
-    confidence: 0,
-    eventType: '시스템 정기 점검',
-    status: '정상 완료',
-    videoUrl: null,
-    thumbnail: null,
-    history: [
-      { timestamp: '2026-08-08 09:30:00', event: 'CCTV 5개 채널 비디오 입력 헬스체크 완료' },
-      { timestamp: '2026-08-08 09:30:02', event: 'GPU AI 추론 엔진 프레임 드랍 0%, 온도 정상' }
-    ]
-  },
-  {
-    id: 5,
-    time: '2026-08-07 18:20:00',
-    message: '후문 분리수거장 소형 연기 오탐지 해제 처리',
-    level: 'warning',
-    cctvId: 'CCTV-02',
-    location: '1F 외부 후문 분리수거장',
-    confidence: 72,
-    eventType: '화재 의심 감지',
-    status: '오탐지 해제',
-    videoUrl: 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4',
-    thumbnail: 'https://images.unsplash.com/photo-1508873696983-2df515122519?w=800&auto=format&fit=crop&q=80',
-    history: [
-      { timestamp: '2026-08-07 18:20:00', event: 'AI 모듈 - 연기 패턴 감지 (신뢰도 72%)' },
-      { timestamp: '2026-08-07 18:22:10', event: '관제요원 현장 카메라 줌 확인 완료 (수증기 확인)' },
-      { timestamp: '2026-08-07 18:23:00', event: '관리자 오탐지(False Alarm) 해제 처리' }
-    ]
-  }
-];
 
 const AdminPage = () => {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState(null);
   const [activeTab, setActiveTab] = useState('cctv'); // 'cctv' | 'users' | 'logs'
 
-  // 데이터 상태
+  // 데이터 상태 (실시간 백엔드 DB 연동)
   const [cctvList, setCctvList] = useState(INITIAL_CCTVS);
-  const [userList, setUserList] = useState(INITIAL_USERS);
+  const [userList, setUserList] = useState([]);
+  const [systemLogs, setSystemLogs] = useState([]);
 
   // 폼 및 검색 상태
   const [newCctvName, setNewCctvName] = useState('');
@@ -223,7 +57,7 @@ const AdminPage = () => {
       navigate('/login');
     }
 
-    // 백엔드 CCTV 목록 로드
+    // 1. 백엔드 CCTV 목록 로드
     cctvApi.list().then(res => {
       const items = res?.items || res || [];
       if (Array.isArray(items) && items.length > 0) {
@@ -240,6 +74,53 @@ const AdminPage = () => {
         setCctvList(mapped);
       }
     }).catch(err => console.warn('CCTV 백엔드 로드 오류:', err));
+
+    // 2. 백엔드 사용자 목록 로드
+    userApi.list().then(res => {
+      const items = res?.items || res || [];
+      if (Array.isArray(items)) {
+        const mappedUsers = items.map(u => ({
+          id: u.user_id,
+          user_no: u.user_no,
+          name: u.user_name || u.user_id,
+          email: u.user_email || `${u.user_id}@fireguard.or.kr`,
+          role: u.user_role === 'ADMIN' ? 'admin' : 'user',
+          status: u.user_status === 'ACTIVE' ? '승인' : u.user_status === 'WITHDRAWN' ? '탈퇴' : '승인대기',
+          dept: u.user_role === 'ADMIN' ? '관제총괄팀' : '관제팀',
+          phone: u.user_phone || '010-0000-0000',
+          position: u.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원',
+          joinedAt: u.user_created_at ? u.user_created_at.substring(0, 10) : '2026-01-01',
+          lastLogin: '접속 이력 확인가능',
+          assignedZone: '지정 관제 구역',
+          activities: []
+        }));
+        setUserList(mappedUsers);
+      }
+    }).catch(err => console.warn('사용자 목록 로드 오류:', err));
+
+    // 3. 백엔드 이벤트 및 119 신고 감사 로그 로드
+    eventApi.list({ size: 50 }).then(res => {
+      const items = res?.items || [];
+      if (Array.isArray(items)) {
+        const mappedLogs = items.map(ev => ({
+          id: ev.event_no,
+          time: ev.event_first_detected_at || '2026-08-10 14:00:00',
+          message: `${ev.cctv_name || '카메라'} ${ev.event_class === 'FLAME_SMOKE' ? '화재 및 연기 감지' : '화재 의심 감지'}`,
+          level: ev.event_status === 'CONFIRMED' ? 'error' : ev.event_status === 'PENDING' ? 'warning' : 'info',
+          cctvId: `CCTV-${String(ev.cctv_no || 1).padStart(2, '0')}`,
+          location: ev.cctv_location || '관제 구역',
+          confidence: Math.round((ev.event_confidence || 0.9) * 100),
+          eventType: '화재/연기 감지',
+          status: ev.event_status === 'CONFIRMED' ? '조치중 (119 신고)' : '관측중',
+          videoUrl: null,
+          thumbnail: ev.thumbnail_url || null,
+          history: [
+            { timestamp: ev.event_first_detected_at || '2026-08-10 14:00:00', event: 'AI 모듈 - 패턴 감지' }
+          ]
+        }));
+        setSystemLogs(mappedLogs);
+      }
+    }).catch(err => console.warn('감사 로그 로드 오류:', err));
   }, [navigate]);
 
   const handleLogout = () => {
@@ -426,7 +307,7 @@ const AdminPage = () => {
                 }`}
             >
               <Activity className="w-4 h-4" />
-              <span>감사 로그 ({SYSTEM_LOGS.length})</span>
+              <span>감사 로그 ({systemLogs.length})</span>
             </button>
           </div>
         </div>
@@ -609,6 +490,10 @@ const AdminPage = () => {
                             <span className="px-2.5 py-0.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold rounded-full border border-amber-500/30">
                               👑 관리자
                             </span>
+                          ) : user.adminRequested || user.adminRequestStatus === 'PENDING' ? (
+                            <span className="px-2.5 py-0.5 bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold rounded-full border border-amber-500/40">
+                              ⏳ 관리자 승격 요청됨
+                            </span>
                           ) : (
                             <span className="px-2.5 py-0.5 bg-surface-soft text-mute rounded-full border border-hairline">
                               👤 일반 사용자
@@ -644,10 +529,31 @@ const AdminPage = () => {
                             onClick={(e) => {
                               e.stopPropagation();
                               toggleRole(user.id);
+                              // 승격 승인 시 localStorage 내 currentUser도 함께 업데이트
+                              const stored = localStorage.getItem('currentUser');
+                              if (stored) {
+                                try {
+                                  const parsed = JSON.parse(stored);
+                                  if (parsed.id === user.id || user.role !== 'admin') {
+                                    parsed.role = 'admin';
+                                    parsed.adminRequested = false;
+                                    parsed.adminRequestStatus = 'APPROVED';
+                                    localStorage.setItem('currentUser', JSON.stringify(parsed));
+                                  }
+                                } catch (err) {}
+                              }
                             }}
-                            className="px-2.5 py-1 bg-canvas border border-hairline hover:border-ink rounded-lg font-semibold transition-colors cursor-pointer"
+                            className={`px-3 py-1 font-bold rounded-lg transition-colors cursor-pointer shadow-xs ${
+                              user.adminRequested || user.adminRequestStatus === 'PENDING'
+                                ? 'bg-amber-500 text-white hover:bg-amber-600 border border-amber-600'
+                                : 'bg-canvas border border-hairline hover:border-ink'
+                            }`}
                           >
-                            {user.role === 'admin' ? '일반변경' : '관리자승격'}
+                            {user.role === 'admin'
+                              ? '일반 변경'
+                              : user.adminRequested || user.adminRequestStatus === 'PENDING'
+                              ? '👑 관리자 승인 (승격)'
+                              : '관리자 승격'}
                           </button>
                         </td>
                       </tr>
@@ -678,7 +584,7 @@ const AdminPage = () => {
             </div>
 
             <div className="space-y-3 font-mono text-xs">
-              {SYSTEM_LOGS.map(log => (
+              {systemLogs.map(log => (
                 <div
                   key={log.id}
                   onClick={() => setSelectedLog(log)}
@@ -819,15 +725,62 @@ const AdminPage = () => {
                 </div>
               </div>
 
-              {/* 담당 관제 구역 */}
-              <div className="p-4 bg-surface-soft/40 border border-hairline rounded-xl space-y-1.5">
+              {/* 해당 인원이 설치/등록한 CCTV 카메라 목록 (클릭 시 실시간 비디오 모니터링) */}
+              <div className="p-4 bg-surface-soft/40 border border-hairline rounded-xl space-y-2">
                 <span className="text-xs font-bold text-mute uppercase tracking-wider flex items-center gap-1.5">
                   <Video className="w-3.5 h-3.5 text-amber-500" />
-                  담당 관제 구역
+                  해당 인원이 직접 설치 / 등록한 CCTV 카메라 (클릭 시 실시간 재생)
                 </span>
-                <p className="text-xs font-semibold text-ink">
-                  {selectedUser.assignedZone}
-                </p>
+                <div className="flex flex-wrap gap-2 pt-0.5">
+                  <button
+                    onClick={() => {
+                      setSelectedUser(null);
+                      setPreviewCctv({
+                        id: 'CCTV-01',
+                        name: '정문 주차장',
+                        location: '1F 외부 주차장 1열',
+                        stream_url: 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4',
+                        status: 'normal'
+                      });
+                    }}
+                    className="text-xs font-semibold text-ink bg-canvas hover:bg-surface-soft hover:border-amber-500 px-2.5 py-1 rounded-lg border border-hairline transition-colors cursor-pointer inline-flex items-center gap-1"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    <span>정문 주차장 (CCTV-01)</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedUser(null);
+                      setPreviewCctv({
+                        id: 'CCTV-02',
+                        name: '후문 분리수거장',
+                        location: '1F 외부 후문 담장',
+                        stream_url: 'https://media.w3.org/2010/05/video/movie_300.mp4',
+                        status: 'normal'
+                      });
+                    }}
+                    className="text-xs font-semibold text-ink bg-canvas hover:bg-surface-soft hover:border-amber-500 px-2.5 py-1 rounded-lg border border-hairline transition-colors cursor-pointer inline-flex items-center gap-1"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    <span>후문 분리수거장 (CCTV-02)</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedUser(null);
+                      setPreviewCctv({
+                        id: 'CCTV-04',
+                        name: 'B동 뒷골목',
+                        location: 'B동 외곽 통로',
+                        stream_url: 'https://media.w3.org/2010/05/bunny/movie.mp4',
+                        status: 'normal'
+                      });
+                    }}
+                    className="text-xs font-semibold text-ink bg-canvas hover:bg-surface-soft hover:border-amber-500 px-2.5 py-1 rounded-lg border border-hairline transition-colors cursor-pointer inline-flex items-center gap-1"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    <span>B동 뒷골목 (CCTV-04)</span>
+                  </button>
+                </div>
               </div>
 
               {/* 최근 활동 이력 목록 */}
