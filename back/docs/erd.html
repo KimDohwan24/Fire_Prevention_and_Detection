@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>fireguard ERD — 테이블 8개 (2026-08-10 최종)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Malgun Gothic','Segoe UI',sans-serif; background: #eef1f6; padding: 24px; }
+  h1 { font-size: 20px; color: #1a202c; margin-bottom: 4px; }
+  .sub { color: #718096; font-size: 13px; margin-bottom: 16px; }
+  .canvas {
+    position: relative; width: 1800px; height: 1000px;
+    background: #fbfcfe;
+    background-image: linear-gradient(#eef1f6 1px, transparent 1px),
+                      linear-gradient(90deg, #eef1f6 1px, transparent 1px);
+    background-size: 20px 20px;
+    border: 1px solid #d5dce8; border-radius: 8px;
+    box-shadow: 0 1px 4px rgba(30,40,70,.08);
+  }
+  svg.rel { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .ent {
+    position: absolute; width: 400px; background: #fff;
+    border: 1px solid #aab8d0; border-radius: 6px;
+    box-shadow: 0 2px 6px rgba(30,40,70,.12); font-size: 12px;
+  }
+  .ent .hd {
+    background: #3f5fae; color: #fff; font-weight: bold; font-size: 13px;
+    padding: 7px 10px; border-radius: 5px 5px 0 0; letter-spacing: .2px;
+  }
+  .ent .hd small { font-weight: normal; opacity: .75; float: right; font-size: 11px; }
+  .ent.new .hd { background: #2b8a5f; }
+  .ent table { width: 100%; border-collapse: collapse; }
+  .ent td { padding: 2.5px 7px; border-top: 1px solid #f0f3f8; vertical-align: middle; }
+  .ent tr:first-child td { border-top: none; }
+  .ent .k { width: 28px; text-align: center; padding-right: 0; }
+  .ent .ko { width: 94px; color: #3a4358; font-size: 11.5px; white-space: nowrap;
+             border-right: 1px solid #f0f3f8; }
+  .ent .n { white-space: nowrap; font-family: Consolas,'Malgun Gothic',monospace; font-size: 11px; }
+  .ent .t { color: #8a94a8; text-align: right; font-size: 10px; white-space: nowrap; padding-left: 2px; }
+  .pk-row .ko, .pk-row .n { font-weight: bold; }
+  .badge {
+    display: inline-block; font-size: 9.5px; font-weight: bold; border-radius: 3px;
+    padding: 0 3.5px; line-height: 14px;
+  }
+  .b-pk { background: #f6c344; color: #5b4400; }
+  .b-fk { background: #cfe0ff; color: #2b4d9b; }
+  .b-uq { background: #cdeed9; color: #1c6b40; }
+  .legend { margin-top: 14px; color: #4a5568; font-size: 13px; }
+  .legend .badge { vertical-align: 1px; }
+  .diffbox {
+    margin-top: 18px; max-width: 1800px; background: #fffaf0;
+    border: 1px solid #e8d5a8; border-radius: 8px; padding: 12px 16px; font-size: 13.5px;
+    color: #1a202c; line-height: 1.7;
+  }
+  .diffbox b.title { display: block; margin-bottom: 4px; }
+  code { background: #edf2f7; border-radius: 3px; padding: 0 5px; font-family: Consolas,monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>fireguard ERD — 테이블 8개</h1>
+<div class="sub">기준: <code>db/schema.sql</code> @ dev <code>8520be2</code> (2026-08-10 최종) ·
+관계선: ─┼ 1 쪽 · 까마귀발 N 쪽 (1:1 관계 없음) · ERDCloud 갱신용 참고 그림</div>
+
+<div class="canvas">
+
+  <svg class="rel" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="many" markerWidth="16" markerHeight="16" refX="14" refY="7" orient="auto">
+        <path d="M14,1 L2,7 L14,13 M2,7 L14,7" stroke="#5b79b5" stroke-width="1.4" fill="none"/>
+      </marker>
+      <marker id="one" markerWidth="10" markerHeight="16" refX="4" refY="7" orient="auto">
+        <path d="M4,2 L4,12" stroke="#5b79b5" stroke-width="1.4" fill="none"/>
+      </marker>
+    </defs>
+    <!-- users 1 — N cctv -->
+    <polyline points="230,391 230,470" fill="none" stroke="#5b79b5" stroke-width="1.4"
+              marker-start="url(#one)" marker-end="url(#many)"/>
+    <!-- users 1 — N alert -->
+    <polyline points="440,140 700,140" fill="none" stroke="#5b79b5" stroke-width="1.4"
+              marker-start="url(#one)" marker-end="url(#many)"/>
+    <!-- cctv 1 — N fire_event -->
+    <polyline points="440,540 700,540" fill="none" stroke="#5b79b5" stroke-width="1.4"
+              marker-start="url(#one)" marker-end="url(#many)"/>
+    <!-- fire_event 1 — N alert -->
+    <polyline points="840,330 840,246" fill="none" stroke="#5b79b5" stroke-width="1.4"
+              marker-start="url(#one)" marker-end="url(#many)"/>
+    <!-- fire_event 1 — N event_media -->
+    <polyline points="1100,390 1230,390 1230,130 1360,130" fill="none" stroke="#5b79b5" stroke-width="1.4"
+              marker-start="url(#one)" marker-end="url(#many)"/>
+    <!-- fire_event 1 — N report_119 -->
+    <polyline points="1100,470 1360,470" fill="none" stroke="#5b79b5" stroke-width="1.4"
+              marker-start="url(#one)" marker-end="url(#many)"/>
+    <!-- agency 1 — N report_119 -->
+    <polyline points="1100,730 1230,730 1230,555 1360,555" fill="none" stroke="#5b79b5" stroke-width="1.4"
+              marker-start="url(#one)" marker-end="url(#many)"/>
+    <!-- report_119 1 — N report_log -->
+    <polyline points="1560,590 1560,680" fill="none" stroke="#5b79b5" stroke-width="1.4"
+              marker-start="url(#one)" marker-end="url(#many)"/>
+  </svg>
+
+  <!-- ============ users ============ -->
+  <div class="ent" style="left:40px; top:80px;">
+    <div class="hd">users <small>사용자 계정 (ADMIN·VIEWER)</small></div>
+    <table>
+      <tr class="pk-row"><td class="k"><span class="badge b-pk">PK</span></td><td class="ko">회원 번호</td><td class="n">user_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-uq">UQ</span></td><td class="ko">아이디</td><td class="n">user_id</td><td class="t">varchar(50)</td></tr>
+      <tr><td class="k"></td><td class="ko">비밀번호</td><td class="n">user_pw</td><td class="t">varchar(255)</td></tr>
+      <tr><td class="k"></td><td class="ko">이름</td><td class="n">user_name</td><td class="t">varchar(50)</td></tr>
+      <tr><td class="k"></td><td class="ko">이메일</td><td class="n">user_email</td><td class="t">varchar(100)</td></tr>
+      <tr><td class="k"></td><td class="ko">연락처</td><td class="n">user_phone</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">권한</td><td class="n">user_role</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">계정 상태</td><td class="n">user_status</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">성별</td><td class="n">user_gender</td><td class="t">varchar(10)</td></tr>
+      <tr><td class="k"></td><td class="ko">주소</td><td class="n">user_address</td><td class="t">varchar(255)</td></tr>
+      <tr><td class="k"></td><td class="ko">가입일시</td><td class="n">user_created_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k"></td><td class="ko">수정일시</td><td class="n">user_updated_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k"></td><td class="ko">탈퇴일시</td><td class="n">user_withdrawal_at</td><td class="t">timestamp</td></tr>
+    </table>
+  </div>
+
+  <!-- ============ cctv ============ -->
+  <div class="ent" style="left:40px; top:470px;">
+    <div class="hd">cctv <small>연동 카메라</small></div>
+    <table>
+      <tr class="pk-row"><td class="k"><span class="badge b-pk">PK</span></td><td class="ko">cctv 번호</td><td class="n">cctv_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-fk">FK</span></td><td class="ko">회원 번호</td><td class="n">user_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"></td><td class="ko">cctv 이름</td><td class="n">cctv_name</td><td class="t">varchar(100)</td></tr>
+      <tr><td class="k"></td><td class="ko">설치 위치</td><td class="n">cctv_location</td><td class="t">varchar(255)</td></tr>
+      <tr><td class="k"></td><td class="ko">위도</td><td class="n">cctv_lat</td><td class="t">numeric(10,7)</td></tr>
+      <tr><td class="k"></td><td class="ko">경도</td><td class="n">cctv_lng</td><td class="t">numeric(10,7)</td></tr>
+      <tr><td class="k"></td><td class="ko">스트림 주소</td><td class="n">cctv_stream_url</td><td class="t">varchar(500)</td></tr>
+      <tr><td class="k"></td><td class="ko">해상도 너비</td><td class="n">cctv_width</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">해상도 높이</td><td class="n">cctv_height</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">cctv 상태</td><td class="n">cctv_status</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">등록일시</td><td class="n">cctv_created_at</td><td class="t">timestamp</td></tr>
+    </table>
+  </div>
+
+  <!-- ============ alert ============ -->
+  <div class="ent" style="left:700px; top:40px;">
+    <div class="hd">alert <small>사용자 알림</small></div>
+    <table>
+      <tr class="pk-row"><td class="k"><span class="badge b-pk">PK</span></td><td class="ko">알림 번호</td><td class="n">alert_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-fk">FK</span></td><td class="ko">이벤트 번호</td><td class="n">event_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-fk">FK</span></td><td class="ko">회원 번호</td><td class="n">user_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"></td><td class="ko">발송 경로</td><td class="n">alert_channel</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">알림 상태</td><td class="n">alert_status</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">발송 일시</td><td class="n">alert_sent_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k"></td><td class="ko">취소유예 마감</td><td class="n">alert_deadline_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k"></td><td class="ko">응답 일시</td><td class="n">alert_responded_at</td><td class="t">timestamp</td></tr>
+    </table>
+  </div>
+
+  <!-- ============ fire_event ============ -->
+  <div class="ent" style="left:700px; top:330px;">
+    <div class="hd">fire_event <small>화재 판정 결과</small></div>
+    <table>
+      <tr class="pk-row"><td class="k"><span class="badge b-pk">PK</span></td><td class="ko">이벤트 번호</td><td class="n">event_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-fk">FK</span></td><td class="ko">cctv 번호</td><td class="n">cctv_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"></td><td class="ko">판정 결과</td><td class="n">event_status</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">검출 종류</td><td class="n">event_class</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">최초 감지 일시</td><td class="n">event_first_detected_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k"></td><td class="ko">화재 확정 일시</td><td class="n">event_detected_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k"></td><td class="ko">검출 프레임 수</td><td class="n">event_detected_frames</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">확정 기준 수</td><td class="n">event_threshold_frames</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">신뢰도</td><td class="n">event_confidence</td><td class="t">numeric(5,4)</td></tr>
+      <tr><td class="k"></td><td class="ko">점검 모드</td><td class="n">event_is_test</td><td class="t">boolean</td></tr>
+    </table>
+  </div>
+
+  <!-- ============ agency ============ -->
+  <div class="ent" style="left:700px; top:660px;">
+    <div class="hd">agency <small>소방서</small></div>
+    <table>
+      <tr class="pk-row"><td class="k"><span class="badge b-pk">PK</span></td><td class="ko">기관 번호</td><td class="n">agency_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"></td><td class="ko">기관 이름</td><td class="n">agency_name</td><td class="t">varchar(100)</td></tr>
+      <tr><td class="k"></td><td class="ko">위도</td><td class="n">agency_lat</td><td class="t">numeric(10,7)</td></tr>
+      <tr><td class="k"></td><td class="ko">경도</td><td class="n">agency_lng</td><td class="t">numeric(10,7)</td></tr>
+      <tr><td class="k"></td><td class="ko">전송 주소</td><td class="n">agency_endpoint</td><td class="t">varchar(255)</td></tr>
+      <tr><td class="k"></td><td class="ko">활성 여부</td><td class="n">agency_is_active</td><td class="t">boolean</td></tr>
+    </table>
+  </div>
+
+  <!-- ============ event_media ============ -->
+  <div class="ent" style="left:1360px; top:40px;">
+    <div class="hd">event_media <small>검출 프레임</small></div>
+    <table>
+      <tr class="pk-row"><td class="k"><span class="badge b-pk">PK</span></td><td class="ko">미디어 번호</td><td class="n">media_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-fk">FK</span></td><td class="ko">이벤트 번호</td><td class="n">event_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"></td><td class="ko">파일 경로</td><td class="n">media_url</td><td class="t">varchar(500)</td></tr>
+      <tr><td class="k"></td><td class="ko">검출 상자 좌표</td><td class="n">media_detections</td><td class="t">jsonb</td></tr>
+      <tr><td class="k"></td><td class="ko">신뢰도</td><td class="n">media_confidence</td><td class="t">numeric(5,4)</td></tr>
+      <tr><td class="k"></td><td class="ko">촬영 일시</td><td class="n">media_captured_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k"></td><td class="ko">대표 사진</td><td class="n">media_is_primary</td><td class="t">boolean</td></tr>
+    </table>
+  </div>
+
+  <!-- ============ report_119 ============ -->
+  <div class="ent" style="left:1360px; top:300px;">
+    <div class="hd">report_119 <small>119 신고</small></div>
+    <table>
+      <tr class="pk-row"><td class="k"><span class="badge b-pk">PK</span></td><td class="ko">신고 번호</td><td class="n">report_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-fk">FK</span></td><td class="ko">이벤트 번호</td><td class="n">event_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-fk">FK</span></td><td class="ko">기관 번호</td><td class="n">agency_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"></td><td class="ko">승계 순번</td><td class="n">report_sequence</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">접수번호</td><td class="n">report_external_id</td><td class="t">varchar(50)</td></tr>
+      <tr><td class="k"></td><td class="ko">신고 사유</td><td class="n">report_trigger_reason</td><td class="t">varchar(100)</td></tr>
+      <tr><td class="k"></td><td class="ko">신고 상태</td><td class="n">report_status</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">신고 주소</td><td class="n">report_address</td><td class="t">varchar(255)</td></tr>
+      <tr><td class="k"></td><td class="ko">기관까지 거리</td><td class="n">report_distance_km</td><td class="t">numeric(6,3)</td></tr>
+      <tr><td class="k"></td><td class="ko">전송 시도 횟수</td><td class="n">report_attempt_count</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">신고 전송 일시</td><td class="n">reported_at</td><td class="t">timestamp</td></tr>
+      <tr><td class="k"></td><td class="ko">접수 확인 일시</td><td class="n">report_accepted_at</td><td class="t">timestamp</td></tr>
+    </table>
+  </div>
+
+  <!-- ============ report_log ============ -->
+  <div class="ent new" style="left:1360px; top:680px;">
+    <div class="hd">report_log <small>119 송수신 로그</small></div>
+    <table>
+      <tr class="pk-row"><td class="k"><span class="badge b-pk">PK</span></td><td class="ko">로그 번호</td><td class="n">log_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"><span class="badge b-fk">FK</span></td><td class="ko">신고 번호</td><td class="n">report_no</td><td class="t">bigint</td></tr>
+      <tr><td class="k"></td><td class="ko">시도 순번</td><td class="n">log_attempt</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">전송 주소</td><td class="n">log_endpoint</td><td class="t">varchar(500)</td></tr>
+      <tr><td class="k"></td><td class="ko">보낸 본문</td><td class="n">log_request</td><td class="t">jsonb</td></tr>
+      <tr><td class="k"></td><td class="ko">전송 결과</td><td class="n">log_result</td><td class="t">varchar(20)</td></tr>
+      <tr><td class="k"></td><td class="ko">응답 상태코드</td><td class="n">log_http_status</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">받은 본문</td><td class="n">log_response</td><td class="t">jsonb</td></tr>
+      <tr><td class="k"></td><td class="ko">실패 사유</td><td class="n">log_error</td><td class="t">varchar(500)</td></tr>
+      <tr><td class="k"></td><td class="ko">소요시간(ms)</td><td class="n">log_elapsed_ms</td><td class="t">integer</td></tr>
+      <tr><td class="k"></td><td class="ko">전송 일시</td><td class="n">log_sent_at</td><td class="t">timestamp</td></tr>
+    </table>
+  </div>
+
+</div>
+
+<div class="legend">
+  <span class="badge b-pk">PK</span> 기본키 ·
+  <span class="badge b-uq">UQ</span> 유니크(<code>UQ_USERS_USER_ID</code>) ·
+  <span class="badge b-fk">FK</span> 외래키 ·
+  초록 헤더 = ERD v4 이후 추가된 테이블 · 관계 8개 전부 1:N
+</div>
+
+<div class="diffbox">
+  <b class="title">📝 ERDCloud(기존 그림)에서 고칠 것 — 이 그림과 같아지도록</b>
+  ① <b>report_log 테이블 추가</b> (8번째, report_119 1—N report_log)<br>
+  ② report_119: <code>report_dspatched_at</code> → <code>report_accepted_at</code>, <code>report_at</code> → <code>reported_at</code><br>
+  ③ event_media: <code>media_detection</code> → <code>media_detections</code>, <code>media_is_primary</code> 타입 varchar2 → boolean<br>
+  ④ alert: <code>alert_level</code> 컬럼 <b>삭제</b> (승격 단계 폐기 — PUSH·SMS 동시 발송)<br>
+  ⑤ cctv: <code>cctv_location</code>(설치 위치 — 신고 주소로 나가는 값) <b>추가</b><br>
+  ⑥ 각 테이블 끝의 빈 <code>Field</code> 자리표시자 행 제거<br>
+  ⑦ 참고 인덱스: <code>UX_report_119_active</code>(이벤트당 진행 중 신고 1건 강제, 부분 유니크) ·
+  <code>IX_alert_01</code>은 <code>(event_no)</code> 단독
+</div>
+
+</body>
+</html>

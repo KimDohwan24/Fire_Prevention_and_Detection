@@ -1,7 +1,31 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { authApi } from '../api';
 
 const Login = () => {
+  const navigate = useNavigate();
+  const [id, setId] = useState('');
+  const [password, setPassword] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setIsLoading(true);
+
+    try {
+      // 백엔드 REST API 로그인 호출 (/api/auth/login -> JWT 토큰 발급 및 localStorage 저장)
+      await authApi.login(id.trim(), password);
+      navigate('/dashboard');
+    } catch (err) {
+      console.error('로그인 실패:', err);
+      setErrorMsg(err.message || '로그인에 실패했습니다. 아이디와 비밀번호를 확인해주세요.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-canvas flex flex-col items-center pt-32 px-4 font-ui relative transition-colors duration-300">
 
@@ -20,10 +44,18 @@ const Login = () => {
 
       {/* Login Form */}
       <div className="w-full max-w-[360px]">
-        <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+        <form className="space-y-4" onSubmit={handleLogin}>
+          {errorMsg && (
+            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-500 text-xs font-semibold text-center">
+              {errorMsg}
+            </div>
+          )}
+
           <div>
             <input
               type="text"
+              value={id}
+              onChange={(e) => setId(e.target.value)}
               className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus-visible:outline-none focus:border-ink transition-all"
               placeholder="아이디"
               onInvalid={(e) => e.target.setCustomValidity('아이디를 꼭 입력해주세요!')}
@@ -34,6 +66,8 @@ const Login = () => {
           <div>
             <input
               type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus-visible:outline-none focus:border-ink transition-all"
               placeholder="비밀번호"
               onInvalid={(e) => e.target.setCustomValidity('비밀번호를 꼭 입력해주세요!')}
@@ -42,12 +76,15 @@ const Login = () => {
             />
           </div>
 
-          <button
-            type="submit"
-            className="w-full h-[36px] bg-primary text-on-primary rounded-full text-button-md hover:bg-ink-deep active:scale-[0.98] transition-all duration-200 mt-2"
-          >
-            로그인
-          </button>
+          <div className="flex flex-col space-y-2 pt-2">
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full h-[36px] bg-primary text-on-primary rounded-full text-button-md hover:bg-ink-deep active:scale-[0.98] transition-all duration-200 disabled:opacity-50"
+            >
+              {isLoading ? '로그인 중...' : '로그인'}
+            </button>
+          </div>
         </form>
 
         <div className="mt-8 flex flex-col items-center space-y-4 text-body-sm">

@@ -136,7 +136,7 @@ def test_test_event_excluded(monkeypatch):
 # ---------- 전체 사슬 · 스윕 부수 동작 ----------
 
 def test_full_chain_alerts_to_report():
-    """확정 알림 2건 → 유예 초과 → 두 알림 NO_RESPONSE + 119 신고(DISPATCHED)."""
+    """확정 알림 2건 → 유예 초과 → 두 알림 NO_RESPONSE + 119 신고(ACCEPTED)."""
     event_no = make_event()
     make_alert_pair(event_no, deadline_offset_sec=-10)
 
@@ -145,7 +145,7 @@ def test_full_chain_alerts_to_report():
     rows = get_alerts(event_no)
     assert [r["alert_status"] for r in rows] == ["NO_RESPONSE", "NO_RESPONSE"]
     (report,) = get_reports(event_no)
-    assert report["report_status"] == "DISPATCHED"  # conftest HTTP 스텁이 2xx 응답
+    assert report["report_status"] == "ACCEPTED"  # conftest HTTP 스텁이 2xx 응답
     assert report["report_trigger_reason"] == "NO_RESPONSE_TIMEOUT"
     assert summary["reported"] == 1
 

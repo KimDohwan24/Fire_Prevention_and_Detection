@@ -113,7 +113,7 @@ def test_no_response_timeout_triggers_automatic_report(client, admin_headers,
     assert [a["alert_channel"] for a in alerts] == ["PUSH", "SMS"]
     assert {a["alert_status"] for a in alerts} == {"SENT"}
     assert {a["user_no"] for a in alerts} == {OWNER_NO}
-    assert {a["alert_level"] for a in alerts} == {1}          # 승격 개념 없음
+    assert all("alert_level" not in a for a in alerts)        # 승격 폐기 — 컬럼 삭제됨
     assert alerts[0]["alert_sent_at"] == alerts[1]["alert_sent_at"]
     assert alerts[0]["alert_deadline_at"] == alerts[1]["alert_deadline_at"]
 
@@ -131,7 +131,7 @@ def test_no_response_timeout_triggers_automatic_report(client, admin_headers,
     assert [a["alert_status"] for a in get_alerts(event_no)] == \
         ["NO_RESPONSE", "NO_RESPONSE"]
     (report,) = get_reports(event_no)
-    assert report["report_status"] == "DISPATCHED"
+    assert report["report_status"] == "ACCEPTED"
     assert report["report_trigger_reason"] == "NO_RESPONSE_TIMEOUT"
     assert report["report_sequence"] == 1
     assert report["agency_no"] == 1              # 가장 가까운 종로소방서
@@ -142,7 +142,7 @@ def test_no_response_timeout_triggers_automatic_report(client, admin_headers,
     assert [a["alert_status"] for a in detail["alerts"]] == \
         ["NO_RESPONSE", "NO_RESPONSE"]
     assert [r["report_no"] for r in detail["reports"]] == [report["report_no"]]
-    assert detail["reports"][0]["report_status"] == "DISPATCHED"
+    assert detail["reports"][0]["report_status"] == "ACCEPTED"
 
     # 신고 목록 API 에서 event_no 로 필터링된다
     r = client.get(f"/api/reports?event_no={event_no}", headers=admin_headers)
@@ -177,7 +177,7 @@ def test_user_confirms_fire_reports_immediately(client, admin_headers, monkeypat
     assert alerts[0]["alert_responded_at"] == alerts[1]["alert_responded_at"]
 
     (report,) = get_reports(event_no)
-    assert report["report_status"] == "DISPATCHED"
+    assert report["report_status"] == "ACCEPTED"
     assert report["report_trigger_reason"] == "USER_CONFIRMED"
 
     # 이미 응답한 형제에 다시 응답하면 409
@@ -269,6 +269,8 @@ def test_first_agency_exhausted_takes_over_to_second(client, monkeypatch):
     """시나리오: 무응답 자동 신고에서 1순위 기관이 전 회차 실패 → 2순위 기관으로 승계.
 
     1순위(종로소방서) endpoint 만 실패시키고 2순위(중부소방서)는 성공시킨다.
+    실패는 응답 타임아웃으로 낸다 — 재시도를 다 쓰는 경로가 이 시나리오의 대상이다.
+    (연결 실패는 전달되지 않은 것이 확실해 1회에 승계하므로 여기서 쓰지 않는다)
     """
     monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 2)
 
@@ -283,7 +285,7 @@ def test_first_agency_exhausted_takes_over_to_second(client, monkeypatch):
     def fake_post(endpoint, payload):
         calls.append(endpoint)
         if endpoint == "http://a1/report":
-            raise requests.exceptions.ConnectionError("1순위 기관 모의 접속 실패")
+            raise requests.exceptions.ReadTimeout("1순위 기관 모의 응답 없음")
         return _Accepted()
 
     monkeypatch.setattr("services.report_service._post_report", fake_post)
@@ -300,15 +302,15 @@ def test_first_agency_exhausted_takes_over_to_second(client, monkeypatch):
     assert first["report_sequence"] == 1
     assert first["report_status"] == "NO_RESPONSE"
     assert first["report_attempt_count"] == config.MAX_REPORT_ATTEMPTS
-    assert first["report_dispatched_at"] is None
+    assert first["report_accepted_at"] is None
 
-    # 2순위: 승계받아 출동 접수
+    # 2순위: 승계받아 접수 확인
     assert second["agency_no"] == 2
     assert second["report_sequence"] == 2
-    assert second["report_status"] == "DISPATCHED"
+    assert second["report_status"] == "ACCEPTED"
     assert second["report_trigger_reason"] == "NO_RESPONSE_TIMEOUT"
     assert second["report_external_id"] == "R-E2E-001"
-    assert second["report_dispatched_at"] is not None
+    assert second["report_accepted_at"] is not None
 
     # 1순위에 MAX_REPORT_ATTEMPTS 회, 2순위에 1회
     assert calls == ["http://a1/report"] * config.MAX_REPORT_ATTEMPTS \
@@ -317,8 +319,8 @@ def test_first_agency_exhausted_takes_over_to_second(client, monkeypatch):
     # 거리 오름차순이므로 1순위가 더 가깝다
     assert float(first["report_distance_km"]) < float(second["report_distance_km"])
 
-    # 진행 중(SENDING/DISPATCHED) 신고는 이벤트당 1건뿐
+    # 진행 중(SENDING/ACCEPTED) 신고는 이벤트당 1건뿐
     active = [r for r in get_reports(event_no)
-              if r["report_status"] in ("SENDING", "DISPATCHED")]
+              if r["report_status"] in ("SENDING", "ACCEPTED")]
     assert len(active) == 1
     assert active[0]["report_no"] == second["report_no"]

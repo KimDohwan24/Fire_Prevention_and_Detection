@@ -9,10 +9,12 @@
 - DB 부분 유니크 인덱스(UX_report_119_active)로 이벤트당 진행 중 신고 1건 강제.
 - 실제 HTTP 는 절대 나가지 않는다 — _post_report 를 monkeypatch 한다.
 """
+import base64
+
 import psycopg2
 import pytest
 import requests
-from conftest import make_alert, make_alert_pair, make_event, make_report
+from conftest import make_alert, make_alert_pair, make_event, make_media, make_report
 
 import config
 import db
@@ -80,7 +82,7 @@ def test_haversine_agency1_closer_than_agency2():
 # ---------- 성공 경로 ----------
 
 def test_start_report_success_first_try(monkeypatch):
-    """첫 시도 성공: 가장 가까운 기관(1)으로 DISPATCHED 행 1개, 거리/주소/외부ID 저장."""
+    """첫 시도 성공: 가장 가까운 기관(1)으로 ACCEPTED 행 1개, 거리/주소/외부ID 저장."""
     calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-2026-0001"}))
     event_no = make_event()
 
@@ -91,7 +93,7 @@ def test_start_report_success_first_try(monkeypatch):
     r = rows[0]
     assert r["agency_no"] == 1
     assert r["report_sequence"] == 1
-    assert r["report_status"] == "DISPATCHED"
+    assert r["report_status"] == "ACCEPTED"
     assert r["report_external_id"] == "R-2026-0001"
     assert r["report_trigger_reason"] == "USER_CONFIRMED"
     assert r["report_attempt_count"] == 1
@@ -99,11 +101,11 @@ def test_start_report_success_first_try(monkeypatch):
     assert float(r["report_distance_km"]) == pytest.approx(
         haversine_km(*CCTV1, *AGENCY1), abs=0.002)
     assert r["reported_at"] is not None
-    assert r["report_dispatched_at"] is not None
+    assert r["report_accepted_at"] is not None
 
     assert result is not None
     assert result["report_no"] == r["report_no"]
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
     assert result["agency_no"] == 1
 
     # 페이로드 계약 확인
@@ -118,8 +120,26 @@ def test_start_report_success_first_try(monkeypatch):
     assert payload["reported_at"] is not None
 
 
+def test_payload_carries_first_detected_at(monkeypatch):
+    """페이로드에 최초 검출 시각이 실린다 — 발화 시점 전달.
+
+    유예 30초 + 승계가 겹치면 검출과 신고 사이가 1분 이상 벌어질 수 있다.
+    reported_at(신고 시각)만으로는 소방이 발화 시점을 알 수 없다 (슬라이드 12 ①).
+    """
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-FD"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    row = db.query_one(
+        "SELECT event_first_detected_at FROM fire_event WHERE event_no = %s", (event_no,))
+    _, payload = calls[0]
+    assert payload["first_detected_at"] == \
+        row["event_first_detected_at"].isoformat(timespec="seconds")
+
+
 def test_start_report_retry_then_success(monkeypatch):
-    """2번 실패(타임아웃/거절) 후 3번째 성공 → 같은 기관, attempt_count=3, DISPATCHED."""
+    """2번 실패(타임아웃/거절) 후 3번째 성공 → 같은 기관, attempt_count=3, ACCEPTED."""
     def fn(ep, pl, n):
         if n == 1:
             raise requests.exceptions.Timeout("모의 타임아웃")
@@ -135,11 +155,11 @@ def test_start_report_retry_then_success(monkeypatch):
     rows = get_report_rows(event_no)
     assert len(rows) == 1
     assert rows[0]["agency_no"] == 1
-    assert rows[0]["report_status"] == "DISPATCHED"
+    assert rows[0]["report_status"] == "ACCEPTED"
     assert rows[0]["report_attempt_count"] == 3
     assert rows[0]["report_external_id"] == "R-RETRY-01"
     assert len(calls) == 3
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
 
 
 def test_start_report_accepts_2xx_without_body(monkeypatch):
@@ -150,20 +170,291 @@ def test_start_report_accepts_2xx_without_body(monkeypatch):
     result = report_service.start_report(event_no, "USER_CONFIRMED")
 
     (r,) = get_report_rows(event_no)
-    assert r["report_status"] == "DISPATCHED"
+    assert r["report_status"] == "ACCEPTED"
     assert r["report_external_id"] is None
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
 
 
-# ---------- 승계 (기관 교체) ----------
+# ---------- bbox 이미지 전송 ----------
+#
+# 신고 페이로드에 대표 프레임 이미지(base64)와 검출 상자(bbox) 좌표를 실어 보낸다.
+# 실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없어 이미지 자체를 싣는다.
+# 시연 대상이 모의 접수 서버라 가능한 결정 (2026-08-10, 슬라이드 12 ①).
 
-def test_takeover_to_second_agency(monkeypatch):
-    """기관 1이 4회 모두 실패 → 그 행은 NO_RESPONSE(승계), 기관 2가 sequence 2 로 DISPATCHED."""
+def test_payload_carries_bbox_drawn_image(monkeypatch, tmp_path):
+    """페이로드 이미지에는 검출 상자(bbox)가 그려져 있다 — DB 좌표로 그려서 보낸다.
+
+    받는 쪽(119)이 좌표를 해석하지 않아도 발화 위치가 보이는 이미지를 받는다
+    (슬라이드 12 ① "bbox 표시 화재 이미지"). 좌표 원본도 같이 실린다.
+    """
+    import io as _io
+
+    from PIL import Image
+
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-IMG"}))
+    event_no = make_event()
+    img_path = tmp_path / "events" / str(event_no) / "frame.jpg"
+    img_path.parent.mkdir(parents=True)
+    Image.new("RGB", (100, 100), (0, 0, 0)).save(img_path, "JPEG")
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/frame.jpg")
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    sent = Image.open(_io.BytesIO(base64.b64decode(payload["image_base64"]))).convert("RGB")
+    # 검은 원본 위에 상자 선이 그려졌으면 붉은 픽셀이 존재한다
+    reds = [px for px in sent.getdata() if px[0] > 150 and px[1] < 80 and px[2] < 80]
+    assert reds, "페이로드 이미지에 bbox 선이 없다"
+    assert payload["image_detections"] == [
+        {"cls": "flame", "conf": 0.91, "box": [0.238, 0.259, 0.047, 0.113]}]
+
+
+def test_payload_falls_back_to_raw_image_when_not_parseable(monkeypatch, tmp_path):
+    """이미지로 못 여는 파일이면 그리기를 포기하고 원본 그대로 보낸다 — 신고가 우선."""
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-RAW"}))
+    event_no = make_event()
+    img = tmp_path / "events" / str(event_no) / "frame.jpg"
+    img.parent.mkdir(parents=True)
+    img.write_bytes(b"\xff\xd8fake-jpeg-bytes")
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/frame.jpg")
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert base64.b64decode(payload["image_base64"]) == b"\xff\xd8fake-jpeg-bytes"
+
+
+def test_report_goes_out_without_image_file(monkeypatch, tmp_path):
+    """대표 프레임 파일이 디스크에 없어도 신고는 나간다 — 이미지가 신고를 막으면 안 된다."""
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-NOIMG"}))
+    event_no = make_event()
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/ghost.jpg")
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    assert result["report_status"] == "ACCEPTED"
+    _, payload = calls[0]
+    assert payload["image_base64"] is None
+    assert payload["image_detections"] is None
+
+
+def test_log_request_omits_image_bytes(monkeypatch, tmp_path):
+    """로그에는 이미지 원본을 남기지 않는다 — 크기 표시로 대체.
+
+    이미지 파일은 디스크(MEDIA_ROOT)에 이미 있다. 로그 행마다 base64 를
+    그대로 남기면 재전송 4회에 같은 이미지가 4번 DB 에 쌓인다.
+    """
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-LOGIMG"}))
+    event_no = make_event()
+    img = tmp_path / "events" / str(event_no) / "frame.jpg"
+    img.parent.mkdir(parents=True)
+    img.write_bytes(b"\xff\xd8fake-jpeg-bytes")
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/frame.jpg")
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    (log,) = db.query(
+        "SELECT * FROM report_log WHERE report_no = %s", (result["report_no"],))
+    logged = log["log_request"]["image_base64"]
+    assert "생략" in logged                      # 원본 대신 표시 문자열
+    assert len(logged) < 100                     # base64 원본이 아니다
+    # 검출 좌표는 작고 승계 판단에 유용하므로 로그에 그대로 남는다
+    assert log["log_request"]["image_detections"] == [
+        {"cls": "flame", "conf": 0.91, "box": [0.238, 0.259, 0.047, 0.113]}]
+
+
+# ---------- 신고 ID (멱등 키) ----------
+#
+# 재전송은 "상대가 못 받았다"가 아니라 "응답이 안 왔다"일 뿐이다. 같은 신고를
+# 식별할 ID 가 없으면 119 쪽에서 같은 화재가 여러 건으로 접수된다.
+# 발표 슬라이드 12: "동일 ID 로 최대 4회 재전송", "동일 신고 ID 유지로 중복 접수 방지".
+
+def test_payload_carries_report_uid(monkeypatch):
+    """페이로드에 신고 ID 가 실린다 — 이벤트에서 결정되는 값이라 재현 가능하다."""
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-1"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert payload["report_uid"] == report_service.report_uid(event_no)
+    assert payload["report_uid"] == f"FG-{event_no}"
+
+
+def test_report_uid_identical_across_retries(monkeypatch):
+    """같은 기관에 재전송할 때 신고 ID 는 바뀌지 않는다."""
+    def fn(ep, pl, n):
+        if n < 3:
+            raise requests.exceptions.Timeout("모의 타임아웃")
+        return FakeResponse(200, {"external_id": "R-RETRY"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    uids = {pl["report_uid"] for _, pl in calls}
+    assert len(calls) == 3
+    assert uids == {f"FG-{event_no}"}
+
+
+def test_report_uid_survives_agency_takeover(monkeypatch):
+    """기관을 승계해도 신고 ID 는 그대로다 — 다음 기관도 같은 화재임을 알 수 있다.
+
+    report_119 행은 기관마다 새로 생기지만(순번 +1), 신고 ID 는 이벤트 단위다.
+    """
     set_distinct_endpoints()
 
     def fn(ep, pl, n):
         if ep == "http://a1/report":
             raise requests.exceptions.ConnectionError("모의 연결 실패")
+        return FakeResponse(200, {"external_id": "R-TAKEOVER"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    assert len(calls) == 2  # 연결 실패는 재시도하지 않는다 — 기관1에 1회 + 기관2에 1회
+    assert {pl["report_uid"] for _, pl in calls} == {f"FG-{event_no}"}
+
+
+def test_report_uid_differs_between_events():
+    """다른 화재는 다른 신고 ID 를 받는다."""
+    assert report_service.report_uid(11) != report_service.report_uid(12)
+
+
+# ---------- 송수신 로그 ----------
+#
+# report_119 는 결과 요약만 남긴다. 전송 시도 하나하나가 무엇을 보내고 무엇을 받았는지는
+# report_log 에 쌓인다 (발표 슬라이드 12 ⑤ "전 구간 송수신 로그 저장", 요구사항 N-04).
+
+def get_log_rows(report_no=None):
+    if report_no is None:
+        return db.query("SELECT * FROM report_log ORDER BY log_no")
+    return db.query(
+        "SELECT * FROM report_log WHERE report_no = %s ORDER BY log_no", (report_no,)
+    )
+
+
+def test_success_is_logged_with_request_and_response(monkeypatch):
+    """성공 1회 = 로그 1행. 보낸 본문과 받은 본문이 그대로 남는다."""
+    patch_post(monkeypatch,
+               lambda ep, pl, n: FakeResponse(200, {"external_id": "R-LOG-1"}))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    (log,) = get_log_rows(result["report_no"])
+    assert log["log_attempt"] == 1
+    assert log["log_result"] == "ACCEPTED"
+    assert log["log_http_status"] == 200
+    assert log["log_request"]["report_uid"] == f"FG-{event_no}"
+    assert log["log_request"]["address"] == "본관 정문 앞"
+    assert log["log_response"] == {"external_id": "R-LOG-1"}
+    assert log["log_error"] is None
+    assert log["log_sent_at"] is not None
+    assert log["log_elapsed_ms"] >= 0
+
+
+def test_every_attempt_is_logged_with_its_own_result(monkeypatch):
+    """실패한 시도도 남는다 — 무응답과 거절은 뜻이 달라서 결과값으로 구분한다."""
+    def fn(ep, pl, n):
+        if n == 1:
+            raise requests.exceptions.Timeout("모의 타임아웃")
+        if n == 2:
+            return FakeResponse(500, {"error": "system unavailable"})
+        return FakeResponse(200, {"external_id": "R-LOG-3"})
+
+    patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    logs = get_log_rows(result["report_no"])
+    assert [l["log_attempt"] for l in logs] == [1, 2, 3]
+    assert [l["log_result"] for l in logs] == ["TIMEOUT", "REJECTED", "ACCEPTED"]
+    assert [l["log_http_status"] for l in logs] == [None, 500, 200]
+    # 타임아웃은 사유가 남고, 응답을 받은 시도는 사유가 없다
+    assert "모의 타임아웃" in logs[0]["log_error"]
+    assert logs[1]["log_error"] is None
+    assert logs[1]["log_response"] == {"error": "system unavailable"}
+
+
+def test_connection_failure_logged_as_error(monkeypatch):
+    """연결 자체가 안 된 것(ERROR)과 응답이 없는 것(TIMEOUT)은 다르다.
+
+    TIMEOUT 은 상대가 접수했을 수도 있다는 뜻이라 사후 판단이 달라진다.
+    연결 실패는 재시도 값어치가 없어 기관당 한 줄만 남는다.
+    """
+    patch_post(monkeypatch, lambda ep, pl, n: (_ for _ in ()).throw(
+        requests.exceptions.ConnectionError("모의 연결 실패")))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    logs = get_log_rows(result["report_no"])
+    assert len(logs) == 1
+    assert {l["log_result"] for l in logs} == {"ERROR"}
+    assert all(l["log_http_status"] is None for l in logs)
+
+
+def test_logs_cover_every_agency_in_takeover(monkeypatch):
+    """승계하면 기관마다 자기 신고 행에 로그가 붙는다 — 전 구간이 남는다."""
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            raise requests.exceptions.Timeout("모의 타임아웃")
+        return FakeResponse(200, {"external_id": "R-LOG-TK"})
+
+    patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    first, second = get_report_rows(event_no)
+    first_logs = get_log_rows(first["report_no"])
+    second_logs = get_log_rows(second["report_no"])
+
+    assert len(first_logs) == 4
+    assert {l["log_result"] for l in first_logs} == {"TIMEOUT"}
+    assert {l["log_endpoint"] for l in first_logs} == {"http://a1/report"}
+    assert len(second_logs) == 1
+    assert second_logs[0]["log_result"] == "ACCEPTED"
+    assert second_logs[0]["log_endpoint"] == "http://a2/report"
+
+
+def test_logging_failure_does_not_break_the_report(monkeypatch):
+    """로그 기록이 실패해도 신고는 나간다 — 증거 남기려다 신고를 막으면 본말전도다."""
+    patch_post(monkeypatch,
+               lambda ep, pl, n: FakeResponse(200, {"external_id": "R-NOLOG"}))
+    monkeypatch.setattr("services.report_service._log_attempt",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("로그 실패")))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    assert result["report_status"] == "ACCEPTED"
+    assert result["report_external_id"] == "R-NOLOG"
+
+
+# ---------- 승계 (기관 교체) ----------
+
+def test_takeover_to_second_agency(monkeypatch):
+    """기관 1이 4회 모두 실패 → 그 행은 NO_RESPONSE(승계), 기관 2가 sequence 2 로 ACCEPTED.
+
+    재시도를 다 쓰는 경로라 응답 타임아웃을 쓴다 (연결 실패는 1회에 승계한다).
+    """
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            raise requests.exceptions.ReadTimeout("모의 응답 타임아웃")
         return FakeResponse(200, {"external_id": "R-TAKEOVER-02"})
 
     calls = patch_post(monkeypatch, fn)
@@ -178,17 +469,17 @@ def test_takeover_to_second_agency(monkeypatch):
     assert first["report_sequence"] == 1
     assert first["report_status"] == "NO_RESPONSE"
     assert first["report_attempt_count"] == 4
-    assert first["report_dispatched_at"] is None
+    assert first["report_accepted_at"] is None
     assert second["agency_no"] == 2
     assert second["report_sequence"] == 2
-    assert second["report_status"] == "DISPATCHED"
+    assert second["report_status"] == "ACCEPTED"
     assert second["report_external_id"] == "R-TAKEOVER-02"
     assert float(second["report_distance_km"]) == pytest.approx(
         haversine_km(*CCTV1, *AGENCY2), abs=0.002)
 
     # 기관 1에 4번, 기관 2에 1번
     assert [ep for ep, _ in calls] == ["http://a1/report"] * 4 + ["http://a2/report"]
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
     assert result["agency_no"] == 2
 
 
@@ -226,6 +517,121 @@ def test_max_attempts_configurable(monkeypatch):
     assert len(calls) == 4  # 2개 기관 × 2회
 
 
+# ---------- 실패 종류별 분기 (재시도할 값어치가 있는가) ----------
+
+def test_connection_failure_takes_over_without_retrying(monkeypatch):
+    """연결이 안 되면 같은 기관을 다시 두드리지 않고 곧장 다음 기관으로 간다.
+
+    연결이 성립하지 않았다는 건 신고가 전달되지 않았다는 뜻이라, 원인(다운·방화벽)이
+    그대로 남아 있는 같은 기관을 재시도해도 결과가 같다. 전달되지 않았으니 승계해도
+    중복 접수 위험이 없다 — 타임아웃과 달리 승계가 공짜다.
+    """
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            raise requests.exceptions.ConnectionError("모의 연결 실패")
+        return FakeResponse(200, {"external_id": "R-FASTOVER"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    first, second = get_report_rows(event_no)
+    assert first["report_attempt_count"] == 1
+    assert first["report_status"] == "NO_RESPONSE"
+    assert second["report_status"] == "ACCEPTED"
+    assert [ep for ep, _ in calls] == ["http://a1/report", "http://a2/report"]
+    assert result["agency_no"] == 2
+
+
+def test_connect_timeout_counts_as_connection_failure(monkeypatch):
+    """연결 타임아웃은 Timeout 이기도 하지만 '전달 안 됨'이다 — ERROR 로 남고 재시도 없다.
+
+    requests 의 ConnectTimeout 은 ConnectionError 와 Timeout 을 모두 상속한다.
+    Timeout 으로 먼저 잡히면 '상대가 접수했을 수도 있다'로 잘못 기록된다.
+    """
+    patch_post(monkeypatch, lambda ep, pl, n: (_ for _ in ()).throw(
+        requests.exceptions.ConnectTimeout("모의 연결 타임아웃")))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    logs = get_log_rows(result["report_no"])
+    assert len(logs) == 1
+    assert logs[0]["log_result"] == "ERROR"
+
+
+def test_read_timeout_still_retries_same_agency(monkeypatch):
+    """응답 타임아웃은 상대가 접수했을 수 있으므로 같은 기관에 재확인을 다 쓴다."""
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            raise requests.exceptions.ReadTimeout("모의 응답 타임아웃")
+        return FakeResponse(200, {"external_id": "R-READTO"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    first, _ = get_report_rows(event_no)
+    assert first["report_attempt_count"] == config.MAX_REPORT_ATTEMPTS
+    assert [ep for ep, _ in calls] == \
+        ["http://a1/report"] * config.MAX_REPORT_ATTEMPTS + ["http://a2/report"]
+
+
+def test_client_rejection_takes_over_without_retrying(monkeypatch):
+    """4xx 는 우리 요청이 규격에 안 맞는다는 뜻 — 같은 걸 다시 보내도 같은 답이 온다.
+
+    다만 다른 기관도 거절하리라는 보장은 없으므로 승계는 계속한다.
+    화재에서는 중복 접수보다 미출동이 훨씬 위험하다.
+    """
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            return FakeResponse(400, {"error": "invalid report"})
+        return FakeResponse(200, {"external_id": "R-AFTER400"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    first, second = get_report_rows(event_no)
+    assert first["report_attempt_count"] == 1
+    assert [ep for ep, _ in calls] == ["http://a1/report", "http://a2/report"]
+    assert second["report_status"] == "ACCEPTED"
+    assert result["agency_no"] == 2
+
+    logs = get_log_rows(first["report_no"])
+    assert len(logs) == 1
+    assert logs[0]["log_result"] == "REJECTED"
+    assert logs[0]["log_http_status"] == 400
+
+
+def test_server_error_still_retries_same_agency(monkeypatch):
+    """5xx 는 일시 장애일 수 있으므로 재시도 값어치가 있다 — 4xx 와 다르게 다룬다."""
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            return FakeResponse(503)
+        return FakeResponse(200, {"external_id": "R-AFTER503"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    first, _ = get_report_rows(event_no)
+    assert first["report_attempt_count"] == config.MAX_REPORT_ATTEMPTS
+    assert len(calls) == config.MAX_REPORT_ATTEMPTS + 1
+
+
 # ---------- 기관 필터링 ----------
 
 def test_inactive_agency_excluded(monkeypatch):
@@ -240,7 +646,7 @@ def test_inactive_agency_excluded(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["agency_no"] == 2
     assert rows[0]["report_sequence"] == 1
-    assert rows[0]["report_status"] == "DISPATCHED"
+    assert rows[0]["report_status"] == "ACCEPTED"
     assert result["agency_no"] == 2
 
 
@@ -258,16 +664,16 @@ def test_no_active_agencies_returns_none(monkeypatch):
 # ---------- 멱등성 · 동시성 가드 ----------
 
 def test_start_report_idempotent_existing_active(monkeypatch):
-    """이미 진행 중(DISPATCHED) 신고가 있으면 그 정보를 돌려주고 아무 것도 안 한다."""
+    """이미 진행 중(ACCEPTED) 신고가 있으면 그 정보를 돌려주고 아무 것도 안 한다."""
     event_no = make_event()
-    existing_no = make_report(event_no, agency_no=1, status="DISPATCHED")
+    existing_no = make_report(event_no, agency_no=1, status="ACCEPTED")
     calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200))
 
     result = report_service.start_report(event_no, "USER_CONFIRMED")
 
     assert result is not None
     assert result["report_no"] == existing_no
-    assert result["report_status"] == "DISPATCHED"
+    assert result["report_status"] == "ACCEPTED"
     assert len(get_report_rows(event_no)) == 1  # 새 행 없음
     assert calls == []                          # HTTP 호출 없음
 
@@ -317,7 +723,7 @@ def test_read_on_sent_alert_triggers_report(client, admin_headers, monkeypatch):
     rows = get_report_rows(event_no)
     assert len(rows) == 1
     assert rows[0]["report_trigger_reason"] == "USER_CONFIRMED"
-    assert rows[0]["report_status"] == "DISPATCHED"
+    assert rows[0]["report_status"] == "ACCEPTED"
 
 
 def test_read_on_one_of_paired_alerts_reports_once(client, admin_headers, monkeypatch):

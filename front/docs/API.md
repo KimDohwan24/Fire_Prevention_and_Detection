@@ -68,7 +68,7 @@ Authorization: Bearer <access_token>
 | **`alert_level`** | `1` / `2` / `3` | 1차 발생 / 승격 / 최종 경보 |
 | **`alert_channel`** | `PUSH` / `SMS` | 앱 푸시 알림 / 문자 메세지 |
 | **`alert_status`** | `SENT` / `READ` / `CANCELED` / `NO_RESPONSE` | 발송됨 / 확인 완료 / 사용자 취소됨 / 무응답 |
-| **`report_status`** | `SENDING` / `DISPATCHED` / `NO_RESPONSE` / `FAILED` | 119 전송중 / 출동 접수됨 / 무응답 승계 / 전송 실패 |
+| **`report_status`** | `SENDING` / `ACCEPTED` / `NO_RESPONSE` / `FAILED` | 119 전송중 / 119가 신고를 접수 확인 / 무응답 승계 / 전송 실패 |
 
 ---
 
@@ -372,12 +372,12 @@ Authorization: Bearer <access_token>
         "report_sequence": 1,
         "report_external_id": "R-20260808-0012",
         "report_trigger_reason": "NO_RESPONSE_TIMEOUT",
-        "report_status": "DISPATCHED",
+        "report_status": "ACCEPTED",
         "report_address": "서울시 종로구 세종대로 1",
         "report_distance_km": 1.234,
         "report_attempt_count": 1,
         "reported_at": "2026-08-08T14:33:10",
-        "report_dispatched_at": "2026-08-08T14:33:40"
+        "report_accepted_at": "2026-08-08T14:33:40"
       }
     ]
   }

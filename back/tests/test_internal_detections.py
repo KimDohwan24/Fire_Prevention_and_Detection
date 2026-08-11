@@ -117,7 +117,7 @@ def test_first_fire_frame_creates_pending_event(client):
     media = get_media_rows(body["event_no"])
     assert len(media) == 1
     m = media[0]
-    assert m["media_type"] == "FRAME"
+    assert "media_type" not in m            # CLIP 폐기로 컬럼 삭제 — 프레임뿐이라 구분 불필요
     assert m["media_url"] == "/media/events/raw/f001.jpg"
     assert m["media_is_primary"] is True
     assert float(m["media_confidence"]) == pytest.approx(0.91)

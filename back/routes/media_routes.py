@@ -1,4 +1,4 @@
-"""미디어 파일 서빙 — 검출 프레임(FRAME)과 영상 클립(CLIP).
+"""미디어 파일 서빙 — 검출 프레임(FRAME).
 
 GET /media/<path:filename>   config.MEDIA_ROOT 아래의 파일을 그대로 내려준다.
 

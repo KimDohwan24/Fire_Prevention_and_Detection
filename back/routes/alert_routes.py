@@ -35,7 +35,7 @@ def list_alerts():
     rows = db.query(
         f"""
         SELECT a.alert_no, a.event_no, e.event_class, c.cctv_name,
-               a.alert_level, a.alert_channel, a.alert_status,
+               a.alert_channel, a.alert_status,
                a.alert_sent_at, a.alert_deadline_at, a.alert_responded_at
         FROM alert a
         JOIN fire_event e ON e.event_no = a.event_no

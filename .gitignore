@@ -1,5 +1,6 @@
 # ===== 개인 메모 (md 문서는 커밋하지 않는다) =====
 *.md
+*.bat
 
 # ===== OS =====
 .DS_Store
@@ -84,6 +85,12 @@ wandb/
 mlruns/
 datasets/
 data/raw/
+
+# 검출 테스트용 화재 영상 (용량 큼, 출처는 설계 문서에 적어 둔다)
+# GitHub 는 파일당 100MB 를 넘으면 푸시를 거부한다 (house_fire.webm 이 105MB).
+ai-model/samples/
+# 검출 결과물 (박스 그린 영상 등)
+ai-model/out/
 
 # ===== Node (front) =====
 node_modules/

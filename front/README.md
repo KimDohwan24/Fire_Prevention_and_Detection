@@ -1,16 +1,41 @@
-# React + Vite
+# 화재 예방 및 탐지 시스템 - 프런트엔드 (Front-end)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+이 프로젝트는 React + Vite 기반으로 구축된 웹 대시보드 프런트엔드입니다.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 📦 의존성 라이브러리 일괄 설치 (requirements.txt와 동일한 기능)
 
-## React Compiler
+파이썬 백엔드의 `pip install -r requirements.txt`와 마찬가지로, Node.js 환경에서는 **`package.json`** 파일이 모든 라이브러리의 명세를 관리합니다.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+프로젝트 루트 폴더에서 아래 명령어를 실행하면 `package.json`에 등록된 모든 프런트엔드 라이브러리가 **한 번에 한꺼번에 설치**됩니다:
 
-## Expanding the Oxlint configuration
+```bash
+npm install
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+> **Note (Windows PowerShell 권한 이슈 발생 시):**
+> ```cmd
+> cmd /c npm install
+> ```
+
+---
+
+## 🛠 설치되는 주요 라이브러리 목록 (`package.json`)
+
+* **Core**: `react`, `react-dom`
+* **Routing**: `react-router-dom`
+* **Icons**: `lucide-react`
+* **Address Search**: `react-daum-postcode`
+* **Styling**: `tailwindcss`, `@tailwindcss/vite`
+* **Build Tool**: `vite`, `@vitejs/plugin-react`
+
+---
+
+## 🚀 프런트엔드 개발 서버 실행
+
+```bash
+npm run dev
+# 또는 Windows PowerShell: cmd /c npm run dev
+```
+

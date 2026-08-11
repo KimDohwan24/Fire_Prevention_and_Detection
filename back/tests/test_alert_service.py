@@ -4,7 +4,7 @@
 - 알림은 해당 CCTV 의 소유 사용자(cctv.user_no)에게만 간다. ADMIN 브로드캐스트 없음.
 - 이벤트 확정 시 PUSH 와 SMS 를 **동시에** 한 트랜잭션으로 만든다 (단계 승격 없음).
   두 채널 모두 같은 사람의 같은 휴대폰으로 가므로 단계를 나누면 시간만 낭비된다.
-- 두 행 모두 alert_level=1, alert_status='SENT', alert_sent_at/alert_deadline_at 동일.
+- 두 행 모두 alert_status='SENT', alert_sent_at/alert_deadline_at 동일.
 - alert_deadline_at = alert_sent_at + ALERT_DEADLINE_SEC 초. 유예는 이 한 번뿐이고,
   마감까지 무응답이면 에스컬레이션이 곧바로 119 신고로 넘어간다.
 - 점검 모드(event_is_test) 이벤트는 알림을 만들지 않는다.
@@ -77,7 +77,7 @@ def test_send_alerts_creates_push_and_sms_rows(monkeypatch):
 
     for a in rows:
         assert a["user_no"] == 1          # cctv 1 의 소유자
-        assert a["alert_level"] == 1      # 단계 개념은 사라졌지만 컬럼은 항상 1
+        assert "alert_level" not in a     # 승격 폐기 — 컬럼 자체를 삭제함
         assert a["alert_status"] == "SENT"
         assert a["alert_sent_at"] is not None
         assert a["alert_responded_at"] is None
@@ -181,7 +181,7 @@ def test_hook_creates_both_alerts_on_confirm(client, monkeypatch):
     assert {r["alert_channel"] for r in rows} == {"PUSH", "SMS"}
     for a in rows:
         assert a["user_no"] == 1
-        assert a["alert_level"] == 1
+        assert "alert_level" not in a
         assert a["alert_status"] == "SENT"
     assert len(calls) == 1
 

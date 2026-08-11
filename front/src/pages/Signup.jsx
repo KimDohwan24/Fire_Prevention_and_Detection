@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useDaumPostcodePopup } from 'react-daum-postcode';
 
+import { userApi } from '../api';
+
 const Signup = () => {
+  const navigate = useNavigate();
   const [formData, setFormData] = useState({
     id: '',
     password: '',
@@ -19,6 +22,8 @@ const Signup = () => {
     birthMonth: '',
     birthDay: '',
   });
+  const [errorMsg, setErrorMsg] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   const openPostcode = useDaumPostcodePopup();
 
@@ -48,11 +53,39 @@ const Signup = () => {
     openPostcode({ onComplete: handleCompletePostcode });
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    // TODO: Implement actual signup logic
-    console.log(formData);
-    alert('회원가입이 완료되었습니다.');
+    setErrorMsg('');
+
+    if (formData.password !== formData.passwordConfirm) {
+      setErrorMsg('비밀번호와 비밀번호 확인이 일치하지 않습니다.');
+      return;
+    }
+
+    const emailDomainStr = formData.emailDomain === 'type' ? formData.customDomain : formData.emailDomain;
+    const fullEmail = formData.emailId && emailDomainStr ? `${formData.emailId}@${emailDomainStr}` : null;
+    const rawPhone = formData.phone.replace(/[^0-9]/g, '');
+
+    setIsLoading(true);
+    try {
+      await userApi.create({
+        user_id: formData.id.trim(),
+        user_pw: formData.password,
+        user_name: formData.name.trim(),
+        user_role: 'VIEWER',
+        user_email: fullEmail,
+        user_phone: rawPhone || null,
+        user_gender: formData.gender || null,
+        user_address: formData.address ? `${formData.address} ${formData.detailAddress}`.trim() : null,
+      });
+      alert('회원가입이 완료되었습니다. 로그인 해주세요.');
+      navigate('/login');
+    } catch (err) {
+      console.error('회원가입 실패:', err);
+      setErrorMsg(err.message || '회원가입에 실패했습니다.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Generate options for birthdate
@@ -62,20 +95,25 @@ const Signup = () => {
 
   return (
     <div className="min-h-screen bg-canvas flex flex-col items-center pt-24 pb-24 px-4 font-ui relative transition-colors duration-300">
-      
+
       {/* Brand / Logo */}
       <div className="flex flex-row items-center space-x-5 mb-10">
         <div className="text-[48px] leading-none">🔥</div>
         <div className="flex flex-col">
           <h1 className="font-display text-display-lg font-medium text-ink tracking-tight mb-1">
-            파이어가드 회원가입
+            FireGuard 회원가입
           </h1>
         </div>
       </div>
 
       <div className="w-full max-w-[420px]">
         <form className="space-y-5" onSubmit={handleSubmit}>
-          
+          {errorMsg && (
+            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-500 text-xs font-semibold text-center">
+              {errorMsg}
+            </div>
+          )}
+
           {/* 아이디 */}
           <div className="flex flex-col space-y-1.5">
             <input
@@ -247,7 +285,7 @@ const Signup = () => {
                 주소 검색
               </button>
             </div>
-            
+
             {/* 상세 주소 (주소가 입력되었을 때 동적으로 나타남) */}
             {formData.address && (
               <div className="pt-1 animate-fadeIn">
@@ -354,7 +392,7 @@ const Signup = () => {
               회원가입
             </button>
           </div>
-          
+
           <div className="text-center">
             <Link to="/login" className="text-body-sm text-body hover:text-ink underline decoration-hairline hover:decoration-ink underline-offset-4 transition-colors">
               이미 계정이 있으신가요?
