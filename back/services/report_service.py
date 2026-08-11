@@ -8,6 +8,10 @@
 - 활성 기관(agency_is_active)을 CCTV 좌표 기준 하버사인 거리 오름차순으로 시도한다.
 - 바깥 루프 = 기관 승계(report_sequence 1, 2, ...),
   안쪽 루프 = 한 기관에 최대 MAX_REPORT_ATTEMPTS 회 전송(report_attempt_count).
+- 안쪽 루프는 실패 종류를 가린다. 재시도해도 결과가 같은 실패(연결 실패·4xx 거절)는
+  남은 시도를 버리고 곧장 승계하고, 일시적일 수 있는 실패(응답 타임아웃·5xx)만
+  재시도를 다 쓴다. 같은 서버의 연속 실패는 원인이 지속되는 탓에 서로 독립이 아니라
+  회차를 거듭해도 성공 확률이 거의 오르지 않는 반면, 다른 기관은 실패 원인이 독립이다.
 - 행을 먼저 SENDING 으로 INSERT 해서 부분 유니크 인덱스(UX_report_119_active)의
   슬롯을 선점한다 — 동시에 두 신고가 진행되는 것을 DB 가 막는다.
 - 기관 소진 시 그 행은 NO_RESPONSE(무응답으로 승계) 로 닫고 다음 기관으로.
@@ -202,6 +206,10 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
                     trigger_reason: str, is_last: bool) -> dict | None:
     """한 기관에 대해 신고 행 생성 + 최대 MAX_REPORT_ATTEMPTS 회 전송을 시도한다.
 
+    '최대'인 이유: 재시도해도 결과가 같은 실패(연결 실패·4xx)면 남은 시도를 버리고
+    바로 빠져나온다. 이때도 상태는 NO_RESPONSE/FAILED 로 닫히지만, 실제 사유는
+    report_log.log_result(ERROR / REJECTED / TIMEOUT)에 시도별로 그대로 남는다.
+
     반환: 최종 신고 정보 dict. 상태가 ACCEPTED(또는 동시성 가드로 찾은 기존
     활성 신고)면 호출자는 승계를 멈춘다. NO_RESPONSE 면 다음 기관으로 넘어간다.
     """
@@ -261,18 +269,33 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
         sent_at = datetime.now()
         started = time.monotonic()
         http_status = body = error = None
+        # 이 기관을 다시 두드릴 값어치가 있는가. 없으면 남은 시도를 버리고 곧장 승계한다.
+        retry_worthwhile = True
         try:
             resp = _post_report(endpoint, payload)
+        except (requests.exceptions.ConnectTimeout,
+                requests.exceptions.ConnectionError) as exc:
+            # 연결이 성립하지 않았다 = 신고가 전달되지 않은 것이 확실하다.
+            # 같은 기관을 다시 두드려도 원인(다운·방화벽·경로)이 그대로라 결과가 같고,
+            # 전달되지 않았으니 승계해도 중복 접수 위험이 없다 — 승계가 공짜인 유일한 경우.
+            # ConnectTimeout 은 Timeout 이기도 해서 반드시 아래 절보다 먼저 잡아야 한다
+            # (아래에 잡히면 '상대가 접수했을 수도 있다'로 잘못 기록된다).
+            result, ok, error = "ERROR", False, str(exc)
+            retry_worthwhile = False
+            logger.warning("신고 연결 실패 — 재시도 없이 승계 (report_no=%s): %s",
+                           report_no, exc)
         except requests.exceptions.Timeout as exc:
-            # 응답이 없었을 뿐, 상대는 접수했을 수도 있다 — 연결 실패와 뜻이 다르다
+            # 요청은 닿았고 응답만 없다 — 상대는 접수했을 수도 있다.
+            # 승계하면 중복 출동 위험을 지므로, 같은 기관에 재확인을 먼저 다 쓴다.
             result, ok, error = "TIMEOUT", False, str(exc)
             logger.warning("신고 응답 없음 (report_no=%s, attempt=%s/%s): %s",
                            report_no, attempt, max_attempts, exc)
         except requests.exceptions.RequestException as exc:
-            # 연결 실패 등 — 전송 자체가 안 됐다
+            # 잘못된 URL·SSL 오류 등 — 설정 문제라 재시도로 풀리지 않는다
             result, ok, error = "ERROR", False, str(exc)
-            logger.warning("신고 전송 실패 (report_no=%s, attempt=%s/%s): %s",
-                           report_no, attempt, max_attempts, exc)
+            retry_worthwhile = False
+            logger.warning("신고 전송 실패 — 재시도 없이 승계 (report_no=%s): %s",
+                           report_no, exc)
         else:
             http_status = resp.status_code
             ok = 200 <= http_status < 300
@@ -282,6 +305,10 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
             except (ValueError, AttributeError):
                 body = None       # 본문 없는 2xx 도 성공으로 본다
             if not ok:
+                # 4xx 는 우리 요청이 상대 규격에 안 맞는다는 뜻이라 같은 걸 다시 보내도
+                # 같은 답이 온다. 5xx(일시 장애)만 재시도할 값어치가 있다.
+                # 다만 다른 기관도 거절하리라는 보장은 없으므로 승계는 계속한다.
+                retry_worthwhile = 500 <= http_status < 600
                 logger.warning("신고 거절 응답 %s (report_no=%s, attempt=%s/%s)",
                                http_status, report_no, attempt, max_attempts)
 
@@ -314,6 +341,10 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
             "UPDATE report_119 SET report_attempt_count = %s WHERE report_no = %s",
             (attempt, report_no),
         )
+
+        if not retry_worthwhile:
+            # 남은 시도를 써봐야 같은 결과다. 그 시간에 다음 기관으로 가는 편이 낫다.
+            break
 
     # 3) 소진: 마지막 기관이면 FAILED(전송실패), 아니면 NO_RESPONSE(무응답으로 승계)
     #    NO_RESPONSE/FAILED 는 활성 상태가 아니므로 유니크 슬롯이 풀린다.

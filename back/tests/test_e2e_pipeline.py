@@ -269,6 +269,8 @@ def test_first_agency_exhausted_takes_over_to_second(client, monkeypatch):
     """시나리오: 무응답 자동 신고에서 1순위 기관이 전 회차 실패 → 2순위 기관으로 승계.
 
     1순위(종로소방서) endpoint 만 실패시키고 2순위(중부소방서)는 성공시킨다.
+    실패는 응답 타임아웃으로 낸다 — 재시도를 다 쓰는 경로가 이 시나리오의 대상이다.
+    (연결 실패는 전달되지 않은 것이 확실해 1회에 승계하므로 여기서 쓰지 않는다)
     """
     monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 2)
 
@@ -283,7 +285,7 @@ def test_first_agency_exhausted_takes_over_to_second(client, monkeypatch):
     def fake_post(endpoint, payload):
         calls.append(endpoint)
         if endpoint == "http://a1/report":
-            raise requests.exceptions.ConnectionError("1순위 기관 모의 접속 실패")
+            raise requests.exceptions.ReadTimeout("1순위 기관 모의 응답 없음")
         return _Accepted()
 
     monkeypatch.setattr("services.report_service._post_report", fake_post)

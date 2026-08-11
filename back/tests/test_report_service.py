@@ -319,7 +319,7 @@ def test_report_uid_survives_agency_takeover(monkeypatch):
 
     report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
 
-    assert len(calls) == 5  # 기관1에 4회 + 기관2에 1회
+    assert len(calls) == 2  # 연결 실패는 재시도하지 않는다 — 기관1에 1회 + 기관2에 1회
     assert {pl["report_uid"] for _, pl in calls} == {f"FG-{event_no}"}
 
 
@@ -389,6 +389,7 @@ def test_connection_failure_logged_as_error(monkeypatch):
     """연결 자체가 안 된 것(ERROR)과 응답이 없는 것(TIMEOUT)은 다르다.
 
     TIMEOUT 은 상대가 접수했을 수도 있다는 뜻이라 사후 판단이 달라진다.
+    연결 실패는 재시도 값어치가 없어 기관당 한 줄만 남는다.
     """
     patch_post(monkeypatch, lambda ep, pl, n: (_ for _ in ()).throw(
         requests.exceptions.ConnectionError("모의 연결 실패")))
@@ -397,7 +398,7 @@ def test_connection_failure_logged_as_error(monkeypatch):
     result = report_service.start_report(event_no, "USER_CONFIRMED")
 
     logs = get_log_rows(result["report_no"])
-    assert len(logs) == config.MAX_REPORT_ATTEMPTS
+    assert len(logs) == 1
     assert {l["log_result"] for l in logs} == {"ERROR"}
     assert all(l["log_http_status"] is None for l in logs)
 
@@ -445,12 +446,15 @@ def test_logging_failure_does_not_break_the_report(monkeypatch):
 # ---------- 승계 (기관 교체) ----------
 
 def test_takeover_to_second_agency(monkeypatch):
-    """기관 1이 4회 모두 실패 → 그 행은 NO_RESPONSE(승계), 기관 2가 sequence 2 로 ACCEPTED."""
+    """기관 1이 4회 모두 실패 → 그 행은 NO_RESPONSE(승계), 기관 2가 sequence 2 로 ACCEPTED.
+
+    재시도를 다 쓰는 경로라 응답 타임아웃을 쓴다 (연결 실패는 1회에 승계한다).
+    """
     set_distinct_endpoints()
 
     def fn(ep, pl, n):
         if ep == "http://a1/report":
-            raise requests.exceptions.ConnectionError("모의 연결 실패")
+            raise requests.exceptions.ReadTimeout("모의 응답 타임아웃")
         return FakeResponse(200, {"external_id": "R-TAKEOVER-02"})
 
     calls = patch_post(monkeypatch, fn)
@@ -511,6 +515,121 @@ def test_max_attempts_configurable(monkeypatch):
     rows = get_report_rows(event_no)
     assert [r["report_attempt_count"] for r in rows] == [2, 2]
     assert len(calls) == 4  # 2개 기관 × 2회
+
+
+# ---------- 실패 종류별 분기 (재시도할 값어치가 있는가) ----------
+
+def test_connection_failure_takes_over_without_retrying(monkeypatch):
+    """연결이 안 되면 같은 기관을 다시 두드리지 않고 곧장 다음 기관으로 간다.
+
+    연결이 성립하지 않았다는 건 신고가 전달되지 않았다는 뜻이라, 원인(다운·방화벽)이
+    그대로 남아 있는 같은 기관을 재시도해도 결과가 같다. 전달되지 않았으니 승계해도
+    중복 접수 위험이 없다 — 타임아웃과 달리 승계가 공짜다.
+    """
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            raise requests.exceptions.ConnectionError("모의 연결 실패")
+        return FakeResponse(200, {"external_id": "R-FASTOVER"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    first, second = get_report_rows(event_no)
+    assert first["report_attempt_count"] == 1
+    assert first["report_status"] == "NO_RESPONSE"
+    assert second["report_status"] == "ACCEPTED"
+    assert [ep for ep, _ in calls] == ["http://a1/report", "http://a2/report"]
+    assert result["agency_no"] == 2
+
+
+def test_connect_timeout_counts_as_connection_failure(monkeypatch):
+    """연결 타임아웃은 Timeout 이기도 하지만 '전달 안 됨'이다 — ERROR 로 남고 재시도 없다.
+
+    requests 의 ConnectTimeout 은 ConnectionError 와 Timeout 을 모두 상속한다.
+    Timeout 으로 먼저 잡히면 '상대가 접수했을 수도 있다'로 잘못 기록된다.
+    """
+    patch_post(monkeypatch, lambda ep, pl, n: (_ for _ in ()).throw(
+        requests.exceptions.ConnectTimeout("모의 연결 타임아웃")))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    logs = get_log_rows(result["report_no"])
+    assert len(logs) == 1
+    assert logs[0]["log_result"] == "ERROR"
+
+
+def test_read_timeout_still_retries_same_agency(monkeypatch):
+    """응답 타임아웃은 상대가 접수했을 수 있으므로 같은 기관에 재확인을 다 쓴다."""
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            raise requests.exceptions.ReadTimeout("모의 응답 타임아웃")
+        return FakeResponse(200, {"external_id": "R-READTO"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    first, _ = get_report_rows(event_no)
+    assert first["report_attempt_count"] == config.MAX_REPORT_ATTEMPTS
+    assert [ep for ep, _ in calls] == \
+        ["http://a1/report"] * config.MAX_REPORT_ATTEMPTS + ["http://a2/report"]
+
+
+def test_client_rejection_takes_over_without_retrying(monkeypatch):
+    """4xx 는 우리 요청이 규격에 안 맞는다는 뜻 — 같은 걸 다시 보내도 같은 답이 온다.
+
+    다만 다른 기관도 거절하리라는 보장은 없으므로 승계는 계속한다.
+    화재에서는 중복 접수보다 미출동이 훨씬 위험하다.
+    """
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            return FakeResponse(400, {"error": "invalid report"})
+        return FakeResponse(200, {"external_id": "R-AFTER400"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    first, second = get_report_rows(event_no)
+    assert first["report_attempt_count"] == 1
+    assert [ep for ep, _ in calls] == ["http://a1/report", "http://a2/report"]
+    assert second["report_status"] == "ACCEPTED"
+    assert result["agency_no"] == 2
+
+    logs = get_log_rows(first["report_no"])
+    assert len(logs) == 1
+    assert logs[0]["log_result"] == "REJECTED"
+    assert logs[0]["log_http_status"] == 400
+
+
+def test_server_error_still_retries_same_agency(monkeypatch):
+    """5xx 는 일시 장애일 수 있으므로 재시도 값어치가 있다 — 4xx 와 다르게 다룬다."""
+    set_distinct_endpoints()
+
+    def fn(ep, pl, n):
+        if ep == "http://a1/report":
+            return FakeResponse(503)
+        return FakeResponse(200, {"external_id": "R-AFTER503"})
+
+    calls = patch_post(monkeypatch, fn)
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    first, _ = get_report_rows(event_no)
+    assert first["report_attempt_count"] == config.MAX_REPORT_ATTEMPTS
+    assert len(calls) == config.MAX_REPORT_ATTEMPTS + 1
 
 
 # ---------- 기관 필터링 ----------
