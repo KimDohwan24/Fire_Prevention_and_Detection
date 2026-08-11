@@ -14,6 +14,27 @@ import GisMap from '../components/GisMap';
 const DEFAULT_AGENCIES = [];
 const INITIAL_CCTVS = [];
 
+const normalizeCctvText = (value) => String(value || '').trim().toLowerCase();
+const normalizeCctvCoord = (value) => {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed.toFixed(6) : '';
+};
+
+const isSameRegisteredCctv = (registered, incoming) => {
+  const registeredName = normalizeCctvText(registered.cctv_name || registered.name);
+  const incomingName = normalizeCctvText(incoming.cctv_name || incoming.name);
+  const registeredStream = normalizeCctvText(registered.cctv_stream_url || registered.stream_url);
+  const incomingStream = normalizeCctvText(incoming.cctv_stream_url || incoming.stream_url);
+  const registeredLat = normalizeCctvCoord(registered.cctv_lat ?? registered.lat);
+  const registeredLng = normalizeCctvCoord(registered.cctv_lng ?? registered.lng);
+  const incomingLat = normalizeCctvCoord(incoming.cctv_lat ?? incoming.lat);
+  const incomingLng = normalizeCctvCoord(incoming.cctv_lng ?? incoming.lng);
+
+  if (registeredName && incomingName && registeredName === incomingName) return true;
+  if (registeredStream && incomingStream && registeredStream === incomingStream) return true;
+  return Boolean(registeredLat && registeredLng && registeredLat === incomingLat && registeredLng === incomingLng);
+};
+
 function Dashboard() {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState(null);
@@ -850,14 +871,58 @@ function Dashboard() {
         <ItsCctvModal
           isOpen={isItsModalOpen}
           onClose={() => setIsItsModalOpen(false)}
-          onSelectCctv={(newCctv) => {
-            setCctvList(prev => {
-              const updated = [newCctv, ...prev];
-              localStorage.setItem('fireguard_cctv_list', JSON.stringify(updated));
-              return updated;
-            });
-            setSelectedCCTV(newCctv);
-            setIsItsModalOpen(false);
+          onSelectCctv={async (itsCctv) => {
+            // ITS CCTV는 DB 등록이 완료된 경우에만 대시보드에 추가한다.
+            try {
+              const alreadyRegistered = cctvList.some((cctv) => isSameRegisteredCctv(cctv, itsCctv));
+              if (alreadyRegistered) {
+                showToast(`[${itsCctv.cctv_name}] 이미 등록된 CCTV입니다.`);
+                return { alreadyRegistered: true };
+              }
+
+              const res = await cctvApi.create({
+                cctv_name: itsCctv.cctv_name,
+                cctv_location: itsCctv.cctv_location,
+                cctv_lat: parseFloat(itsCctv.cctv_lat) || 37.5665,
+                cctv_lng: parseFloat(itsCctv.cctv_lng) || 126.9780,
+                cctv_stream_url: itsCctv.cctv_stream_url || '',
+                cctv_width: 1920,
+                cctv_height: 1080
+              });
+
+              const dbCctvNo = res?.cctv_no;
+              if (!dbCctvNo) {
+                throw new Error('DB 등록 응답에 cctv_no가 없습니다.');
+              }
+
+              const newCctv = {
+                id: `CCTV-${String(dbCctvNo).padStart(2, '0')}`,
+                cctv_no: dbCctvNo,
+                name: itsCctv.cctv_name,
+                cctv_name: itsCctv.cctv_name,
+                status: 'normal',
+                location: itsCctv.cctv_location,
+                lat: parseFloat(itsCctv.cctv_lat) || 37.5665,
+                lng: parseFloat(itsCctv.cctv_lng) || 126.9780,
+                stream_url: itsCctv.cctv_stream_url || '',
+                ownerId: currentUser?.id || 'user01',
+                ownerName: currentUser?.name || '사용자',
+                installedAt: new Date().toISOString().substring(0, 10),
+                history: []
+              };
+
+              setCctvList(prev => [newCctv, ...prev]);
+              setSelectedCCTV(newCctv);
+              setIsItsModalOpen(false);
+              showToast(`✅ [${itsCctv.cctv_name}] DB 등록 완료 (CCTV #${dbCctvNo})`);
+            } catch (err) {
+              console.warn('ITS CCTV DB 등록 실패:', err.message);
+              if (err.status === 409 || /duplicate|already|exists|중복|이미/.test(String(err.message || '').toLowerCase())) {
+                showToast(`[${itsCctv.cctv_name}] 이미 등록된 CCTV입니다.`);
+                return { alreadyRegistered: true };
+              }
+              showToast(`❌ [${itsCctv.cctv_name}] DB 등록 실패: ${err.message}`);
+            }
           }}
         />
       )}
