@@ -1,8 +1,9 @@
-"""119 신고 서비스 테스트 — services/report_service.py + utils/geo.py.
+"""119 신고 서비스 테스트 — services/report_service.py.
 
 신고 정책 (D4 확정):
 - 트리거: 사용자가 화재 확인(USER_CONFIRMED) 또는 무응답 에스컬레이션(NO_RESPONSE_TIMEOUT).
-- 대상 기관: 활성(agency_is_active) 기관을 CCTV 좌표 기준 하버사인 거리 오름차순으로 시도.
+- 대상 기관: 활성(agency_is_active) 기관을 CCTV 좌표 기준 PostGIS 거리 오름차순으로 시도.
+  (거리 계산·정렬은 DB 가 한다 — 최근접 탐색 자체의 검증은 test_geo_postgis.py)
 - 안쪽 루프: 한 기관에 최대 MAX_REPORT_ATTEMPTS(기본 4)회 전송(report_attempt_count).
 - 바깥 루프: 기관 승계(report_sequence 1, 2, ...). 소진된 기관 행은 NO_RESPONSE,
   마지막 기관까지 소진되면 그 행만 FAILED.
@@ -19,7 +20,6 @@ from conftest import make_alert, make_alert_pair, make_event, make_media, make_r
 import config
 import db
 from services import report_service
-from utils.geo import haversine_km
 
 # conftest 시드 좌표
 CCTV1 = (37.5665, 126.9780)      # cctv 1 (정문 카메라, '본관 정문 앞')
@@ -66,19 +66,6 @@ def set_distinct_endpoints():
     db.execute("UPDATE agency SET agency_endpoint = 'http://a2/report' WHERE agency_no = 2")
 
 
-# ---------- 하버사인 ----------
-
-def test_haversine_agency1_closer_than_agency2():
-    """cctv 1 기준으로 종로소방서(1)가 중부소방서(2)보다 가깝다 (거리값 자체도 상식 범위)."""
-    d1 = haversine_km(*CCTV1, *AGENCY1)
-    d2 = haversine_km(*CCTV1, *AGENCY2)
-    assert 0.4 < d1 < 0.9      # 약 0.6km
-    assert 1.2 < d2 < 2.0      # 약 1.6km
-    assert d1 < d2
-    # 같은 지점끼리는 0
-    assert haversine_km(*CCTV1, *CCTV1) == pytest.approx(0.0, abs=1e-9)
-
-
 # ---------- 성공 경로 ----------
 
 def test_start_report_success_first_try(monkeypatch):
@@ -99,7 +86,7 @@ def test_start_report_success_first_try(monkeypatch):
     assert r["report_attempt_count"] == 1
     assert r["report_address"] == "본관 정문 앞"  # cctv_location
     assert float(r["report_distance_km"]) == pytest.approx(
-        haversine_km(*CCTV1, *AGENCY1), abs=0.002)
+        report_service.nearest_agencies(1)[0]["distance_km"], abs=0.002)
     assert r["reported_at"] is not None
     assert r["report_accepted_at"] is not None
 
@@ -475,7 +462,7 @@ def test_takeover_to_second_agency(monkeypatch):
     assert second["report_status"] == "ACCEPTED"
     assert second["report_external_id"] == "R-TAKEOVER-02"
     assert float(second["report_distance_km"]) == pytest.approx(
-        haversine_km(*CCTV1, *AGENCY2), abs=0.002)
+        report_service.nearest_agencies(1)[1]["distance_km"], abs=0.002)
 
     # 기관 1에 4번, 기관 2에 1번
     assert [ep for ep, _ in calls] == ["http://a1/report"] * 4 + ["http://a2/report"]
