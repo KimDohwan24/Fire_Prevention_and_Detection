@@ -123,20 +123,34 @@ export default function MyPage() {
     }).catch(err => console.warn('MyPage CCTV 로드 오류:', err))
       .finally(() => setIsCctvsLoading(false));
 
-    // 3. 최근 활동 이력 수신
-    eventApi.list({ size: 10 }).then(res => {
-      const items = res?.items || [];
-      if (Array.isArray(items)) {
-        const mappedActs = items.map(ev => ({
+    // 3. 최근 활동 이력 수신 (백엔드 API + localStorage 조치 내역 통합)
+    eventApi.list({ size: 20 }).then(res => {
+      const items = res?.items || res || [];
+      const falseAlarmList = JSON.parse(localStorage.getItem('falseAlarmEvents') || '[]');
+      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
+
+      const mappedActs = Array.isArray(items) ? items.map(ev => {
+        const isFalse = ev.event_status === 'FALSE_ALARM' || ev.event_status === 'CANCEL' || ev.alert_status === 'CANCEL' || falseAlarmList.includes(ev.event_no);
+        return {
           id: ev.event_no,
-          time: ev.event_first_detected_at || '2026-08-10 14:00:00',
-          type: ev.event_status === 'CONFIRMED' ? 'fire' : 'system',
-          title: ev.event_class === 'FLAME_SMOKE' ? '화재 및 연기 감지' : '화재 의심 상태 감지',
-          detail: `${ev.cctv_name || '카메라'} 위치 (${ev.cctv_location || '관제 구역'})`
-        }));
-        setActivities(mappedActs);
-      }
-    }).catch(err => console.warn('MyPage 활동이력 로드 오류:', err));
+          time: ev.event_first_detected_at ? ev.event_first_detected_at.substring(0, 16).replace('T', ' ') : '2026-08-11 12:00',
+          type: isFalse ? 'false_alarm' : (ev.event_status === 'CONFIRMED' || ev.event_class === 'FLAME_SMOKE' ? 'fire' : 'system'),
+          title: isFalse 
+            ? '✅ 화재 알림 오탐지 취소 처리' 
+            : (ev.event_class === 'FLAME_SMOKE' ? '🔥 화재 및 연기 감지' : '⚠️ 화재 의심 상태 감지'),
+          detail: `${ev.cctv_name || '카메라'} (${ev.cctv_location || 'A동 관제 구역'}) - ${isFalse ? '관제 요원 오탐 취소 완료' : '실시간 AI 감지'}`
+        };
+      }) : [];
+
+      // 사용자가 직접 조치한 userLogs(오탐 취소 / 119 출동 승인)를 최우선 상단에 통합
+      const combined = [...userLogs, ...mappedActs];
+      const uniqueActs = Array.from(new Map(combined.map(item => [item.id, item])).values());
+      setActivities(uniqueActs);
+    }).catch(err => {
+      console.warn('MyPage 활동이력 로드 오류:', err);
+      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
+      if (userLogs.length > 0) setActivities(userLogs);
+    });
   }, []);
 
   const showToast = (msg) => {
@@ -622,13 +636,16 @@ export default function MyPage() {
                   <div className="p-2 rounded-lg bg-surface-soft border border-hairline text-ink shrink-0 mt-0.5">
                     {act.type === 'login' && <Monitor className="w-4 h-4 text-blue-500" />}
                     {act.type === 'fire' && <AlertTriangle className="w-4 h-4 text-red-500" />}
+                    {act.type === 'false_alarm' && <ShieldAlert className="w-4 h-4 text-amber-500" />}
                     {act.type === 'admin' && <ShieldCheck className="w-4 h-4 text-amber-500" />}
                     {act.type === 'system' && <FileText className="w-4 h-4 text-emerald-500" />}
                     {act.type === 'setting' && <Bell className="w-4 h-4 text-purple-500" />}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <p className="text-body-sm font-semibold text-ink truncate">{act.title}</p>
+                      <p className={`text-body-sm font-semibold truncate ${act.type === 'false_alarm' ? 'text-amber-600 dark:text-amber-400' : 'text-ink'}`}>
+                        {act.title}
+                      </p>
                       <span className="text-[11px] text-mute shrink-0">{act.time}</span>
                     </div>
                     <p className="text-caption-sm text-mute mt-0.5 truncate">{act.detail}</p>
