@@ -3,10 +3,10 @@
 --
 -- 적용 대상: 이 날짜 이전에 db/schema.sql 로 만든 기존 개발 DB.
 -- 새로 만드는 DB 는 db/schema.sql 하나면 되고 이 파일은 필요 없다.
--- 같은 날짜의 report-accepted-and-report-log 마이그레이션을 먼저 돌릴 것.
+-- 001 (report-accepted-and-report-log) 을 먼저 돌릴 것 — 번호가 곧 실행 순서다.
 --
 -- 실행:
---   psql -U postgres -d fireguard -f db/migrations/2026-08-10-drop-media-type-and-alert-level.sql
+--   psql -U postgres -d fireguard -f db/migrations/002-2026-08-10-drop-media-type-and-alert-level.sql
 --   (또는 pgAdmin Query Tool 에 통째로 붙여넣기)
 --
 -- 전체가 한 트랜잭션이고, IF EXISTS 라 재실행해도 안전하다.

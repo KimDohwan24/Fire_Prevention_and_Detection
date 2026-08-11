@@ -5,14 +5,34 @@
 --
 -- ⚠️ 이 파일은 DB 를 처음부터 만드는 용도다. 아래 DROP SCHEMA 가
 --    fireguard 스키마를 통째로 지우므로 기존 데이터는 전부 사라진다.
---    fireguard 스키마 안에 PostGIS 를 설치해 뒀다면 그 확장도 같이 날아간다.
 --    이미 쓰고 있는 DB 를 최신 구조로 맞추려면 db/migrations/ 의 파일을 쓸 것.
 --
+-- 📦 PostGIS 3 이 필요하다 (최근접 소방서 탐색에 쓴다). 설치 방법은
+--    back/docs/team-setup.html 참고. CREATE EXTENSION 에는 superuser 권한이 든다.
+--
 -- =====================================================
+
 DROP SCHEMA IF EXISTS fireguard CASCADE;
 
 -- =====================================================
--- 0. 스키마
+-- 0. 공간 확장 — 반드시 public 에 설치한다
+--
+-- fireguard 스키마 안에 설치하면 위 DROP SCHEMA CASCADE 가 확장까지 지워버린다.
+-- 그래서 확장은 지워지지 않는 public 에 두고, 함수는 public. 을 붙여 부른다.
+--
+-- ⚠️ 순서가 중요하다. DROP SCHEMA 를 **먼저** 하고 그 다음에 확장을 만든다.
+--    반대로 하면, 확장이 이미 fireguard 안에 있는 DB 에서 IF NOT EXISTS 가
+--    '있으니 통과'로 넘어간 뒤 DROP SCHEMA 가 그 확장을 지워버려서
+--    아래 public.ST_MakePoint 호출이 전부 깨진다.
+--    이 순서 덕에 확장이 어디에 있었든 실행 후에는 public 에 놓인다.
+--
+-- ※ PostGIS 는 재배치가 안 되는 확장이라 ALTER EXTENSION ... SET SCHEMA 로는
+--    옮길 수 없다. 기존 DB 를 옮기는 방법은 db/migrations/ 쪽에 있다.
+-- =====================================================
+CREATE EXTENSION IF NOT EXISTS postgis SCHEMA public;
+
+-- =====================================================
+-- 0-1. 스키마
 -- =====================================================
 CREATE SCHEMA IF NOT EXISTS fireguard;
 
@@ -56,7 +76,16 @@ CREATE TABLE fireguard.cctv (
     cctv_width      integer        NULL,
     cctv_height     integer        NULL,
     cctv_status     varchar(20)    NULL,
-    cctv_created_at timestamp      NULL  DEFAULT now()
+    cctv_created_at timestamp      NULL  DEFAULT now(),
+    -- 공간 질의용 좌표점. 위경도에서 자동 파생되는 생성 컬럼이라 앱이 채우지 않는다
+    -- (원본과 어긋날 수가 없다). ST_MakePoint 는 경도·위도 순서임에 주의.
+    cctv_geog       public.geography(Point,4326)
+        GENERATED ALWAYS AS (
+            public.ST_SetSRID(
+                public.ST_MakePoint(cctv_lng::double precision,
+                                    cctv_lat::double precision), 4326
+            )::public.geography
+        ) STORED
 );
 
 
@@ -122,7 +151,15 @@ CREATE TABLE fireguard.agency (
     agency_lat      numeric(10,7)  NULL,
     agency_lng      numeric(10,7)  NULL,
     agency_endpoint varchar(255)   NULL,
-    agency_is_active boolean       NOT NULL  DEFAULT true
+    agency_is_active boolean       NOT NULL  DEFAULT true,
+    -- 최근접 소방서 탐색의 대상 좌표점 (cctv_geog 와 같은 방식의 생성 컬럼)
+    agency_geog     public.geography(Point,4326)
+        GENERATED ALWAYS AS (
+            public.ST_SetSRID(
+                public.ST_MakePoint(agency_lng::double precision,
+                                    agency_lat::double precision), 4326
+            )::public.geography
+        ) STORED
 );
 
 
@@ -227,6 +264,11 @@ CREATE INDEX IX_alert_01       ON fireguard.alert       (event_no);
 CREATE INDEX IX_report_119_01  ON fireguard.report_119  (event_no, report_sequence);
 CREATE INDEX IX_report_log_01  ON fireguard.report_log  (report_no, log_attempt);
 
+-- 공간 인덱스 — 최근접 탐색(`<->` KNN)이 이걸 탄다.
+-- B-tree 로는 거리 정렬을 색인할 수 없어 GiST 를 쓴다.
+CREATE INDEX IX_agency_geog    ON fireguard.agency USING GIST (agency_geog);
+CREATE INDEX IX_cctv_geog      ON fireguard.cctv   USING GIST (cctv_geog);
+
 -- 진행 중인 신고가 이벤트당 하나만 있도록 DB 에서 강제한다
 -- PostgreSQL 부분 인덱스 (MySQL 에는 없는 기능)
 CREATE UNIQUE INDEX UX_report_119_active ON fireguard.report_119 (event_no)
@@ -274,6 +316,7 @@ COMMENT ON COLUMN fireguard.cctv.cctv_width      IS '영상 가로 픽셀';
 COMMENT ON COLUMN fireguard.cctv.cctv_height     IS '영상 세로 픽셀';
 COMMENT ON COLUMN fireguard.cctv.cctv_status     IS '카메라 상태';
 COMMENT ON COLUMN fireguard.cctv.cctv_created_at IS '등록 일시';
+COMMENT ON COLUMN fireguard.cctv.cctv_geog       IS '좌표점 (위경도에서 자동 생성, 공간 질의용)';
 
 COMMENT ON COLUMN fireguard.fire_event.event_no                IS '이벤트 번호';
 COMMENT ON COLUMN fireguard.fire_event.cctv_no                 IS '카메라 번호';
@@ -309,6 +352,7 @@ COMMENT ON COLUMN fireguard.agency.agency_lat      IS '위도';
 COMMENT ON COLUMN fireguard.agency.agency_lng      IS '경도';
 COMMENT ON COLUMN fireguard.agency.agency_endpoint IS '신고 전송 주소';
 COMMENT ON COLUMN fireguard.agency.agency_is_active IS '기관 사용 여부';
+COMMENT ON COLUMN fireguard.agency.agency_geog     IS '좌표점 (위경도에서 자동 생성, 최근접 탐색용)';
 
 COMMENT ON COLUMN fireguard.report_119.report_no             IS '신고 번호';
 COMMENT ON COLUMN fireguard.report_119.event_no              IS '이벤트 번호';

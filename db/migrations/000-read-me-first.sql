@@ -1,0 +1,64 @@
+-- =====================================================
+-- 마이그레이션 실행 순서 안내  (실행할 SQL 은 없다 — 전부 주석이다)
+--
+-- 이 파일은 읽으라고 있는 것이다. 그대로 실행해도 아무 일도 일어나지 않는다.
+-- =====================================================
+--
+-- ■ 새로 DB 를 만드는 사람
+--     db/schema.sql 하나만 실행하면 끝이다. 이 폴더는 볼 필요 없다.
+--     (schema.sql 은 항상 최신 구조다 — 아래 마이그레이션이 전부 반영돼 있다)
+--
+-- ■ 이미 쓰던 DB 를 최신으로 맞추는 사람
+--     아래를 **번호 순서대로** 실행한다. 이미 적용한 것은 건너뛰면 된다.
+--     앞 번호를 건너뛰고 뒤 번호부터 돌리면 안 된다.
+--
+-- =====================================================
+-- 순서 | 파일                                          | 무엇이 바뀌나
+-- -----+-----------------------------------------------+---------------------------
+--  001 | 2026-08-10-report-accepted-and-report-log     | 신고 상태 DISPATCHED → ACCEPTED,
+--      |                                               | report_dispatched_at → report_accepted_at,
+--      |                                               | 부분 유니크 인덱스 재생성,
+--      |                                               | report_log 테이블 신설
+--  -----------------------------------------------------------------------------
+--  002 | 2026-08-10-drop-media-type-and-alert-level    | 상수가 된 컬럼 제거
+--      |                                               | (event_media.media_type, alert.alert_level)
+--      |                                               | ⚠️ 001 을 먼저 돌려야 한다
+--  -----------------------------------------------------------------------------
+--  003 | 2026-08-11-postgis-nearest-agency             | PostGIS 도입. cctv/agency 에 좌표점
+--      |                                               | 생성 컬럼 + GiST 인덱스.
+--      |                                               | ⚠️ PostGIS 3 설치가 먼저다
+--      |                                               | ⚠️ superuser 로 실행해야 한다
+-- =====================================================
+--
+-- ■ 번호를 붙인 이유
+--     날짜만으로는 순서를 알 수 없었다. 001 과 002 는 날짜가 같은데
+--     파일명 알파벳순으로 정렬하면 002(drop...)가 001(report...)보다 먼저 와서,
+--     정렬 순서대로 돌리면 틀린 순서가 된다. 번호가 곧 실행 순서다.
+--
+-- ■ 내가 어디까지 적용했는지 모르겠다면
+--     적용 이력을 남기는 테이블은 두지 않았다. 아래로 직접 확인한다.
+--
+--     -- 001 적용됐나: 이 컬럼이 있으면 적용된 것
+--     SELECT 1 FROM information_schema.columns
+--      WHERE table_schema='fireguard' AND table_name='report_119'
+--        AND column_name='report_accepted_at';
+--
+--     -- 002 적용됐나: 결과가 0건이면 적용된 것 (컬럼이 지워졌으므로)
+--     SELECT 1 FROM information_schema.columns
+--      WHERE table_schema='fireguard' AND table_name='alert'
+--        AND column_name='alert_level';
+--
+--     -- 003 적용됐나: 이 컬럼이 있으면 적용된 것
+--     SELECT 1 FROM information_schema.columns
+--      WHERE table_schema='fireguard' AND table_name='agency'
+--        AND column_name='agency_geog';
+--
+--     -- 003 은 확장 위치도 함께 본다: 'public' 이어야 한다
+--     SELECT n.nspname FROM pg_extension e
+--       JOIN pg_namespace n ON n.oid = e.extnamespace
+--      WHERE e.extname = 'postgis';
+--
+-- ■ 새 마이그레이션을 추가할 때
+--     다음 번호를 붙이고(004-YYYY-MM-DD-주제.sql) 이 표에 한 줄 적는다.
+--     그리고 db/schema.sql 에도 같은 변경을 반영한다 — 새 DB 는 schema.sql 만 쓴다.
+-- =====================================================

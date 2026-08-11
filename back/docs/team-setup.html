@@ -106,7 +106,27 @@ python -m venv .venv
   파이썬은 3.11 이상을 권장합니다 (3.14 에서 동작 확인).
 </div>
 
-<h3>3) PostgreSQL 데이터베이스 만들기</h3>
+<h3>3) PostgreSQL + PostGIS 설치</h3>
+<div class="warn">
+  ⚠️ <strong>2026-08-11부터 PostGIS 3 이 필수입니다.</strong> 최근접 소방서 탐색을 DB 공간 질의로 하기 때문에,
+  없으면 <code>db/schema.sql</code> 실행부터 실패합니다.
+</div>
+<p><strong>윈도우</strong>: PostgreSQL 설치 시 함께 깔린 <strong>Stack Builder</strong> 를 실행 →
+<em>Spatial Extensions</em> → <strong>PostGIS 3.x Bundle</strong> 선택 → 설치.
+이미 PostgreSQL 만 깔았다면 시작 메뉴에서 Stack Builder 를 다시 실행하면 됩니다.</p>
+<p><strong>Mac</strong>: <code>brew install postgis</code> · <strong>Ubuntu</strong>: <code>sudo apt install postgresql-16-postgis-3</code>
+(<code>16</code> 자리는 본인 PostgreSQL 메이저 버전)</p>
+<p>설치됐는지 확인:</p>
+<pre><code>-- 아무 DB 에 접속해서
+SELECT * FROM pg_available_extensions WHERE name = 'postgis';
+-- 한 줄이라도 나오면 설치된 것입니다</code></pre>
+<div class="note">
+  💡 확장을 만드는 데 <strong>superuser 권한</strong>이 듭니다. 보통 쓰는 <code>postgres</code> 계정이면 됩니다.
+  <code>schema.sql</code> 이 <code>CREATE EXTENSION ... SCHEMA public</code> 을 알아서 실행하므로
+  따로 명령을 칠 필요는 없습니다.
+</div>
+
+<h3>3-1) 데이터베이스 만들기</h3>
 <p>pgAdmin 이나 psql 에서 데이터베이스를 먼저 만들고, 그 안에서 스키마 스크립트를 실행합니다.</p>
 <pre><code>-- 1. 데이터베이스 생성 (이름은 반드시 fireguard)
 CREATE DATABASE fireguard;
@@ -475,6 +495,25 @@ ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</cod
 </div>
 
 <div class="warn">
+  ⚠️ <strong>2026-08-11 DB 스키마 변경 — PostGIS 도입</strong>
+  <p>최근접 소방서 탐색을 파이썬 계산에서 <strong>DB 공간 질의</strong>로 옮겼습니다.
+  <code>cctv</code>·<code>agency</code> 에 좌표점 컬럼(<code>cctv_geog</code>·<code>agency_geog</code>)과
+  GiST 인덱스가 생깁니다. 두 컬럼은 <strong>위경도에서 자동으로 파생되는 생성 컬럼</strong>이라
+  앱이 채우지 않습니다 — 위경도만 넣으면 좌표점은 알아서 따라옵니다.</p>
+  <p><strong>먼저 위 3) 의 PostGIS 설치를 끝내야 합니다.</strong> 그 다음 기존 DB 를 유지하려면:</p>
+<pre><code>db/migrations/003-2026-08-11-postgis-nearest-agency.sql</code></pre>
+  <p>실행 방법은 아래 2026-08-10 마이그레이션과 같습니다(파일 이름만 바꿔 읽으세요).
+  <strong>superuser 로 실행</strong>해야 하고, 재실행해도 안전합니다.</p>
+  <p>이 스크립트는 PostGIS 확장이 <code>fireguard</code> 스키마 안에 있으면
+  <strong>지웠다가 <code>public</code> 에 다시 만듭니다.</strong> PostGIS 는 재배치가 안 되는 확장이라
+  <code>ALTER EXTENSION ... SET SCHEMA</code> 로는 옮길 수 없기 때문입니다.
+  확장이 <code>fireguard</code> 안에 있으면 <code>schema.sql</code> 의
+  <code>DROP SCHEMA fireguard CASCADE</code> 가 확장까지 지워버려서, 스키마를 다시 깔 때마다
+  PostGIS 가 사라집니다. 그래서 <code>public</code> 으로 옮깁니다.
+  <strong>직접 만든 공간 컬럼·인덱스가 이미 있다면 실행 전에 백업하세요</strong>(함께 지워집니다).</p>
+</div>
+
+<div class="warn">
   ⚠️ <strong>2026-08-10 DB 스키마 변경 — 기존 개발 DB 는 마이그레이션이 필요합니다</strong>
   <p>세 가지가 한 번에 바뀝니다.</p>
   <ol>
@@ -490,7 +529,7 @@ ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</cod
   </ol>
   <p><strong>기존 DB 를 유지하려면</strong> 저장소의 마이그레이션 파일을 한 번 실행하세요.
   SQL 원본은 <code>db/migrations/</code> 한 곳에만 둡니다 — 문서에 복사해 두면 서로 어긋납니다.</p>
-<pre><code>db/migrations/2026-08-10-report-accepted-and-report-log.sql</code></pre>
+<pre><code>db/migrations/001-2026-08-10-report-accepted-and-report-log.sql</code></pre>
 
   <p><b>방법 A — pgAdmin (권장)</b></p>
   <ol>
@@ -506,7 +545,7 @@ ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</cod
   <b>저장소 루트에서</b> 실행해야 상대경로가 맞습니다. 비밀번호는 물어봅니다.</p>
 <pre><code>cd D:\Fire_Prevention_and_Detection
 "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -d fireguard ^
-  -f db/migrations/2026-08-10-report-accepted-and-report-log.sql</code></pre>
+  -f db/migrations/001-2026-08-10-report-accepted-and-report-log.sql</code></pre>
   <p><code>-U</code> 와 <code>-d</code> 는 <b>자기 <code>.env</code> 의 <code>DB_USER</code> ·
   <code>DB_NAME</code> 과 같은 값</b>을 넣으세요. 기본값은 <code>postgres</code> · <code>fireguard</code> 입니다.</p>
 
