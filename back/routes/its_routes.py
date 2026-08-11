@@ -116,3 +116,4 @@ def list_its_cctvs():
     if q:
         items = [it for it in items if q in it["cctv_name"].lower()]
     return jsonify({"items": items})
+

@@ -158,6 +158,12 @@ export const cctvApi = {
       body: JSON.stringify(cctvData),
     });
   },
+
+  delete: async (cctv_no) => {
+    return await request(`/cctvs/${cctv_no}`, {
+      method: 'DELETE',
+    });
+  },
 };
 
 // ITS 실시간 공공 CCTV API — 키는 백엔드에서만 사용한다.

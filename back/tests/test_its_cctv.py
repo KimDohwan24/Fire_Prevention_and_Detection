@@ -82,6 +82,76 @@ def _key_headers():
     return {"X-Internal-Key": config.INTERNAL_API_KEY}
 
 
+# ---------- ITS catalogue API ----------
+
+def test_its_catalogue_returns_frontend_contract(client, monkeypatch):
+    """The registration modal receives selectable ITS CCTV items."""
+    monkeypatch.setattr(
+        its_cctv,
+        "fetch_its_cctvs",
+        lambda: [its_item("[경부선] 양재IC", lat=37.472145, lng=127.042125)],
+    )
+
+    response = client.get("/api/its/cctvs")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "items": [{
+            "cctv_name": "[경부선] 양재IC",
+            "cctv_location": "[경부선] 양재IC",
+            "cctv_lat": 37.472145,
+            "cctv_lng": 127.042125,
+            "cctv_type": "HLS",
+            "cctv_stream_url": FRESH_URL,
+        }],
+        "total": 1,
+    }
+
+
+def test_its_catalogue_skips_unusable_items(client, monkeypatch):
+    monkeypatch.setattr(
+        its_cctv,
+        "fetch_its_cctvs",
+        lambda: [
+            its_item("usable"),
+            {"cctvname": "missing coordinates", "cctvurl": FRESH_URL},
+            its_item("missing stream", url=""),
+        ],
+    )
+
+    response = client.get("/api/its/cctvs")
+
+    assert response.status_code == 200
+    assert [item["cctv_name"] for item in response.get_json()["items"]] == ["usable"]
+
+
+def test_its_catalogue_returns_requested_page(client, monkeypatch):
+    monkeypatch.setattr(
+        its_cctv,
+        "fetch_its_cctvs",
+        lambda: [its_item(f"camera-{index}") for index in range(3)],
+    )
+
+    response = client.get("/api/its/cctvs?limit=1&offset=1")
+
+    assert response.status_code == 200
+    assert [item["cctv_name"] for item in response.get_json()["items"]] == ["camera-1"]
+    assert response.get_json()["total"] == 3
+
+
+def test_its_catalogue_returns_503_when_its_is_unavailable(client, monkeypatch):
+    monkeypatch.setattr(
+        its_cctv,
+        "fetch_its_cctvs",
+        lambda: (_ for _ in ()).throw(ConnectionError("ITS unavailable")),
+    )
+
+    response = client.get("/api/its/cctvs")
+
+    assert response.status_code == 503
+    assert response.get_json()["code"] == "ITS_UNAVAILABLE"
+
+
 # ---------- 이름 매칭 ----------
 
 def test_matching_name_gets_fresh_url(monkeypatch):

@@ -4,7 +4,8 @@ import {
   User, ShieldCheck, Mail, Phone, Building, Calendar,
   Lock, Bell, Shield, Key, CheckCircle, Clock,
   LogOut, ArrowLeft, Edit3, Camera, Save, X, AlertTriangle,
-  FileText, Activity, Smartphone, Monitor, ShieldAlert, Video, MapPin, ExternalLink, Loader2
+  FileText, Activity, Smartphone, Monitor, ShieldAlert, Video, MapPin, ExternalLink, Loader2,
+  Trash2, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 import CctvPlayer from '../components/CctvPlayer';
@@ -12,6 +13,12 @@ import { authApi, cctvApi, eventApi, getCurrentUserFromStorage } from '../api';
 
 export default function MyPage() {
   const navigate = useNavigate();
+
+  // 내 활동 및 접속 이력 페이지네이션 및 로딩 상태
+  const [activityPage, setActivityPage] = useState(1);
+  const [isActivitiesLoading, setIsActivitiesLoading] = useState(true);
+  const [isDeletingActivities, setIsDeletingActivities] = useState(false);
+  const ITEMS_PER_PAGE = 5;
 
   // 사용자 프로필 정보 (실시간 DB / 세션 복원 및 안전한 초기값)
   const [currentUser, setCurrentUser] = useState(() => {
@@ -123,21 +130,80 @@ export default function MyPage() {
     }).catch(err => console.warn('MyPage CCTV 로드 오류:', err))
       .finally(() => setIsCctvsLoading(false));
 
-    // 3. 최근 활동 이력 수신
-    eventApi.list({ size: 10 }).then(res => {
-      const items = res?.items || [];
-      if (Array.isArray(items)) {
-        const mappedActs = items.map(ev => ({
+    // 3. 최근 활동 이력 수신 (백엔드 API + localStorage 조치 내역 통합)
+    setIsActivitiesLoading(true);
+    eventApi.list({ size: 30 }).then(res => {
+      const items = res?.items || res || [];
+      const falseAlarmList = JSON.parse(localStorage.getItem('falseAlarmEvents') || '[]');
+      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
+
+      const mappedActs = Array.isArray(items) ? items.map(ev => {
+        const isFalse = ev.event_status === 'FALSE_ALARM' || ev.event_status === 'CANCEL' || ev.alert_status === 'CANCEL' || falseAlarmList.includes(ev.event_no);
+        return {
           id: ev.event_no,
-          time: ev.event_first_detected_at || '2026-08-10 14:00:00',
-          type: ev.event_status === 'CONFIRMED' ? 'fire' : 'system',
-          title: ev.event_class === 'FLAME_SMOKE' ? '화재 및 연기 감지' : '화재 의심 상태 감지',
-          detail: `${ev.cctv_name || '카메라'} 위치 (${ev.cctv_location || '관제 구역'})`
-        }));
-        setActivities(mappedActs);
-      }
-    }).catch(err => console.warn('MyPage 활동이력 로드 오류:', err));
+          time: ev.event_first_detected_at ? ev.event_first_detected_at.substring(0, 16).replace('T', ' ') : '2026-08-11 12:00',
+          type: isFalse ? 'false_alarm' : (ev.event_status === 'CONFIRMED' || ev.event_class === 'FLAME_SMOKE' ? 'fire' : 'system'),
+          title: isFalse 
+            ? '✅ 화재 알림 오탐지 취소 처리' 
+            : (ev.event_class === 'FLAME_SMOKE' ? '🔥 화재 및 연기 감지' : '⚠️ 화재 의심 상태 감지'),
+          detail: `${ev.cctv_name || '카메라'} (${ev.cctv_location || 'A동 관제 구역'}) - ${isFalse ? '관제 요원 오탐 취소 완료' : '실시간 AI 감지'}`
+        };
+      }) : [];
+
+      // 사용자가 직접 조치한 userLogs(오탐 취소 / 119 출동 승인)를 최우선 상단에 통합
+      const combined = [...userLogs, ...mappedActs];
+      const uniqueActs = Array.from(new Map(combined.map(item => [item.id, item])).values());
+      setActivities(uniqueActs);
+    }).catch(err => {
+      console.warn('MyPage 활동이력 로드 오류:', err);
+      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
+      if (userLogs.length > 0) setActivities(userLogs);
+    }).finally(() => {
+      setIsActivitiesLoading(false);
+    });
   }, []);
+
+  // 활동 이력 전체 삭제
+  const handleClearActivities = () => {
+    if (activities.length === 0) {
+      alert('삭제할 활동 이력이 존재하지 않습니다.');
+      return;
+    }
+    if (confirm('내 활동 및 접속 이력을 모두 삭제하시겠습니까?')) {
+      setIsDeletingActivities(true);
+      setTimeout(() => {
+        setActivities([]);
+        localStorage.removeItem('userActivityLogs');
+        localStorage.setItem('falseAlarmEvents', '[]');
+        setActivityPage(1);
+        setIsDeletingActivities(false);
+        showToast('활동 이력이 성공적으로 모두 삭제되었습니다.');
+      }, 400);
+    }
+  };
+
+  // 개별 활동 이력 삭제
+  const handleDeleteSingleActivity = (actId) => {
+    setActivities(prev => {
+      const updated = prev.filter(a => a.id !== actId);
+      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
+      const filteredUserLogs = userLogs.filter(a => a.id !== actId);
+      localStorage.setItem('userActivityLogs', JSON.stringify(filteredUserLogs));
+      
+      const newTotalPages = Math.max(1, Math.ceil(updated.length / ITEMS_PER_PAGE));
+      if (activityPage > newTotalPages) {
+        setActivityPage(newTotalPages);
+      }
+      return updated;
+    });
+    showToast('해당 활동 이력이 삭제되었습니다.');
+  };
+
+  const totalActivityPages = Math.max(1, Math.ceil(activities.length / ITEMS_PER_PAGE));
+  const currentPaginatedActivities = activities.slice(
+    (activityPage - 1) * ITEMS_PER_PAGE,
+    activityPage * ITEMS_PER_PAGE
+  );
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -608,34 +674,128 @@ export default function MyPage() {
 
           {/* 최근 활동 로그 및 관제 내역 */}
           <section className="bg-canvas border border-hairline rounded-2xl p-6 space-y-6">
-            <div className="flex items-center justify-between border-b border-hairline pb-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-hairline pb-4 gap-2">
               <div className="flex items-center gap-2">
                 <Activity className="w-5 h-5 text-ink" />
                 <h3 className="text-heading-md font-bold text-ink">내 활동 및 접속 이력</h3>
+                <span className="text-caption-sm text-mute font-mono bg-surface-soft px-2.5 py-0.5 rounded-full border border-hairline">
+                  총 {activities.length}건
+                </span>
               </div>
-              <span className="text-caption-sm text-mute">최근 5건</span>
+
+              {/* 이력 전체 삭제 버튼 */}
+              <button
+                type="button"
+                onClick={handleClearActivities}
+                disabled={activities.length === 0 || isDeletingActivities}
+                className="flex items-center gap-1.5 text-xs text-terminal-red hover:bg-terminal-red/10 border border-terminal-red/20 px-3 py-1.5 rounded-full transition-colors font-semibold cursor-pointer disabled:opacity-40 shrink-0 self-start sm:self-auto"
+                title="모든 활동 이력 삭제"
+              >
+                {isDeletingActivities ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                <span>이력 전체 삭제</span>
+              </button>
             </div>
 
-            <div className="space-y-4">
-              {activities.map((act) => (
-                <div key={act.id} className="flex items-start gap-3.5 p-3 rounded-xl border border-hairline/60 hover:bg-surface-soft transition-colors">
-                  <div className="p-2 rounded-lg bg-surface-soft border border-hairline text-ink shrink-0 mt-0.5">
-                    {act.type === 'login' && <Monitor className="w-4 h-4 text-blue-500" />}
-                    {act.type === 'fire' && <AlertTriangle className="w-4 h-4 text-red-500" />}
-                    {act.type === 'admin' && <ShieldCheck className="w-4 h-4 text-amber-500" />}
-                    {act.type === 'system' && <FileText className="w-4 h-4 text-emerald-500" />}
-                    {act.type === 'setting' && <Bell className="w-4 h-4 text-purple-500" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <p className="text-body-sm font-semibold text-ink truncate">{act.title}</p>
-                      <span className="text-[11px] text-mute shrink-0">{act.time}</span>
+            {/* 본문: 로딩 버퍼링 / 비어있음 / 5건씩 슬라이스된 목록 */}
+            {isActivitiesLoading || isDeletingActivities ? (
+              <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl">
+                <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
+                <span className="text-xs font-semibold text-body">활동 이력 데이터를 처리 중입니다... (버퍼링)</span>
+              </div>
+            ) : activities.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl text-center">
+                <Activity className="w-8 h-8 text-mute/40" />
+                <span className="text-xs font-medium">기록된 활동 및 접속 이력이 없습니다.</span>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="space-y-3">
+                  {currentPaginatedActivities.map((act) => (
+                    <div key={act.id} className="flex items-start justify-between gap-3.5 p-3.5 rounded-xl border border-hairline/60 hover:bg-surface-soft transition-colors group">
+                      <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                        <div className="p-2 rounded-lg bg-surface-soft border border-hairline text-ink shrink-0 mt-0.5">
+                          {act.type === 'login' && <Monitor className="w-4 h-4 text-blue-500" />}
+                          {act.type === 'fire' && <AlertTriangle className="w-4 h-4 text-red-500" />}
+                          {act.type === 'false_alarm' && <ShieldAlert className="w-4 h-4 text-amber-500" />}
+                          {act.type === 'admin' && <ShieldCheck className="w-4 h-4 text-amber-500" />}
+                          {act.type === 'system' && <FileText className="w-4 h-4 text-emerald-500" />}
+                          {act.type === 'setting' && <Bell className="w-4 h-4 text-purple-500" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className={`text-body-sm font-semibold truncate ${act.type === 'false_alarm' ? 'text-amber-600 dark:text-amber-400' : 'text-ink'}`}>
+                              {act.title}
+                            </p>
+                            <span className="text-[11px] text-mute shrink-0 font-mono">{act.time}</span>
+                          </div>
+                          <p className="text-caption-sm text-mute mt-0.5 truncate">{act.detail}</p>
+                        </div>
+                      </div>
+
+                      {/* 개별 이력 삭제 버튼 */}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSingleActivity(act.id)}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-mute hover:text-terminal-red rounded-lg transition-all cursor-pointer shrink-0"
+                        title="이 항목 삭제"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
-                    <p className="text-caption-sm text-mute mt-0.5 truncate">{act.detail}</p>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+
+                {/* 5건씩 조회 컨트롤러 바 */}
+                {totalActivityPages > 1 && (
+                  <div className="pt-3 border-t border-hairline/60 flex items-center justify-between text-xs">
+                    <span className="text-mute font-mono text-[11px]">
+                      {activityPage} / {totalActivityPages} 페이지 (총 {activities.length}건)
+                    </span>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setActivityPage(prev => Math.max(1, prev - 1))}
+                        disabled={activityPage === 1}
+                        className="px-2.5 py-1 rounded-lg border border-hairline bg-canvas hover:bg-surface-soft disabled:opacity-40 transition-colors flex items-center gap-1 cursor-pointer font-semibold"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                        <span>이전</span>
+                      </button>
+
+                      {Array.from({ length: totalActivityPages }, (_, i) => i + 1).map((pageNum) => (
+                        <button
+                          key={pageNum}
+                          type="button"
+                          onClick={() => setActivityPage(pageNum)}
+                          className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                            activityPage === pageNum
+                              ? 'bg-amber-500 text-white shadow-xs'
+                              : 'bg-canvas border border-hairline hover:bg-surface-soft text-ink'
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      ))}
+
+                      <button
+                        type="button"
+                        onClick={() => setActivityPage(prev => Math.min(totalActivityPages, prev + 1))}
+                        disabled={activityPage === totalActivityPages}
+                        className="px-2.5 py-1 rounded-lg border border-hairline bg-canvas hover:bg-surface-soft disabled:opacity-40 transition-colors flex items-center gap-1 cursor-pointer font-semibold"
+                      >
+                        <span>다음</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
 
         </div>
