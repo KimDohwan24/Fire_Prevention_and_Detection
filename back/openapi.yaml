@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: 파이어가드 API
-  version: 0.4.0
+  version: 0.7.0
   description: |
     CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
 
@@ -24,8 +24,12 @@ info:
     - 목록 중 페이징이 있는 것은 `items / page / size / total_count / total_pages`
       봉투로 감싸 내려간다 (`/api/cctvs`, `/api/agencies` 는 페이징 없이 `items` 만)
 
-    ## 실시간 알림
-    WebSocket·SSE 없이 **폴링 3~5초**로 `GET /api/alerts` 를 다시 부르는 방식이다.
+    ## 실시간 알림 — 폴링하지 않는다 (2026-08-11 확정)
+    WebSocket·SSE 뿐 아니라 **폴링도 쓰지 않는다**. 119 신고가 화재확인(`POST /api/alerts/{alert_no}/respond`)
+    요청 안에서 **동기로** 끝나므로, 기다렸다가 알려줄 상태 변화가 없다.
+    - 사람을 깨우는 채널은 **SMS** 다. 문자를 보고 앱을 열면 그때 목록을 한 번 조회하면 된다.
+    - 남은 시간 카운트다운은 응답에 실린 `alert_deadline_at` 으로 클라이언트가 로컬 계산한다.
+    - 화면 갱신 원칙: **열 때 조회 + 행동 후 갱신**.
 
     ## 판정·유예 기본값 (2026-08-10 변경)
     | 값 | 기본 | 뜻 |
@@ -49,6 +53,8 @@ tags:
     description: 관리자 계정
   - name: cctvs
     description: 연동 카메라
+  - name: its
+    description: ITS(국가교통정보센터) 공공 CCTV 조회 — 등록할 카메라 고르기
   - name: events
     description: 화재 이벤트
   - name: alerts
@@ -134,6 +140,191 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/UserNotFound"
+
+  /api/auth/find-id:
+    post:
+      tags: [auth]
+      summary: 아이디 찾기
+      description: |
+        이름 + 이메일이 일치하면 아이디를 **부분 마스킹**해 돌려준다 (`admin01` → `adm****`).
+
+        통째로 주지 않는 이유: 이름과 이메일은 팀 안에서 대개 알려진 정보라,
+        전체를 돌려주면 그 조합을 아는 사람에게 계정 목록을 넘기는 셈이 된다.
+        본인이라면 앞 3자로 알아본다.
+
+        **탈퇴·정지 계정은 찾아지지 않는다** (404). 되찾아도 로그인이 막혀 있고,
+        비활성 계정의 존재를 확인해 주는 것 자체가 불필요한 노출이다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_name, user_email]
+              properties:
+                user_name:
+                  type: string
+                  example: 관리자
+                user_email:
+                  type: string
+                  format: email
+                  example: admin@fg.kr
+      responses:
+        "200":
+          description: 일치하는 계정을 찾음
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: string
+                    description: 앞 3자만 남기고 마스킹된 아이디
+                    example: adm****
+        "400":
+          description: 필수값 누락 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: BAD_REQUEST
+                message: user_email 는 필수입니다.
+                field: user_email
+        "404":
+          description: 일치하는 계정 없음 (`USER_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: USER_NOT_FOUND
+                message: 일치하는 계정을 찾을 수 없습니다.
+
+  /api/auth/password-reset/request:
+    post:
+      tags: [auth]
+      summary: 비밀번호 재설정 — 인증코드 발급
+      description: |
+        아이디 + 이름 + 이메일이 일치하면 인증코드를 만들어 **등록된 연락처로 SMS 발송**한다.
+        받은 코드로 `/api/auth/password-reset/confirm` 을 부르면 비밀번호가 바뀐다.
+
+        ⚠️ **정보가 틀려도 200 이 나간다.** 404 를 내면 조합을 바꿔가며 찔러 실재 계정을
+        골라낼 수 있어서다. 응답만으로는 계정 존재 여부를 알 수 없다 — 프론트는
+        "정보가 일치하면 문자를 보냈다"는 안내만 띄우고 다음 단계로 넘기면 된다.
+
+        ⚠️ **코드는 응답 본문에 실리지 않는다.** 넣으면 인증 단계가 무의미해진다.
+        개발 중에는 목(mock) SMS 발송기가 서버 로그에 찍으므로 그것으로 확인하면 된다.
+
+        코드는 서버에 저장되지 않고 매 요청마다 계산해 대조한다. 그래서
+        **비밀번호가 바뀌는 순간 이전 코드는 자동으로 무효**가 된다 (1회용).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, user_name, user_email]
+              properties:
+                user_id:
+                  type: string
+                  example: admin01
+                user_name:
+                  type: string
+                  example: 관리자
+                user_email:
+                  type: string
+                  format: email
+                  example: admin@fg.kr
+      responses:
+        "200":
+          description: 접수됨 (정보 일치 여부와 무관하게 같은 응답이다)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 정보가 일치하면 등록된 연락처로 인증코드를 보냈습니다.
+                  expires_in_sec:
+                    type: integer
+                    description: 코드 유효시간(초). 발급 시점에 따라 최대 30초 짧아질 수 있다
+                    example: 300
+        "400":
+          description: 필수값 누락 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: BAD_REQUEST
+                message: user_email 는 필수입니다.
+                field: user_email
+
+  /api/auth/password-reset/confirm:
+    post:
+      tags: [auth]
+      summary: 비밀번호 재설정 — 인증코드 확인 후 변경
+      description: |
+        인증코드가 맞으면 새 비밀번호로 바꾼다. 성공하면 새 비밀번호로 바로 로그인하면 된다.
+
+        - 코드는 **대소문자·공백을 가리지 않는다**. 문자로 받은 값을 소문자로 치거나
+          중간에 공백을 넣어도 통과한다 (`ABCDE FGHJK` = `abcdefghjk`).
+        - 비밀번호 작성규칙은 **가입할 때와 똑같이** 적용된다. 재설정으로 규칙을
+          우회할 수 있으면 규칙을 둔 의미가 없다.
+        - 코드가 틀렸을 때와 아이디가 없을 때의 응답이 **같다** (`INVALID_RESET_CODE`).
+          아이디 존재 여부를 흘리지 않기 위해서다.
+        - 성공하면 방금 쓴 코드는 그 자리에서 무효가 된다 (해시가 바뀌므로 재사용 불가).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, code, user_pw]
+              properties:
+                user_id:
+                  type: string
+                  example: admin01
+                code:
+                  type: string
+                  description: SMS 로 받은 10자리 인증코드
+                  example: KQ7MB2XZP4
+                user_pw:
+                  type: string
+                  format: password
+                  description: 새 비밀번호. 영문+숫자+특수문자 3종 포함 8~64자
+                  example: "Reset#2026x"
+      responses:
+        "200":
+          description: 변경 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 비밀번호가 변경되었습니다. 새 비밀번호로 로그인해주세요.
+        "400":
+          description: 인증코드 불일치·만료 또는 비밀번호 규칙 위반
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalid_code:
+                  summary: 코드가 틀렸거나 만료됨 (아이디가 없을 때도 같은 응답)
+                  value:
+                    code: INVALID_RESET_CODE
+                    message: 인증코드가 올바르지 않거나 만료되었습니다.
+                password_rule:
+                  summary: 새 비밀번호가 작성규칙 위반
+                  value:
+                    code: BAD_REQUEST
+                    message: 비밀번호는 영문자·숫자·특수문자를 모두 포함해 8자 이상이어야 합니다.
+                    field: user_pw
 
   # ---------------------------------------------------------------- 계정
   /api/users:
@@ -435,6 +626,97 @@ paths:
         "404":
           $ref: "#/components/responses/CctvNotFound"
 
+  # ---------------------------------------------------------------- ITS 공공 CCTV
+  /api/its/cctvs:
+    get:
+      tags: [its]
+      summary: 연동 가능한 ITS 공공 CCTV 목록
+      description: |
+        우리 DB 가 아니라 **ITS 오픈 API 를 그 자리에서 조회**해 돌려준다.
+        카메라를 등록하려는 관리자가 "지금 붙일 수 있는 카메라"를 고르는 화면용이다.
+
+        - 좌표는 ITS 원본(`coordy`=위도, `coordx`=경도)을 우리 이름으로 정규화해 내려간다.
+        - `is_registered` 는 같은 `cctv_name` 이 이미 `cctv` 테이블에 있는지다.
+          이미 등록된 카메라를 또 등록하지 않도록 화면에서 걸러 쓰라고 넣었다.
+        - `cctv_location` 은 ITS 가 주소를 주지 않아 **이름을 그대로 넣는다**
+          (이름이 노선+지점 표기라 위치 설명을 겸한다). `cctv_type` 은 스트림 형식이다.
+          두 필드 모두 null 이 아닌 문자열을 보장한다.
+
+        **실패 정책이 `/api/cctvs` 와 정반대다.** 저 쪽은 ITS 가 죽어도 저장된 주소로
+        폴백해 200 을 내지만, 여기는 폴백할 저장분이 없다. 실패를 0건으로 위장하면
+        "카메라가 없음"과 "서버 고장"을 구분할 수 없으므로 **502 로 실패를 알린다**.
+        다만 ITS 가 정상적으로 0건을 준 경우는 성공이라 200 + 빈 `items` 다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: min_x
+          in: query
+          description: 조회 박스 최소 경도. **네 개를 전부 보내거나 전부 생략해야 한다** (일부만 보내면 400). 생략 시 전국 기본 박스.
+          schema:
+            type: number
+            format: double
+            example: 126.9
+        - name: max_x
+          in: query
+          description: 조회 박스 최대 경도
+          schema:
+            type: number
+            format: double
+            example: 127.2
+        - name: min_y
+          in: query
+          description: 조회 박스 최소 위도
+          schema:
+            type: number
+            format: double
+            example: 37.3
+        - name: max_y
+          in: query
+          description: 조회 박스 최대 위도
+          schema:
+            type: number
+            format: double
+            example: 37.6
+        - name: q
+          in: query
+          description: 카메라 이름 부분 일치 필터 (대소문자 무시). 서버에서 걸러 내려간다.
+          schema:
+            type: string
+            example: 판교
+      responses:
+        "200":
+          description: 조회 성공 (0건도 성공이다)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ItsCctv"
+        "400":
+          description: 조회 박스를 일부만 보냈거나 숫자가 아님 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: BAD_REQUEST
+                message: "조회 영역은 min_x, max_x, min_y, max_y 네 개를 모두 보내야 합니다. (누락: max_y)"
+                field: max_y
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: ITS 오픈 API 조회 실패 또는 인증키 미설정 (`ITS_UNAVAILABLE`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: ITS_UNAVAILABLE
+                message: ITS 오픈 API 조회에 실패했습니다. 잠시 후 다시 시도해주세요.
+
   # ---------------------------------------------------------------- 이벤트
   /api/events:
     get:
@@ -549,7 +831,8 @@ paths:
       summary: 내 알림 목록
       description: |
         토큰 주인에게 온 알림만 나온다. 최신순(`alert_no` 내림차순).
-        실시간 표시는 이 엔드포인트를 3~5초 간격으로 다시 부르는 폴링으로 한다.
+        **주기적으로 다시 부르지 않는다** — 화면을 열 때와 응답 등 행동 직후에만 조회한다
+        (2026-08-11 폴링 폐기).
       security:
         - bearerAuth: []
       parameters:
@@ -1345,7 +1628,7 @@ components:
       enum: [FLAME, SMOKE, FLAME_SMOKE]
     AlertChannel:
       type: string
-      description: 확정 시 두 채널이 동시에 나간다 (PUSH = 프론트 폴링, SMS = 실제 발송)
+      description: 확정 시 두 채널이 동시에 나간다 (PUSH = 인앱 알림 목록에 남는 행, SMS = 실제 발송)
       enum: [PUSH, SMS]
     AlertStatus:
       type: string
@@ -1553,6 +1836,47 @@ components:
           description: ADMIN 만 변경 가능. `WITHDRAWN` 이면 탈퇴 일시가 함께 기록된다
 
     # ---------- 카메라 ----------
+    ItsCctv:
+      type: object
+      description: |
+        ITS 오픈 API 항목을 우리 스키마 이름으로 정규화한 것. **DB 행이 아니다** —
+        `cctv_no` 가 없고, 등록하려면 이 값들로 `POST /api/cctvs` 를 부르면 된다.
+      properties:
+        cctv_name:
+          type: string
+          description: ITS `cctvname`. 노선+지점 표기다
+          example: "[경부선] 판교분기점"
+        cctv_location:
+          type: string
+          description: ITS 가 주소를 주지 않아 이름을 그대로 넣는다 (null 아님 보장)
+          example: "[경부선] 판교분기점"
+        cctv_type:
+          type: string
+          description: 스트림 형식 (ITS `cctvformat`). 값이 없으면 빈 문자열
+          example: HLS
+        cctv_lat:
+          type: number
+          format: double
+          nullable: true
+          description: ITS `coordy` (**위도**)
+          example: 37.391245
+        cctv_lng:
+          type: number
+          format: double
+          nullable: true
+          description: ITS `coordx` (**경도**)
+          example: 127.096
+        cctv_stream_url:
+          type: string
+          nullable: true
+          description: HLS 주소. 시간 제한 토큰이 박혀 있어 오래 두면 만료된다
+        cctv_resolution:
+          type: string
+          description: ITS `cctvresolution`. 값이 없으면 빈 문자열
+        is_registered:
+          type: boolean
+          description: 같은 `cctv_name` 이 이미 `cctv` 테이블에 있는지 — 중복 등록 방지용
+
     Cctv:
       type: object
       properties:

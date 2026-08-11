@@ -79,8 +79,10 @@
 </div>
 
 <div class="note">
-  📄 <strong>API 상세는 이 문서에 없습니다.</strong> 요청·응답 형식은 같은 폴더의
-  <code>docs/api-spec.html</code> 을 보세요. 이 문서는 "누가 무엇을 준비해야 하는가" 만 다룹니다.
+  📄 <strong>API 상세는 이 문서에 없습니다.</strong> 요청·응답 형식은
+  <strong>Swagger UI</strong>(<code>백엔드 실행 후 http://localhost:5000/api/docs/</code>)에서 보세요.
+  원본 계약서는 <code>back/openapi.yaml</code> 입니다. 이 문서는 "누가 무엇을 준비해야 하는가" 만 다룹니다.
+  <br><small>※ 예전의 <code>docs/api-spec.html</code> 은 Swagger 와 내용이 1:1로 겹쳐 2026-08-11 삭제했습니다.</small>
 </div>
 
 <!-- ===================================================== -->
@@ -182,8 +184,14 @@ CREATE DATABASE fireguard;
 <h3>할 일</h3>
 <ul class="check">
   <li>AI 담당과 <strong>검출 전송 형식</strong> 합의 (아래 4번 섹션 내용이 맞는지)</li>
-  <li>프론트 담당과 <strong>실시간 알림 전달 방식</strong> 합의 (폴링 권장 — 아래 3번 섹션)</li>
+  <li><s>프론트 담당과 <strong>실시간 알림 전달 방식</strong> 합의</s>
+      — <strong>2026-08-11 종료: 폴링하지 않기로 확정</strong> (아래 3번 섹션)</li>
   <li>프론트 화면 기획 확정 후 <strong>대시보드 통계 API</strong> 필요 여부 판단</li>
+  <li><strong>프론트: ITS CCTV 목록의 목(mock) 배열을 걷어내세요</strong>
+      — <code>GET /api/its/cctvs</code> 가 2026-08-11 구현됐습니다 (아래 참고)</li>
+  <li><strong>프론트: 계정 찾기 화면의 시뮬레이션을 실제 API 로 바꾸세요</strong>
+      — 아이디 찾기·비밀번호 재설정이 2026-08-11 구현됐습니다.
+      <strong>비밀번호 찾기에 인증코드 입력 단계가 하나 늘어납니다</strong> (아래 참고)</li>
   <li><code>dev</code> 브랜치로 머지 PR 생성 시점 결정</li>
   <li>실제 문자 발송이 필요하면 <code>back/services/sms.py</code> 를 실제 API 로 교체
       (지금은 로그만 남기는 목(mock) 발송기)</li>
@@ -205,7 +213,8 @@ CREATE DATABASE fireguard;
 
 <h3>할 일</h3>
 <ul class="check">
-  <li><code>docs/api-spec.html</code> 정독 — 특히 <strong>공통 규칙</strong> 섹션 (에러 형식 · 페이징 · 상태값)</li>
+  <li><strong>Swagger UI</strong>(<code>http://localhost:5000/api/docs/</code>) 정독 — 특히 맨 위
+      <strong>공통 규칙</strong> (에러 형식 · 페이징 봉투 · 인증 헤더)</li>
   <li>로그인 → JWT 저장 → 이후 모든 요청 헤더에 <code>Authorization: Bearer &lt;토큰&gt;</code></li>
   <li>실시간 알림 방식 결정 후 백엔드에 알려주기 (아래 참고)</li>
   <li>CCTV 영상 재생 붙이기 (HLS — 아래 참고)</li>
@@ -220,37 +229,96 @@ VITE_API_BASE_URL=http://localhost:5000
 fetch(`${import.meta.env.VITE_API_BASE_URL}/api/auth/login`, ...)</code></pre>
 <p>배포할 때 코드를 고치지 않고 주소만 바꿀 수 있습니다.</p>
 
-<h3>실시간 알림 — 백엔드 권장안은 폴링</h3>
-<p>새 화재 알림을 화면에 띄우는 방식입니다. 백엔드는 <strong>3~5초 폴링</strong>을 권장합니다.</p>
-<table>
-  <tr><th>방식</th><th>평가</th></tr>
-  <tr><td><strong>폴링</strong> (권장)</td>
-      <td>기존 <code>GET /api/alerts</code> 재사용 → <strong>추가 개발 0</strong>.
-          동시 사용자가 소수라 부하 문제 없고, 연결이 끊길 일이 없어 시연에서 가장 안전.
-          다만 유예가 30초라 폴링 주기는 그에 맞춰 짧게(3~5초) 잡아야 한다 —
-          주기가 길면 관리자가 알림을 보기도 전에 유예가 지나간다</td></tr>
-  <tr><td>WebSocket</td><td>양방향이 필요 없는 구조라 오버스펙</td></tr>
-  <tr><td>SSE</td><td>동기 Flask 와 궁합이 나쁨 (연결 하나가 워커 하나를 점유)</td></tr>
-</table>
-<p><strong>최종 결정은 프론트가 하고 백엔드에 알려주세요.</strong> 폴링으로 가면 백엔드 작업은 없습니다.</p>
-
+<h3>실시간 알림 — 폴링하지 않습니다 (2026-08-11 확정)</h3>
 <div class="note">
-  🗳️ <strong>확정 대기 중인 항목 — 프론트 담당이 이 한 줄만 답해주면 닫힙니다.</strong><br><br>
-  “알림 수신을 <strong><code>GET /api/alerts</code> 3~5초 폴링</strong>으로 갈까요?”<br><br>
-  <strong>예</strong> → 백엔드 추가 작업 없음. 명세서에 한 줄 적고 종료.<br>
-  <strong>아니오(SSE·WebSocket)</strong> → 백엔드에 신규 기능이 필요하므로, 결정한 방식을 알려주면
-  작업 계획을 잡습니다.
+  ⚠️ <strong>이전 판의 "3~5초 폴링 권장"은 폐기됐습니다.</strong> 폴링 코드를 이미 넣으셨다면 빼주세요.
+  프론트에 물어보던 <strong>"폴링으로 갈까요?" 항목도 닫혔습니다</strong> — 답하실 필요 없습니다.
 </div>
-
-<p>폴링 구현은 이 정도면 됩니다 — 새 알림이 있으면 화면에 배지·브라우저 알림을 띄우면 됩니다.</p>
-<pre><code>// 5초마다 내 알림을 확인한다
-setInterval(async () =&gt; {
+<p><strong>기다렸다가 알려줄 상태 변화가 없기 때문입니다.</strong> 119 신고는 사용자가 화재확인을 누른
+<code>POST /api/alerts/&lt;alert_no&gt;/respond</code> <strong>요청 안에서 동기로 끝납니다</strong>.
+그 응답이 돌아온 시점에 신고는 이미 접수됐거나 실패해 있습니다.</p>
+<table>
+  <tr><th>화면이 알아야 할 것</th><th>어떻게 얻나</th></tr>
+  <tr><td>새 화재 알림이 왔다</td>
+      <td><strong>SMS</strong>가 사용자를 깨웁니다(실제로 발송되는 유일한 채널).
+          문자를 보고 앱을 열면 그때 <code>GET /api/alerts</code> 를 한 번 부르면 됩니다</td></tr>
+  <tr><td>남은 유예 시간(카운트다운)</td>
+      <td>응답에 실린 <code>alert_deadline_at</code> 으로 <strong>클라이언트가 로컬 계산</strong>합니다.
+          서버에 다시 물을 필요가 없습니다</td></tr>
+  <tr><td>119 접수 결과</td>
+      <td>화재확인 요청의 <strong>응답으로 확정</strong>됩니다 (동기)</td></tr>
+</table>
+<p><strong>화면 갱신 원칙: 열 때 조회 + 행동 후 갱신.</strong>
+<code>setInterval</code> 로 주기 조회하지 마세요.</p>
+<pre><code>// 화면을 열 때 한 번, 그리고 응답 등 행동 직후에 다시 부른다
+const loadAlerts = async () =&gt; {
   const res = await fetch(`${BASE}/api/alerts?alert_status=SENT`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   const { items } = await res.json();
-  // items 중 처음 보는 alert_no 가 있으면 알림 표시
-}, 5000);</code></pre>
+  // 남은 시간은 items[i].alert_deadline_at 으로 로컬에서 계산해 표시
+};
+
+useEffect(() =&gt; { loadAlerts(); }, []);        // 열 때 1회
+await respond(alertNo, 'READ'); await loadAlerts();  // 행동 후 갱신</code></pre>
+<p style="color:#718096; font-size:13px;">※ 유일한 예외 상황: 화면을 켜둔 채 응답하지 않아 유예가 지나간 경우,
+서버가 대신 신고한 결과는 화면을 다시 열거나 새로고침해야 보입니다. 이 한 경우 때문에
+상시 폴링을 두지는 않기로 했습니다.</p>
+
+<h3>계정 찾기 — 아이디 찾기 · 비밀번호 재설정 (2026-08-11 신규)</h3>
+<div class="note">
+  ✅ <strong>세 엔드포인트가 구현됐습니다.</strong> <code>FindAccount.jsx</code> 의
+  "시뮬레이션 처리 (가상 결과)" 코드를 실제 호출로 바꾸시면 됩니다. 전부 <strong>비로그인 상태로 부르는 공개 API</strong> 입니다.
+</div>
+<table>
+  <tr><th>엔드포인트</th><th>보내는 것 → 받는 것</th></tr>
+  <tr><td><code>POST /api/auth/find-id</code></td>
+      <td><code>user_name</code>, <code>user_email</code> → <code>{ "user_id": "adm****" }</code><br>
+          <strong>부분 마스킹</strong>돼 나갑니다(앞 3자만). 못 찾으면 404</td></tr>
+  <tr><td><code>POST /api/auth/password-reset/request</code></td>
+      <td><code>user_id</code>, <code>user_name</code>, <code>user_email</code> → 인증코드를 <strong>SMS 발송</strong></td></tr>
+  <tr><td><code>POST /api/auth/password-reset/confirm</code></td>
+      <td><code>user_id</code>, <code>code</code>, <code>user_pw</code> → 변경 완료</td></tr>
+</table>
+<p><strong>비밀번호 찾기 흐름이 2단계 → 3단계가 됩니다.</strong>
+정보 확인 → <strong>인증코드 입력(신규)</strong> → 새 비밀번호 설정.</p>
+<ul>
+  <li><strong><code>request</code> 는 정보가 틀려도 200 입니다.</strong> 계정이 있는지 없는지를
+      응답으로 흘리지 않기 위해서입니다. "정보가 일치하면 문자를 보냈습니다" 라고 안내하고
+      바로 코드 입력 화면으로 넘기시면 됩니다 — 성공/실패로 분기하지 마세요.</li>
+  <li><strong>코드는 응답에 들어있지 않습니다.</strong> 실제로 SMS 로만 나갑니다.
+      지금은 목(mock) 발송기라 <strong>백엔드 서버 콘솔 로그</strong>에 찍히니, 개발·시연 중에는 그걸 보고 입력하시면 됩니다.</li>
+  <li>코드는 <strong>10자리, 대소문자·공백 무관</strong>합니다. 사용자가 소문자로 치거나 중간에 공백을 넣어도 통과하니
+      입력칸에서 굳이 막지 마세요. 유효시간은 약 5분입니다.</li>
+  <li>새 비밀번호에는 <strong>가입과 똑같은 규칙</strong>이 적용됩니다 — 영문+숫자+특수문자 3종 포함 8~64자.
+      <strong>MyPage 의 "최소 4자리" 검증은 백엔드 규칙과 어긋납니다</strong>(통과시켜도 백엔드가 400을 냅니다). 같이 맞춰주세요.</li>
+  <li>코드가 틀렸을 때와 아이디가 없을 때가 <strong>같은 응답</strong>(<code>INVALID_RESET_CODE</code>)입니다. 구분해 안내할 수 없습니다.</li>
+</ul>
+
+<h3>등록할 카메라 고르기 — ITS 공공 CCTV 목록 (2026-08-11 신규)</h3>
+<div class="note">
+  ✅ <strong><code>GET /api/its/cctvs</code> 가 구현됐습니다.</strong> 프론트에 하드코딩해 둔
+  ITS 목록 배열(<code>ITS_PUBLIC_CCTVS</code>)과 "백엔드 미구현" 안내 문구는 이제 지우셔도 됩니다.
+</div>
+<p>DB 가 아니라 <strong>ITS 오픈 API 를 그 자리에서 조회</strong>해 돌려줍니다. 응답은 <code>{ "items": [...] }</code> 이고,
+필드는 우리 스키마 이름으로 정규화돼 있어 그대로 <code>POST /api/cctvs</code> 에 넘기면 등록됩니다.</p>
+<table>
+  <tr><th>쿼리 파라미터</th><th>설명</th></tr>
+  <tr><td><code>q</code></td><td>카메라 이름 부분 일치 검색 (서버에서 필터링)</td></tr>
+  <tr><td><code>min_x</code> <code>max_x</code> <code>min_y</code> <code>max_y</code></td>
+      <td>조회 영역(경도 min/max, 위도 min/max). <strong>네 개를 전부 보내거나 전부 생략</strong>해야 하며,
+          일부만 보내면 400 입니다. 생략하면 전국을 조회합니다</td></tr>
+</table>
+<ul>
+  <li><strong><code>is_registered</code> 를 꼭 쓰세요</strong> — 이미 우리 DB 에 있는 카메라인지 알려줍니다.
+      true 인 항목은 "등록" 버튼을 막아 중복 등록을 예방하시면 됩니다.</li>
+  <li><strong>실패는 502 로 옵니다</strong>(<code>ITS_UNAVAILABLE</code>). 카메라 목록 API 와 달리
+      폴백할 저장분이 없어서, 빈 목록으로 위장하지 않고 실패를 알립니다.
+      화면에는 "조회 실패, 잠시 후 재시도" 로 안내해주세요.
+      <strong>0건은 정상 200</strong> 이니 "검색 결과 없음" 과 구분해 처리하시면 됩니다.</li>
+  <li>좌표는 <code>cctv_lat</code>(위도)·<code>cctv_lng</code>(경도)로 정규화돼 있습니다.
+      ITS 원본은 <code>coordy</code>=위도, <code>coordx</code>=경도라 헷갈리는데 백엔드에서 이미 바로잡았습니다.</li>
+</ul>
 
 <h3>CCTV 영상 재생 — HLS</h3>
 <p><code>cctv_stream_url</code> 은 <strong>HLS(<code>.m3u8</code>) 주소</strong>입니다.
@@ -321,7 +389,7 @@ X-Internal-Key: &lt;INTERNAL_API_KEY 값&gt;
   <strong>5분보다 자주 다시 불러도 같은 주소가 돌아옵니다</strong> — 주기적으로 폴링할 이유가 없고,
   <strong>끊겼을 때만</strong> 다시 부르면 충분합니다.
   외부 조회가 실패해도 이 API 는 항상 <strong>200</strong> 이므로 별도 에러 분기는 필요 없습니다.
-  자세한 규칙은 <code>docs/api-spec.html</code> 의 "스트림 주소 최신화" 를 보세요.
+  자세한 규칙은 Swagger UI 의 <code>GET /api/cctvs</code> 설명을 보세요.
 </div>
 
 <h3>백엔드가 가정한 전송 형식</h3>
@@ -532,7 +600,8 @@ ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</cod
 
 <hr style="margin: 48px 0; border: none; border-top: 1px solid #cbd5e0;">
 <p style="color:#718096; font-size:13px;">
-  막히면 백엔드 담당에게 문의하세요. API 요청·응답 형식은 <code>docs/api-spec.html</code>,
+  막히면 백엔드 담당에게 문의하세요. API 요청·응답 형식은 <strong>Swagger UI</strong>(<code>/api/docs/</code>),
+  동작을 바꾸는 환경변수는 루트 <code>.env.example</code>,
   DB 구조는 <code>db/schema.sql</code> 에 한글 주석과 함께 정리돼 있습니다.
 </p>
 
