@@ -138,6 +138,10 @@ export default function CctvPlayer({ streamUrl, cctvName, isFire = false, classN
         controls
         className="w-full h-full object-cover"
         onLoadedData={() => setIsLoading(false)}
+        onWaiting={() => setIsLoading(true)}
+        onSeeking={() => setIsLoading(true)}
+        onPlaying={() => setIsLoading(false)}
+        onCanPlay={() => setIsLoading(false)}
         onError={() => {
           setIsLoading(false);
           setLoadError(true);
