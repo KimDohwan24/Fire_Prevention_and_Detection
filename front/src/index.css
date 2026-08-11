@@ -135,3 +135,30 @@
     outline-offset: 2px;
   }
 }
+
+/* Leaflet 커스텀 마커 스타일 */
+.custom-leaflet-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Leaflet 컨테이너 z-index를 모달(z-50)보다 낮게 유지 */
+.leaflet-container {
+  z-index: 0;
+}
+
+.leaflet-custom-popup .leaflet-popup-content-wrapper {
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.leaflet-custom-popup .leaflet-popup-tip {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+@keyframes ping {
+  75%, 100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}

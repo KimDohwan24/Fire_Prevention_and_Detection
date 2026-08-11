@@ -9,6 +9,7 @@ import {
 import { cctvApi, agencyApi, eventApi, alertApi, reportApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 import ItsCctvModal from '../components/ItsCctvModal';
+import GisMap from '../components/GisMap';
 
 const DEFAULT_AGENCIES = [];
 const INITIAL_CCTVS = [];
@@ -527,9 +528,9 @@ function Dashboard() {
       <main className="flex flex-col md:flex-row flex-1 overflow-hidden">
 
         {/* 좌측: GIS 지도 영역 */}
-        <section className="flex-1 bg-surface-soft relative border-r border-hairline overflow-hidden flex flex-col">
-          {/* 상단 검색/필터 바 및 DB 관할 소방서 뱃지 오버레이 */}
-          <div className={`absolute top-4 left-4 right-4 ${isAgencyTabOpen ? 'z-50' : 'z-30'} flex flex-wrap items-center justify-between gap-2 pointer-events-none`}>
+        <section className="flex-1 bg-surface-soft relative border-r border-hairline overflow-hidden flex flex-col z-0" style={{ maxHeight: 'calc(100vh - 56px)' }}>
+          {/* 상단 검색/필터 바 오버레이 */}
+          <div className="absolute top-4 left-4 z-30 flex flex-wrap items-center gap-2 pointer-events-none">
             <div className="flex items-center gap-2 pointer-events-auto">
               <div className="flex items-center bg-canvas/90 backdrop-blur-md border border-hairline rounded-full px-4 h-[38px] w-full max-w-xs shadow-md">
                 <SearchIcon className="w-4 h-4 text-mute mr-2" />
@@ -567,129 +568,90 @@ function Dashboard() {
                 <span>ITS 공공 CCTV 검색</span>
               </button>
             </div>
-
-            {/* DB 동적 관할 소방서 선택 드롭다운 버튼 */}
-            <div className="relative pointer-events-auto">
-              <button
-                onClick={() => setIsAgencyTabOpen(!isAgencyTabOpen)}
-                className="flex items-center gap-2 bg-canvas/90 backdrop-blur-md border border-hairline rounded-full px-4 h-[38px] shadow-md hover:border-ink transition-all cursor-pointer text-xs font-bold text-ink"
-              >
-                <MapPin className="w-3.5 h-3.5 text-red-500" />
-                <span>소방서: {fireStation?.name || '소방서'}</span>
-              </button>
-
-              {/* 소방서 선택 팝업 패널 */}
-              {isAgencyTabOpen && (
-                <div
-                  style={{ width: '320px', minWidth: '280px', maxWidth: '90vw' }}
-                  className="absolute right-0 top-11 z-50 bg-canvas border border-hairline rounded-2xl shadow-2xl p-3 shrink-0 box-border"
-                >
-                  <div className="flex items-center justify-between px-2 pb-2 border-b border-hairline mb-2">
-                    <span className="text-xs font-bold text-ink flex items-center gap-1.5">
-                      🚒 소방서 목록
-                    </span>
-                    <button
-                      onClick={() => setIsAgencyTabOpen(false)}
-                      className="text-mute hover:text-ink cursor-pointer p-1"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
-                    {agencyList.map((ag) => (
-                      <div
-                        key={ag.agency_no}
-                        onClick={() => handleMoveToAgency(ag)}
-                        className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${fireStation?.agency_no === ag.agency_no
-                          ? 'border-red-500/50 bg-red-500/10 text-ink font-bold shadow-xs'
-                          : 'border-hairline hover:border-hairline-deep bg-surface-soft text-body'
-                          }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold">{ag.agency_name || ag.name}</span>
-                          {ag.agency_is_active && (
-                            <span className="text-[10px] text-emerald-500 font-mono bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/20">
-                              가동 중
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-[11px] text-mute mt-1 truncate">{ag.address}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
 
-          {/* 가상 GIS 격자 레이아웃 */}
-          <div className="w-full h-full relative bg-surface-soft flex items-center justify-center select-none overflow-hidden">
-            {/* 격자 배경 그래픽 */}
-            <div className="absolute inset-0 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] dark:bg-[radial-gradient(#374151_1px,transparent_1px)] [background-size:24px_24px] opacity-60" />
+          {/* 우측 하단: 관할 소방서 선택 드롭다운 */}
+          <div className={`absolute bottom-4 right-4 ${isAgencyTabOpen ? 'z-[1000]' : 'z-30'}`}>
+            <button
+              onClick={() => setIsAgencyTabOpen(!isAgencyTabOpen)}
+              className="flex items-center gap-2 bg-canvas/90 backdrop-blur-md border border-hairline rounded-full px-4 h-[38px] shadow-md hover:border-ink transition-all cursor-pointer text-xs font-bold text-ink"
+            >
+              <MapPin className="w-3.5 h-3.5 text-red-500" />
+              <span>소방서: {fireStation?.name || '소방서'}</span>
+            </button>
 
-            {/* 소방서 메인 위치 마커 */}
-            {showFireStation && fireStation && (
+            {/* 소방서 선택 팝업 패널 (위로 펼침) */}
+            {isAgencyTabOpen && (
               <div
-                style={{ top: `${fireStation.y || 38}%`, left: `${fireStation.x || 50}%` }}
-                className={`absolute -translate-x-1/2 -translate-y-1/2 z-10 transition-all duration-500 ${highlightedAgencyNo === fireStation.agency_no ? 'scale-125 z-20' : ''
-                  }`}
+                style={{ width: '320px', minWidth: '280px', maxWidth: '90vw' }}
+                className="absolute right-0 bottom-12 z-[1000] bg-canvas border border-hairline rounded-2xl shadow-2xl p-3 shrink-0 box-border"
               >
-                <div className="relative group cursor-pointer" onClick={() => setIsAgencyTabOpen(true)}>
-                  <div className="w-12 h-12 rounded-full bg-red-600 border-2 border-white shadow-xl flex items-center justify-center text-white relative z-10 hover:scale-110 transition-transform">
-                    <span className="text-xl">🚒</span>
-                  </div>
-                  <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-canvas/90 backdrop-blur-md border border-hairline px-3 py-1 rounded-full shadow-lg whitespace-nowrap text-xs font-bold text-ink flex items-center gap-1.5">
-                    <span>{fireStation.name}</span>
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  </div>
+                <div className="flex items-center justify-between px-2 pb-2 border-b border-hairline mb-2">
+                  <span className="text-xs font-bold text-ink flex items-center gap-1.5">
+                    🚒 소방서 목록
+                  </span>
+                  <button
+                    onClick={() => setIsAgencyTabOpen(false)}
+                    className="text-mute hover:text-ink cursor-pointer p-1"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+                  {agencyList.map((ag) => (
+                    <div
+                      key={ag.agency_no}
+                      onClick={() => handleMoveToAgency(ag)}
+                      className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${fireStation?.agency_no === ag.agency_no
+                        ? 'border-red-500/50 bg-red-500/10 text-ink font-bold shadow-xs'
+                        : 'border-hairline hover:border-hairline-deep bg-surface-soft text-body'
+                        }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold">{ag.agency_name || ag.name}</span>
+                        {ag.agency_is_active && (
+                          <span className="text-[10px] text-emerald-500 font-mono bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/20">
+                            가동 중
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-mute mt-1 truncate">{ag.address}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
+          </div>
 
-            {/* 지도 위 CCTV 마커 렌더링 */}
-            {filteredCCTVs.map((cctv, idx) => {
-              const isSelected = selectedCCTV?.id === cctv.id;
-              const pos = getCctvMapPosition(cctv, idx);
-              const isFireAlert = activeAlertBanner && (
-                activeAlertBanner.cctv_no === cctv.cctv_no || 
-                activeAlertBanner.cctv_name === cctv.name || 
-                cctv.status === 'fire'
-              );
-              const isOffline = cctv.status === 'offline';
-
-              return (
-                <div
-                  key={cctv.id}
-                  style={{ top: pos.top, left: pos.left }}
-                  className={`absolute -translate-x-1/2 -translate-y-1/2 z-0 transition-all duration-300 ${isSelected || isFireAlert ? 'scale-125 z-20' : 'hover:scale-110'
-                    }`}
-                >
-                  <button
-                    onClick={() => {
-                      setSelectedCCTV(cctv);
-                      if (isFireAlert) {
-                        handleOpenEventDetail(activeAlertBanner?.event_no || cctv.cctv_no || 1);
-                      }
-                    }}
-                    className="relative group cursor-pointer focus:outline-none"
-                  >
-                    {isFireAlert && (
-                      <div className="absolute -inset-3 bg-red-500/40 rounded-full animate-ping" />
-                    )}
-                    <div className={`w-10 h-10 rounded-full border-2 border-white shadow-xl flex items-center justify-center text-white transition-all ${isFireAlert ? 'bg-red-600 ring-4 ring-red-500/50 shadow-red-500/50' : isOffline ? 'bg-neutral-500 opacity-60' : 'bg-emerald-600'
-                      }`}>
-                      {isFireAlert ? <span className="text-base animate-bounce">🔥</span> : <Video className="w-4 h-4" />}
-                    </div>
-                    <div className={`absolute top-11 left-1/2 -translate-x-1/2 px-2.5 py-0.5 rounded-full shadow-md whitespace-nowrap text-[11px] font-bold flex items-center gap-1 border ${
-                      isFireAlert ? 'bg-red-600 text-white border-red-400 ring-2 ring-red-500/40' : 'bg-canvas/90 backdrop-blur-md border-hairline text-ink'
-                    }`}>
-                      <span>{cctv.name}</span>
-                      {isFireAlert && <span className="animate-pulse">🔥 [화재 감지]</span>}
-                    </div>
-                  </button>
-                </div>
-              );
-            })}
+          {/* GIS Leaflet 지도 (CartoDB 타일) */}
+          <div className="w-full h-full relative">
+            <GisMap
+              cctvList={filteredCCTVs.map(cctv => ({
+                ...cctv,
+                address: cctv.location,
+                isEmergency: Boolean(
+                  activeAlertBanner && (
+                    activeAlertBanner.cctv_no === cctv.cctv_no ||
+                    activeAlertBanner.cctv_name === cctv.name
+                  )
+                ) || cctv.status === 'fire'
+              }))}
+              agencyList={agencyList}
+              selectedCCTV={selectedCCTV}
+              onSelectCCTV={(cctv) => {
+                setSelectedCCTV(cctv);
+                const isFireAlert = activeAlertBanner && (
+                  activeAlertBanner.cctv_no === cctv.cctv_no ||
+                  activeAlertBanner.cctv_name === cctv.name
+                );
+                if (isFireAlert) {
+                  handleOpenEventDetail(activeAlertBanner?.event_no || cctv.cctv_no || 1);
+                }
+              }}
+              showFireStation={showFireStation}
+              center={fireStation ? [parseFloat(fireStation.lat || fireStation.agency_lat || 37.5665), parseFloat(fireStation.lng || fireStation.agency_lng || 126.9780)] : [37.5665, 126.9780]}
+              zoom={14}
+            />
           </div>
         </section>
 
