@@ -6,7 +6,7 @@ import {
   ShieldCheck, Users, PlusCircle, Settings, ShieldAlert, UserCheck, Loader2,
   Flame, Siren, PhoneCall, CheckCircle2, XCircle, Clock, ExternalLink, FileText
 } from 'lucide-react';
-import { cctvApi, agencyApi, eventApi, alertApi, reportApi } from '../api';
+import { authApi, cctvApi, agencyApi, eventApi, alertApi, reportApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 import ItsCctvModal from '../components/ItsCctvModal';
 import GisMap from '../components/GisMap';
@@ -304,7 +304,7 @@ function Dashboard() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('currentUser');
+    authApi.logout();
     navigate('/login');
   };
 
@@ -1032,7 +1032,11 @@ function Dashboard() {
                     <div className="md:col-span-7">
                       <div className="aspect-video bg-black rounded-xl overflow-hidden border border-hairline shadow-md relative">
                         {selectedCCTV ? (
-                          <CctvPlayer cctv={selectedCCTV} autoPlay={true} />
+                          <CctvPlayer
+                            streamUrl={selectedCCTV.stream_url || selectedCCTV.streamUrl}
+                            cctvName={selectedCCTV.name || selectedCCTV.cctv_name}
+                            isFire={selectedCCTV.status === 'fire'}
+                          />
                         ) : selectedEventDetail?.thumbnail_url ? (
                           <img src={selectedEventDetail.thumbnail_url} alt="화재 스냅샷" className="w-full h-full object-cover" />
                         ) : (

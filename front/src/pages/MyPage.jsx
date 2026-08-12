@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 
 import CctvPlayer from '../components/CctvPlayer';
-import { authApi, cctvApi, eventApi, getCurrentUserFromStorage } from '../api';
+import { authApi, cctvApi, eventApi, getCurrentUserFromStorage, userApi } from '../api';
 
 export default function MyPage() {
   const navigate = useNavigate();
@@ -56,6 +56,7 @@ export default function MyPage() {
   // 모달 상태
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [isPasswordChangeNoticeOpen, setIsPasswordChangeNoticeOpen] = useState(false);
 
   // 폼 상태: 프로필 수정
   const [editForm, setEditForm] = useState({
@@ -78,6 +79,11 @@ export default function MyPage() {
   const [toastMessage, setToastMessage] = useState(null);
 
   useEffect(() => {
+    if (!getCurrentUserFromStorage()) {
+      navigate('/login', { replace: true });
+      return;
+    }
+
     // 1. 세션 복원 또는 localStorage 정보 활용
     authApi.me().then(res => {
       if (res) {
@@ -161,7 +167,7 @@ export default function MyPage() {
     }).finally(() => {
       setIsActivitiesLoading(false);
     });
-  }, []);
+  }, [navigate]);
 
   // 활동 이력 전체 삭제
   const handleClearActivities = () => {
@@ -215,7 +221,7 @@ export default function MyPage() {
   const isAdmin = currentUser?.role === 'admin';
 
   const handleLogout = () => {
-    localStorage.removeItem('currentUser');
+    authApi.logout();
     navigate('/login');
   };
 
@@ -234,27 +240,36 @@ export default function MyPage() {
 
   // 관리자 승격 승인 요청 보내기
   const handleRequestAdmin = () => {
-    const updated = {
-      ...currentUser,
-      adminRequested: true,
-      adminRequestStatus: 'PENDING'
-    };
-    setCurrentUser(updated);
-    localStorage.setItem('currentUser', JSON.stringify(updated));
-    showToast('관리자 승격 요청이 제출되었습니다! 관리자의 승인 후 관리자로 승격됩니다.');
+    showToast('관리자 승격 요청 API가 아직 연동되지 않아 요청은 제출되지 않았습니다.');
   };
 
   // 프로필 수정 저장
-  const handleSaveProfile = (e) => {
+  const handleSaveProfile = async (e) => {
     e.preventDefault();
-    const updated = {
-      ...currentUser,
-      ...editForm
-    };
-    setCurrentUser(updated);
-    localStorage.setItem('currentUser', JSON.stringify(updated));
-    setIsEditProfileOpen(false);
-    showToast('프로필 정보(직책 포함)가 성공적으로 수정되었습니다.');
+    if (!currentUser?.user_no) {
+      showToast('사용자 정보를 확인할 수 없어 저장하지 못했습니다. 다시 로그인해 주세요.');
+      return;
+    }
+
+    try {
+      await userApi.update(currentUser.user_no, {
+        user_name: editForm.name.trim(),
+        user_email: editForm.email.trim(),
+        user_phone: editForm.phone.replace(/-/g, '').trim() || null,
+      });
+      const updatedUser = {
+        ...currentUser,
+        name: editForm.name.trim(),
+        email: editForm.email.trim(),
+        phone: editForm.phone.replace(/-/g, '').trim(),
+      };
+      setCurrentUser(updatedUser);
+      localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+      setIsEditProfileOpen(false);
+      showToast('프로필 정보가 저장되었습니다.');
+    } catch (error) {
+      showToast(error.message || '프로필 저장에 실패했습니다.');
+    }
   };
 
   // 비밀번호 변경 저장
@@ -273,9 +288,9 @@ export default function MyPage() {
       return;
     }
 
-    setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
     setIsChangePasswordOpen(false);
-    showToast('비밀번호가 안전하게 변경되었습니다.');
+    setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    setIsPasswordChangeNoticeOpen(true);
   };
 
   // 설정을 변경할 때의 핸들러
@@ -1166,6 +1181,37 @@ export default function MyPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {isPasswordChangeNoticeOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="password-change-notice-title"
+        >
+          <div
+            style={{ width: '420px', minWidth: '320px', maxWidth: '95vw' }}
+            className="bg-canvas border border-hairline rounded-2xl shadow-2xl p-6 text-center shrink-0 box-border"
+          >
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-amber-500/10 text-amber-600">
+              <AlertTriangle className="h-6 w-6" />
+            </div>
+            <h3 id="password-change-notice-title" className="text-heading-md font-bold text-ink">
+              비밀번호 변경 기능 준비 중
+            </h3>
+            <p className="mt-3 text-body-sm leading-6 text-body">
+              비밀번호 변경 API가 아직 연동되지 않아 입력하신 내용은 저장되지 않았습니다.
+            </p>
+            <button
+              type="button"
+              onClick={() => setIsPasswordChangeNoticeOpen(false)}
+              className="mt-6 h-11 w-full rounded-full bg-primary text-body-sm font-medium text-on-primary transition-colors hover:bg-ink-deep focus:outline-none focus-visible:outline-none cursor-pointer"
+            >
+              확인
+            </button>
           </div>
         </div>
       )}

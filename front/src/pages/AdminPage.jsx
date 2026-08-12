@@ -8,7 +8,7 @@ import {
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
   BadgeCheck, ChevronRight, Edit3, MapPin, Loader2
 } from 'lucide-react';
-import { cctvApi, userApi, eventApi, reportApi } from '../api';
+import { authApi, cctvApi, userApi, eventApi, reportApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 
 // 초기 CCTV 데이터
@@ -138,7 +138,7 @@ const AdminPage = () => {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('currentUser');
+    authApi.logout();
     navigate('/login');
   };
 
@@ -256,18 +256,8 @@ const AdminPage = () => {
   };
 
   // 회원 권한 토글
-  const toggleRole = (userId) => {
-    setUserList(prev => prev.map(u => {
-      if (u.id === userId) {
-        const nextRole = u.role === 'admin' ? 'user' : 'admin';
-        const updated = { ...u, role: nextRole };
-        if (selectedUser && selectedUser.id === userId) {
-          setSelectedUser(updated);
-        }
-        return updated;
-      }
-      return u;
-    }));
+  const toggleRole = () => {
+    alert('회원 권한 변경 API가 아직 연동되지 않아 권한은 변경되지 않았습니다.');
   };
 
   // 회원 승인
