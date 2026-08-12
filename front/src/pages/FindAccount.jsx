@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { authApi } from '../api';
 
 const FindAccount = () => {
   const [activeTab, setActiveTab] = useState('findId'); // 'findId' | 'findPw'
@@ -11,49 +12,62 @@ const FindAccount = () => {
   // 비밀번호 찾기 상태
   const [findPwStep, setFindPwStep] = useState(1); // 1: 정보입력, 2: 새 비밀번호 설정, 3: 완료
   const [findPwForm, setFindPwForm] = useState({ userId: '', name: '', email: '' });
-  const [newPasswordForm, setNewPasswordForm] = useState({ password: '', passwordConfirm: '' });
+  const [newPasswordForm, setNewPasswordForm] = useState({ code: '', password: '', passwordConfirm: '' });
   const [findPwError, setFindPwError] = useState('');
+  const [findPwNotice, setFindPwNotice] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 아이디 찾기 제출
-  const handleFindIdSubmit = (e) => {
+  const handleFindIdSubmit = async (e) => {
     e.preventDefault();
     if (!findIdForm.name || !findIdForm.email) return;
 
-    // 시뮬레이션 처리 (가상 결과)
-    if (findIdForm.name.trim() !== '' && findIdForm.email.includes('@')) {
-      setFindIdResult({
-        success: true,
-        userId: 'admin01',
-        createdAt: '2026-08-01',
-      });
-    } else {
-      setFindIdResult({
-        success: false,
-        message: '입력하신 정보와 일치하는 회원 계정을 찾을 수 없습니다.',
-      });
+    setIsSubmitting(true);
+    setFindIdResult(null);
+    try {
+      const result = await authApi.findId(findIdForm.name.trim(), findIdForm.email.trim());
+      setFindIdResult({ success: true, userId: result.user_id });
+    } catch (error) {
+      setFindIdResult({ success: false, message: error.message || '아이디를 찾지 못했습니다.' });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   // 비밀번호 찾기 1단계 제출 (회원 정보 확인)
-  const handleFindPwSubmit = (e) => {
+  const handleFindPwSubmit = async (e) => {
     e.preventDefault();
     setFindPwError('');
+    setFindPwNotice('');
     if (!findPwForm.userId || !findPwForm.name || !findPwForm.email) return;
 
-    if (findPwForm.userId.trim() !== '' && findPwForm.name.trim() !== '' && findPwForm.email.includes('@')) {
+    setIsSubmitting(true);
+    try {
+      const result = await authApi.requestPasswordReset(
+        findPwForm.userId.trim(),
+        findPwForm.name.trim(),
+        findPwForm.email.trim(),
+      );
+      setFindPwNotice(result.message || '입력한 정보가 일치하면 등록된 연락처로 인증코드를 보냈습니다.');
       setFindPwStep(2);
-    } else {
-      setFindPwError('입력하신 정보와 일치하는 계정이 존재하지 않습니다.');
+    } catch (error) {
+      setFindPwError(error.message || '인증코드 요청에 실패했습니다.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   // 비밀번호 찾기 2단계 제출 (새 비밀번호 설정)
-  const handleResetPasswordSubmit = (e) => {
+  const handleResetPasswordSubmit = async (e) => {
     e.preventDefault();
     setFindPwError('');
 
+    if (!newPasswordForm.code.trim()) {
+      setFindPwError('SMS로 받은 인증코드를 입력해 주세요.');
+      return;
+    }
     if (newPasswordForm.password.length < 8) {
-      setFindPwError('비밀번호는 최소 8자 이상이어야 합니다.');
+      setFindPwError('비밀번호는 영문·숫자·특수문자를 포함해 8자 이상이어야 합니다.');
       return;
     }
 
@@ -62,7 +76,20 @@ const FindAccount = () => {
       return;
     }
 
-    setFindPwStep(3);
+    setIsSubmitting(true);
+    try {
+      await authApi.confirmPasswordReset(
+        findPwForm.userId.trim(),
+        newPasswordForm.code.trim(),
+        newPasswordForm.password,
+      );
+      setFindPwStep(3);
+      setNewPasswordForm({ code: '', password: '', passwordConfirm: '' });
+    } catch (error) {
+      setFindPwError(error.message || '비밀번호 변경에 실패했습니다.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // 탭 변경 시 상태 리셋
@@ -71,6 +98,8 @@ const FindAccount = () => {
     setFindIdResult(null);
     setFindPwStep(1);
     setFindPwError('');
+    setFindPwNotice('');
+    setNewPasswordForm({ code: '', password: '', passwordConfirm: '' });
   };
 
   return (
@@ -151,9 +180,10 @@ const FindAccount = () => {
 
                 <button
                   type="submit"
+                  disabled={isSubmitting}
                   className="w-full h-[36px] bg-primary text-on-primary rounded-full text-button-md hover:bg-ink-deep active:scale-[0.98] transition-all duration-200 mt-2"
                 >
-                  아이디 찾기
+                  {isSubmitting ? '조회 중...' : '아이디 찾기'}
                 </button>
               </form>
             ) : (
@@ -167,9 +197,6 @@ const FindAccount = () => {
                       <p className="text-body-sm text-body mb-1">입력하신 정보와 일치하는 아이디입니다.</p>
                       <p className="text-heading-md font-semibold text-ink my-2 tracking-wide">
                         {findIdResult.userId}
-                      </p>
-                      <p className="text-caption-sm text-mute">
-                        가입일: {findIdResult.createdAt}
                       </p>
                     </div>
                     <div className="pt-2 space-y-2">
@@ -224,6 +251,7 @@ const FindAccount = () => {
                     {findPwError}
                   </p>
                 )}
+
                 <div>
                   <input
                     type="text"
@@ -263,9 +291,10 @@ const FindAccount = () => {
 
                 <button
                   type="submit"
+                  disabled={isSubmitting}
                   className="w-full h-[36px] bg-primary text-on-primary rounded-full text-button-md hover:bg-ink-deep active:scale-[0.98] transition-all duration-200 mt-2"
                 >
-                  비밀번호 재설정 요청
+                  {isSubmitting ? '요청 중...' : '비밀번호 재설정 요청'}
                 </button>
               </form>
             )}
@@ -285,6 +314,26 @@ const FindAccount = () => {
                     {findPwError}
                   </p>
                 )}
+
+                {findPwNotice && (
+                  <p className="text-body-sm text-body text-center font-medium bg-surface-soft py-2 rounded-full border border-hairline">
+                    {findPwNotice}
+                  </p>
+                )}
+
+                <div>
+                  <label className="sr-only" htmlFor="reset-code">SMS 인증코드</label>
+                  <input
+                    id="reset-code"
+                    type="text"
+                    value={newPasswordForm.code}
+                    onChange={(e) => setNewPasswordForm({ ...newPasswordForm, code: e.target.value })}
+                    className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus-visible:outline-none focus:border-ink transition-all"
+                    placeholder="SMS로 받은 인증코드"
+                    autoComplete="one-time-code"
+                    required
+                  />
+                </div>
 
                 <div>
                   <input
@@ -311,9 +360,10 @@ const FindAccount = () => {
 
                 <button
                   type="submit"
+                  disabled={isSubmitting}
                   className="w-full h-[36px] bg-primary text-on-primary rounded-full text-button-md hover:bg-ink-deep active:scale-[0.98] transition-all duration-200 mt-2"
                 >
-                  비밀번호 변경하기
+                  {isSubmitting ? '변경 중...' : '비밀번호 변경하기'}
                 </button>
               </form>
             )}
