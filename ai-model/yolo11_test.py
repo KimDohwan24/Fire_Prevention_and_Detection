@@ -13,7 +13,7 @@ from ultralytics import YOLO
 # 1. 기본 경로
 # ============================================================
 
-DATASET_ROOT = Path(r"C:\WORK_R\dataset")
+DATASET_ROOT = Path(r"../data/")
 
 # 원본 데이터
 IMAGE_TEST_DIR = DATASET_ROOT / "images" / "test"
@@ -32,7 +32,7 @@ VAL_LABEL_DIR = SPLIT_ROOT / "labels" / "val"
 YAML_PATH = SPLIT_ROOT / "data.yaml"
 
 # 결과 저장 폴더
-RUNS_DIR = Path(r"C:\WORK_R\runs_test_backgrund2")
+RUNS_DIR = Path(r"../data/fire_yolo11n_version1")
 
 TRAIN_RUN_NAME = "fire_yolo11n"
 VAL_RUN_NAME = "fire_yolo11n_validation"
