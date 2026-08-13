@@ -37,6 +37,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import albumentations as A
+import yaml
 from ultralytics import YOLO
 
 
@@ -47,7 +48,7 @@ class YOLOv10FireTrainer:
         model_name="yolov10n.pt",
         yaml_path="../data/data.yaml",
         image_size=640,
-        epochs=10,
+        epochs=30,
         batch=8,
         patience=10,
         conf_threshold=0.25,
@@ -93,6 +94,7 @@ class YOLOv10FireTrainer:
 
         print(f"모델             : {self.model_name}")
         print(f"data.yaml        : {self.yaml_path.resolve()}")
+        print(f"data.yaml 존재   : {self.yaml_path.exists()}")
         print(f"입력 이미지 크기 : {self.image_size} x {self.image_size}")
         print(f"Epochs           : {self.epochs}")
         print(f"Batch            : {self.batch}")
@@ -379,8 +381,35 @@ class YOLOv10FireTrainer:
         print("4. Test IoU / Confidence Score 분석")
         print("=" * 70)
 
-        test_image_dir = Path("./dataset/images/test")
-        test_label_dir = Path("./dataset/labels/test")
+        # ------------------------------------------------------------
+        # data.yaml 기준으로 Test 이미지/라벨 경로 자동 탐색
+        # ------------------------------------------------------------
+        with open(self.yaml_path, "r", encoding="utf-8") as f:
+            data_cfg = yaml.safe_load(f)
+
+        yaml_dir = self.yaml_path.resolve().parent
+        dataset_root = (yaml_dir / data_cfg["path"]).resolve()
+
+        test_rel_path = Path(data_cfg["test"])
+        test_image_dir = dataset_root / test_rel_path
+
+        # images/test -> labels/test 로 자동 변환
+        test_parts = list(test_rel_path.parts)
+        if "images" not in test_parts:
+            raise ValueError(
+                f"data.yaml의 test 경로에 'images'가 없습니다: {data_cfg['test']}"
+            )
+
+        images_idx = test_parts.index("images")
+        test_parts[images_idx] = "labels"
+        test_label_dir = dataset_root / Path(*test_parts)
+
+        print(f"data.yaml 절대경로 : {self.yaml_path.resolve()}")
+        print(f"데이터셋 루트     : {dataset_root}")
+        print(f"Test 이미지 경로  : {test_image_dir}")
+        print(f"Test 라벨 경로    : {test_label_dir}")
+        print(f"이미지 폴더 존재  : {test_image_dir.exists()}")
+        print(f"라벨 폴더 존재    : {test_label_dir.exists()}")
 
         default_result = {
             "ious": [],
@@ -390,6 +419,11 @@ class YOLOv10FireTrainer:
             "mean_conf": 0.0,
             "min_conf": 0.0,
             "max_conf": 0.0,
+            "avg_preprocess_ms": 0.0,
+            "avg_inference_ms": 0.0,
+            "avg_postprocess_ms": 0.0,
+            "avg_total_ms": 0.0,
+            "fps": 0.0,
         }
 
         if not test_image_dir.exists():
@@ -421,7 +455,19 @@ class YOLOv10FireTrainer:
         all_ious = []
         all_confidences = []
 
+        # 이미지별 처리시간(ms/image)을 모아서 평균 추론속도를 계산합니다.
+        preprocess_times = []
+        inference_times = []
+        postprocess_times = []
+
         for result in prediction_results:
+
+            # Ultralytics Results 객체의 speed 정보
+            # 단위는 ms/image 입니다.
+            speed = result.speed or {}
+            preprocess_times.append(float(speed.get("preprocess", 0.0)))
+            inference_times.append(float(speed.get("inference", 0.0)))
+            postprocess_times.append(float(speed.get("postprocess", 0.0)))
             image_path = Path(result.path)
             label_path = test_label_dir / f"{image_path.stem}.txt"
 
@@ -492,6 +538,31 @@ class YOLOv10FireTrainer:
         min_conf = float(np.min(all_confidences)) if all_confidences else 0.0
         max_conf = float(np.max(all_confidences)) if all_confidences else 0.0
 
+        # ------------------------------------------------------------
+        # 추론 속도 계산
+        # ------------------------------------------------------------
+        # 각 항목은 이미지 1장당 평균 처리 시간(ms/image)입니다.
+        avg_preprocess_ms = (
+            float(np.mean(preprocess_times)) if preprocess_times else 0.0
+        )
+        avg_inference_ms = (
+            float(np.mean(inference_times)) if inference_times else 0.0
+        )
+        avg_postprocess_ms = (
+            float(np.mean(postprocess_times)) if postprocess_times else 0.0
+        )
+
+        # 전처리 + 모델 추론 + 후처리 총 시간
+        avg_total_ms = (
+            avg_preprocess_ms
+            + avg_inference_ms
+            + avg_postprocess_ms
+        )
+
+        # 이론상 처리 가능한 초당 이미지 수
+        # 1000ms = 1초
+        fps = 1000.0 / avg_total_ms if avg_total_ms > 0 else 0.0
+
         print(f"Test 이미지 수       : {len(image_files)}")
         print(f"예측 박스 수         : {len(all_confidences)}")
         print(f"GT 매칭 박스 수      : {len(all_ious)}")
@@ -501,6 +572,13 @@ class YOLOv10FireTrainer:
         print(f"Minimum Confidence   : {min_conf:.4f} ({min_conf * 100:.2f}%)")
         print(f"Maximum Confidence   : {max_conf:.4f} ({max_conf * 100:.2f}%)")
 
+        print("\n[모델 추론 속도 - 현재 RunPod GPU 기준]")
+        print(f"Preprocess Time      : {avg_preprocess_ms:.3f} ms/image")
+        print(f"Inference Time       : {avg_inference_ms:.3f} ms/image")
+        print(f"Postprocess Time     : {avg_postprocess_ms:.3f} ms/image")
+        print(f"Total Time           : {avg_total_ms:.3f} ms/image")
+        print(f"Estimated FPS        : {fps:.2f}")
+
         return {
             "ious": all_ious,
             "confidences": all_confidences,
@@ -509,6 +587,11 @@ class YOLOv10FireTrainer:
             "mean_conf": mean_conf,
             "min_conf": min_conf,
             "max_conf": max_conf,
+            "avg_preprocess_ms": avg_preprocess_ms,
+            "avg_inference_ms": avg_inference_ms,
+            "avg_postprocess_ms": avg_postprocess_ms,
+            "avg_total_ms": avg_total_ms,
+            "fps": fps,
         }
 
     # ============================================================
@@ -657,6 +740,11 @@ class YOLOv10FireTrainer:
             ["Average Confidence", extra_metrics["mean_conf"]],
             ["Minimum Confidence", extra_metrics["min_conf"]],
             ["Maximum Confidence", extra_metrics["max_conf"]],
+            ["Preprocess Time ms/image", extra_metrics["avg_preprocess_ms"]],
+            ["Inference Time ms/image", extra_metrics["avg_inference_ms"]],
+            ["Postprocess Time ms/image", extra_metrics["avg_postprocess_ms"]],
+            ["Total Time ms/image", extra_metrics["avg_total_ms"]],
+            ["Estimated FPS", extra_metrics["fps"]],
             ["Training Time Minutes", elapsed / 60],
         ]
 
@@ -682,6 +770,14 @@ class YOLOv10FireTrainer:
             f"Average Confidence : {extra_metrics['mean_conf']:.4f} ({extra_metrics['mean_conf']*100:.2f}%)",
             f"Min Confidence     : {extra_metrics['min_conf']:.4f}",
             f"Max Confidence     : {extra_metrics['max_conf']:.4f}",
+            "",
+            "[Inference Speed - current RunPod GPU]",
+            f"Preprocess         : {extra_metrics['avg_preprocess_ms']:.3f} ms/image",
+            f"Inference          : {extra_metrics['avg_inference_ms']:.3f} ms/image",
+            f"Postprocess        : {extra_metrics['avg_postprocess_ms']:.3f} ms/image",
+            f"Total              : {extra_metrics['avg_total_ms']:.3f} ms/image",
+            f"Estimated FPS      : {extra_metrics['fps']:.2f}",
+            "",
             f"Training Time      : {elapsed / 60:.2f} min",
             "",
             "[Class AP - mAP50:95]",
@@ -752,6 +848,29 @@ class YOLOv10FireTrainer:
         )
 
         print("-" * 75)
+        print("추론 속도 (현재 RunPod GPU 기준)")
+        print(
+            f"Preprocess          : "
+            f"{extra_metrics['avg_preprocess_ms']:.3f} ms/image"
+        )
+        print(
+            f"Inference           : "
+            f"{extra_metrics['avg_inference_ms']:.3f} ms/image"
+        )
+        print(
+            f"Postprocess         : "
+            f"{extra_metrics['avg_postprocess_ms']:.3f} ms/image"
+        )
+        print(
+            f"Total               : "
+            f"{extra_metrics['avg_total_ms']:.3f} ms/image"
+        )
+        print(
+            f"Estimated FPS       : "
+            f"{extra_metrics['fps']:.2f}"
+        )
+
+        print("-" * 75)
         print("클래스별 AP (mAP50:95)")
 
         for class_id, ap_value in enumerate(metrics["class_maps"]):
@@ -808,8 +927,9 @@ if __name__ == "__main__":
         # 전처리 Letterbox 크기와 동일
         image_size=640,
 
-        # 확인용 기본값. 전체 학습 때 늘려도 됩니다.
-        epochs=10,
+        # 1차 튜닝: Epoch만 10 -> 30으로 증가
+        # 나머지 조건은 기존 Baseline과 동일하게 유지
+        epochs=30,
 
         # GPU 메모리 부족 또는 CPU 학습이면 4/2로 낮추세요.
         batch=8,

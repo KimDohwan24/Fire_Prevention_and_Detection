@@ -5,7 +5,7 @@
 -- 새로 만드는 DB 는 db/schema.sql 하나면 되고 이 파일은 필요 없다.
 --
 -- 실행:
---   psql -U postgres -d fireguard -f db/migrations/2026-08-10-report-accepted-and-report-log.sql
+--   psql -U postgres -d fireguard -f db/migrations/001-2026-08-10-report-accepted-and-report-log.sql
 --   (또는 pgAdmin Query Tool 에 통째로 붙여넣기)
 --
 -- 전체가 한 트랜잭션이다. 중간에 실패하면 아무것도 반영되지 않는다.

@@ -1,9 +1,9 @@
-
 # prepare_data.py
 
 import os
 import json
 import random
+import shutil
 from pathlib import Path
 
 import cv2
@@ -18,40 +18,43 @@ class YoloDataPreparer:
         val_ratio=0.1,
         test_ratio=0.1,
         image_size=640,
+        clean_output=True,
     ):
 
+        # ============================================================
+        # 1. 원천 이미지 ROOT
+        # ============================================================
 
-        # 원천 이미지 ROOT 경로
         self.src_img_fl = Path(
-            r"C:\Users\admin\Desktop\fire_sample\Sample\01.원천데이터\화재현상\불꽃"
+            r"D:\089.화재 발생 예측 영상_고도화_영상 기반 화재 감시 및 발생 위치 탐지 데이터\3.개방데이터\1.데이터\Training\01.원천데이터\화재현상\이미지\불꽃"
         )
 
-
         self.src_img_sm = Path(
-            r"C:\Users\admin\Desktop\fire_sample\Sample\01.원천데이터\화재현상\연기"
+            r"D:\089.화재 발생 예측 영상_고도화_영상 기반 화재 감시 및 발생 위치 탐지 데이터\3.개방데이터\1.데이터\Training\01.원천데이터\화재현상\이미지\연기"
         )
 
         self.src_img_no = Path(
-            r"C:\Users\admin\Desktop\fire_sample\Sample\01.원천데이터\화재현상\정상"
+            r"D:\089.화재 발생 예측 영상_고도화_영상 기반 화재 감시 및 발생 위치 탐지 데이터\3.개방데이터\1.데이터\Training\01.원천데이터\화재현상\이미지\정상"
         )
 
-        # JSON 라벨 ROOT 경로
+        # ============================================================
+        # 2. JSON 라벨 ROOT
+        # ============================================================
+
         self.src_lbl_fl = Path(
-            r"C:\Users\admin\Desktop\fire_sample\Sample\02.라벨링데이터\화재현상\불꽃"
+            r"D:\TL\화재 현상\이미지\불꽃"
         )
 
         self.src_lbl_sm = Path(
-            r"C:\Users\admin\Desktop\fire_sample\Sample\02.라벨링데이터\화재현상\연기"
+            r"D:\TL\화재 현상\이미지\연기"
         )
 
         self.src_lbl_no = Path(
-            r"C:\Users\admin\Desktop\fire_sample\Sample\02.라벨링데이터\화재현상\정상"
+            r"D:\TL\화재 현상\이미지\정상"
         )
 
-
-
         # ============================================================
-        # 3. 결과 저장 경로
+        # 3. 결과 저장 위치
         # ============================================================
 
         self.dest_root = Path("./dataset")
@@ -66,6 +69,7 @@ class YoloDataPreparer:
         self.test_ratio = test_ratio
 
         self.image_size = image_size
+        self.clean_output = clean_output
 
         ratio_sum = (
             self.train_ratio
@@ -78,9 +82,30 @@ class YoloDataPreparer:
                 "train_ratio + val_ratio + test_ratio의 합은 1이어야 합니다."
             )
 
-        # 결과 재현용
+        # 동일한 실행 시 동일한 분할 결과
         random.seed(42)
         np.random.seed(42)
+
+    # ================================================================
+    # 기존 dataset 삭제
+    # ================================================================
+
+    def _clean_dataset(self):
+
+        if (
+            self.clean_output
+            and self.dest_root.exists()
+        ):
+
+            print()
+            print("=" * 70)
+            print("기존 dataset 폴더 삭제")
+            print(self.dest_root.resolve())
+            print("=" * 70)
+
+            shutil.rmtree(
+                self.dest_root
+            )
 
     # ================================================================
     # 결과 폴더 생성
@@ -88,32 +113,35 @@ class YoloDataPreparer:
 
     def _make_directories(self):
 
-        for phase in ["train", "val", "test"]:
+        for phase in [
+            "train",
+            "val",
+            "test",
+        ]:
 
-            image_dir = (
+            (
                 self.dest_root
                 / "images"
                 / phase
-            )
-
-            label_dir = (
-                self.dest_root
-                / "labels"
-                / phase
-            )
-
-            image_dir.mkdir(
+            ).mkdir(
                 parents=True,
                 exist_ok=True,
             )
 
-            label_dir.mkdir(
+            (
+                self.dest_root
+                / "labels"
+                / phase
+            ).mkdir(
                 parents=True,
                 exist_ok=True,
             )
 
     # ================================================================
     # data.yaml 생성
+    #
+    # normal은 객체 클래스가 아닙니다.
+    # 정상 이미지는 빈 TXT로 학습합니다.
     # ================================================================
 
     def _create_yaml(self):
@@ -135,29 +163,34 @@ class YoloDataPreparer:
             encoding="utf-8",
         ) as file:
 
-            file.write(yaml_content)
+            file.write(
+                yaml_content
+            )
 
         print()
         print("data.yaml 생성 완료")
 
     # ================================================================
-    # 이미지 재귀 검색
+    # 이미지 검색
     #
-    # ROOT 아래의 모든 하위폴더를 탐색합니다.
+    # 모든 하위폴더를 탐색
     #
-    # 그리고 파일명의 마지막 문자가 1인 이미지만 선택합니다.
+    # 파일명의 마지막 문자가 1인 이미지들만 사용
     #
     # 예:
     #
-    # image000001.jpg  -> 선택
-    # image000011.jpg  -> 선택
-    # image000021.jpg  -> 선택
+    # abc000001.jpg O
+    # abc000011.jpg O
+    # abc000021.jpg O
     #
-    # image000002.jpg  -> 제외
-    # image000010.jpg  -> 제외
+    # abc000002.jpg X
+    # abc000010.jpg X
     # ================================================================
 
-    def _find_images(self, root):
+    def _find_images(
+        self,
+        root,
+    ):
 
         extensions = {
             ".jpg",
@@ -168,28 +201,24 @@ class YoloDataPreparer:
 
         images = []
 
+        folder_count = 0
         total_image_count = 0
         selected_count = 0
 
         print()
         print("=" * 70)
-        print("이미지 검색 시작")
+        print("이미지 검색")
         print(root)
         print("=" * 70)
 
-        # ------------------------------------------------------------
-        # os.walk()를 사용해서
-        # 모든 하위 폴더를 재귀적으로 탐색
-        # ------------------------------------------------------------
+        for current_folder, _, files in os.walk(
+            root
+        ):
 
-        for current_folder, _, files in os.walk(root):
+            folder_count += 1
 
             current_folder = Path(
                 current_folder
-            )
-
-            print(
-                f"[폴더 탐색] {current_folder}"
             )
 
             for filename in files:
@@ -199,10 +228,6 @@ class YoloDataPreparer:
                     / filename
                 )
 
-                # ----------------------------------------------------
-                # 이미지 확장자가 아니면 제외
-                # ----------------------------------------------------
-
                 if (
                     file_path.suffix.lower()
                     not in extensions
@@ -211,24 +236,10 @@ class YoloDataPreparer:
 
                 total_image_count += 1
 
-                # ----------------------------------------------------
-                # 확장자를 제외한 파일명
-                #
-                # 예:
-                #
-                # FL_000001.JPG
-                #
-                # stem:
-                #
-                # FL_000001
-                # ----------------------------------------------------
-
+                # 확장자 제외 파일명
                 stem = file_path.stem
 
-                # ----------------------------------------------------
-                # 파일명 마지막 문자가 1인지 검사
-                # ----------------------------------------------------
-
+                # 마지막 문자 1
                 if not stem.endswith("1"):
                     continue
 
@@ -238,59 +249,62 @@ class YoloDataPreparer:
 
                 selected_count += 1
 
-        # 파일 정렬
-        images = sorted(images)
+        images = sorted(
+            images
+        )
 
         print()
         print(
-            f"발견된 전체 이미지 : "
-            f"{total_image_count}장"
+            f"탐색 폴더 수       : "
+            f"{folder_count:,}개"
         )
 
         print(
-            f"마지막 숫자 1 선택 : "
-            f"{selected_count}장"
+            f"전체 이미지        : "
+            f"{total_image_count:,}장"
         )
 
-        # ------------------------------------------------------------
-        # 이미지가 제대로 발견됐는지 예시 출력
-        # ------------------------------------------------------------
+        print(
+            f"끝자리 1 선택      : "
+            f"{selected_count:,}장"
+        )
 
-        if len(images) > 0:
+        if total_image_count > 0:
+
+            print(
+                f"선택 비율          : "
+                f"{selected_count / total_image_count * 100:.2f}%"
+            )
+
+        if images:
 
             print()
-            print("[선택된 이미지 예시]")
+            print("[이미지 예시]")
 
             for image_path in images[:5]:
-
-                print(
-                    image_path
-                )
-
-        else:
-
-            print()
-            print(
-                "[경고] 조건에 맞는 이미지를 찾지 못했습니다."
-            )
-
-            print(
-                "위에 출력된 [폴더 탐색] 경로를 확인해주세요."
-            )
+                print(image_path)
 
         return images
 
     # ================================================================
-    # 영상 그룹 이름 찾기
+    # 영상 그룹 찾기
+    #
+    # 핵심 수정 부분
+    #
+    # JPG 폴더 바로 위의 "경로"를 영상 그룹으로 사용합니다.
     #
     # 예:
     #
-    # 불꽃\0087\JPG\000001.jpg
+    # 불꽃
+    # └─ A
+    #    └─ 0087
+    #       └─ JPG
+    #          └─ frame.jpg
     #
-    # 그룹 = 0087
+    # 그룹 = A/0087
     #
-    # 같은 영상에서 추출한 이미지들이
-    # Train과 Val에 동시에 들어가지 않게 합니다.
+    # 단순히 parts[0]만 사용하지 않기 때문에
+    # 수많은 영상이 4개 그룹으로 합쳐지는 문제가 없습니다.
     # ================================================================
 
     def _get_group_name(
@@ -299,33 +313,69 @@ class YoloDataPreparer:
         img_root,
     ):
 
-        relative = img_path.relative_to(
-            img_root
+        current = (
+            img_path.parent
         )
 
-        parts = relative.parts
+        while current != img_root:
 
-        # 예:
-        #
-        # parts =
-        # (
-        #   "0087",
-        #   "JPG",
-        #   "000001.jpg"
-        # )
-        #
-        # 따라서 parts[0] = 0087
+            if current.name.lower() in [
+                "jpg",
+                "jpeg",
+                "image",
+                "images",
+            ]:
 
-        if len(parts) >= 3:
-            return parts[0]
+                video_folder = (
+                    current.parent
+                )
 
-        # 구조가 예상과 다른 경우
-        return img_path.parent.name
+                try:
+
+                    relative_group = (
+                        video_folder.relative_to(
+                            img_root
+                        )
+                    )
+
+                    return (
+                        relative_group.as_posix()
+                    )
+
+                except ValueError:
+
+                    return (
+                        video_folder.name
+                    )
+
+            current = (
+                current.parent
+            )
+
+        # JPG 폴더가 없는 특수 구조
+        try:
+
+            relative_parent = (
+                img_path.parent.relative_to(
+                    img_root
+                )
+            )
+
+            return (
+                relative_parent.as_posix()
+            )
+
+        except ValueError:
+
+            return (
+                img_path.parent.name
+            )
 
     # ================================================================
-    # Train / Val / Test
+    # 그룹 단위 Train / Val / Test
     #
-    # 영상 그룹 단위로 8 : 1 : 1 분리
+    # 같은 영상의 프레임은
+    # 절대로 서로 다른 세트에 들어가지 않음
     # ================================================================
 
     def _split_groups(
@@ -336,10 +386,6 @@ class YoloDataPreparer:
 
         groups = {}
 
-        # ------------------------------------------------------------
-        # 같은 영상끼리 그룹 생성
-        # ------------------------------------------------------------
-
         for img_path in img_list:
 
             group_name = (
@@ -349,16 +395,27 @@ class YoloDataPreparer:
                 )
             )
 
-            if group_name not in groups:
-                groups[group_name] = []
-
-            groups[group_name].append(
+            groups.setdefault(
+                group_name,
+                [],
+            ).append(
                 img_path
             )
 
         group_names = list(
             groups.keys()
         )
+
+        print()
+        print("[발견된 영상 그룹 예시]")
+
+        for group_name in sorted(
+            group_names
+        )[:20]:
+
+            print(
+                f"  {group_name}"
+            )
 
         random.shuffle(
             group_names
@@ -369,7 +426,7 @@ class YoloDataPreparer:
         )
 
         # ------------------------------------------------------------
-        # 8 : 1 : 1
+        # 그룹 기준 8 : 1 : 1
         # ------------------------------------------------------------
 
         train_count = int(
@@ -382,30 +439,34 @@ class YoloDataPreparer:
             * self.val_ratio
         )
 
-        train_end = train_count
+        train_end = (
+            train_count
+        )
 
         val_end = (
             train_count
             + val_count
         )
 
-        train_groups = group_names[
-            :train_end
-        ]
+        train_groups = (
+            group_names[
+                :train_end
+            ]
+        )
 
-        val_groups = group_names[
-            train_end:val_end
-        ]
+        val_groups = (
+            group_names[
+                train_end:val_end
+            ]
+        )
 
-        test_groups = group_names[
-            val_end:
-        ]
+        test_groups = (
+            group_names[
+                val_end:
+            ]
+        )
 
-        # ------------------------------------------------------------
-        # 데이터가 적을 때
-        # Val/Test에 최소 1그룹씩 배정
-        # ------------------------------------------------------------
-
+        # 그룹이 매우 적은 경우
         if total_groups >= 3:
 
             if (
@@ -426,10 +487,6 @@ class YoloDataPreparer:
                     train_groups.pop()
                 )
 
-        # ------------------------------------------------------------
-        # 그룹별 phase 지정
-        # ------------------------------------------------------------
-
         phase_map = {}
 
         for group in train_groups:
@@ -442,38 +499,130 @@ class YoloDataPreparer:
             phase_map[group] = "test"
 
         print()
-        print("[영상 그룹 분할]")
+        print("=" * 70)
+        print("영상 그룹 분할")
+        print("=" * 70)
 
         print(
-            f"전체 그룹 : {total_groups}"
+            f"전체 그룹 : "
+            f"{total_groups:,}"
         )
 
         print(
-            f"Train     : {len(train_groups)}"
+            f"Train     : "
+            f"{len(train_groups):,}"
         )
 
         print(
-            f"Val       : {len(val_groups)}"
+            f"Val       : "
+            f"{len(val_groups):,}"
         )
 
         print(
-            f"Test      : {len(test_groups)}"
+            f"Test      : "
+            f"{len(test_groups):,}"
         )
 
         return phase_map
 
     # ================================================================
-    # 이미지와 동일한 JSON 찾기
+    # JSON 인덱스 생성
+    #
+    # 이미지 한 장마다 rglob() 하는 방식 제거
+    #
+    # JSON 전체를 처음 한 번만 읽습니다.
+    # ================================================================
+
+    def _build_json_index(
+        self,
+        lbl_root,
+    ):
+
+        print()
+        print("=" * 70)
+        print("JSON 인덱스 생성")
+        print(lbl_root)
+        print("=" * 70)
+
+        json_index = {}
+
+        total_json = 0
+
+        for current_folder, _, files in os.walk(
+            lbl_root
+        ):
+
+            current_folder = Path(
+                current_folder
+            )
+
+            for filename in files:
+
+                if not filename.lower().endswith(
+                    ".json"
+                ):
+                    continue
+
+                json_path = (
+                    current_folder
+                    / filename
+                )
+
+                stem = (
+                    json_path.stem
+                )
+
+                if stem not in json_index:
+                    json_index[stem] = []
+
+                json_index[
+                    stem
+                ].append(
+                    json_path
+                )
+
+                total_json += 1
+
+        duplicate_count = sum(
+            1
+            for paths in json_index.values()
+            if len(paths) > 1
+        )
+
+        print()
+        print(
+            f"전체 JSON           : "
+            f"{total_json:,}개"
+        )
+
+        print(
+            f"고유 파일명         : "
+            f"{len(json_index):,}개"
+        )
+
+        print(
+            f"중복 파일명 종류    : "
+            f"{duplicate_count:,}개"
+        )
+
+        return json_index
+
+    # ================================================================
+    # 이미지에 대응하는 JSON 찾기
+    #
+    # 1순위:
+    # 이미지와 동일한 상대경로 사용
     #
     # 예:
     #
-    # 이미지
+    # IMG:
+    # A/0087/JPG/frame.jpg
     #
-    # 불꽃\0087\JPG\abc.jpg
+    # LABEL:
+    # A/0087/JSON/frame.json
     #
-    # JSON
-    #
-    # 불꽃\0087\JSON\abc.json
+    # 2순위:
+    # JSON 인덱스 사용
     # ================================================================
 
     def _find_json(
@@ -481,81 +630,111 @@ class YoloDataPreparer:
         img_path,
         img_root,
         lbl_root,
+        json_index,
     ):
+
+        # ------------------------------------------------------------
+        # 1. 상대경로 기반 정확한 매칭
+        # ------------------------------------------------------------
 
         try:
 
-            relative_path = (
+            relative = (
                 img_path.relative_to(
                     img_root
                 )
             )
 
+            parts = list(
+                relative.parts
+            )
+
+            converted_parts = []
+
+            for part in parts[:-1]:
+
+                if part.lower() in [
+                    "jpg",
+                    "jpeg",
+                    "image",
+                    "images",
+                ]:
+
+                    converted_parts.append(
+                        "JSON"
+                    )
+
+                else:
+
+                    converted_parts.append(
+                        part
+                    )
+
+            candidate = (
+                lbl_root
+                .joinpath(
+                    *converted_parts
+                )
+                / f"{img_path.stem}.json"
+            )
+
+            if candidate.exists():
+
+                return candidate
+
         except ValueError:
 
-            return None
+            pass
 
-        parts = list(
-            relative_path.parts
+        # ------------------------------------------------------------
+        # 2. 파일명 인덱스
+        # ------------------------------------------------------------
+
+        matches = json_index.get(
+            img_path.stem,
+            [],
         )
 
-        converted_parts = []
+        if len(matches) == 1:
 
-        # ------------------------------------------------------------
-        # JPG 폴더를 JSON으로 변경
-        # ------------------------------------------------------------
-
-        for part in parts[:-1]:
-
-            if part.lower() in [
-                "jpg",
-                "jpeg",
-                "image",
-                "images",
-            ]:
-
-                converted_parts.append(
-                    "JSON"
-                )
-
-            else:
-
-                converted_parts.append(
-                    part
-                )
-
-        json_candidate = (
-            lbl_root
-            .joinpath(
-                *converted_parts
-            )
-            / f"{img_path.stem}.json"
-        )
-
-        # 정확한 위치에서 발견
-        if json_candidate.exists():
-            return json_candidate
-
-        # ------------------------------------------------------------
-        # 구조가 예상과 다르면
-        # 라벨 ROOT 전체에서 같은 파일명을 재귀 검색
-        # ------------------------------------------------------------
-
-        matches = list(
-            lbl_root.rglob(
-                f"{img_path.stem}.json"
-            )
-        )
-
-        if len(matches) > 0:
             return matches[0]
+
+        if len(matches) > 1:
+
+            # 중복 파일명이 있으면
+            # 이미지의 영상 그룹명이 포함된 경로 우선
+            group_name = (
+                self._get_group_name(
+                    img_path,
+                    img_root,
+                )
+            )
+
+            group_parts = [
+                part.lower()
+                for part in Path(
+                    group_name
+                ).parts
+            ]
+
+            for json_path in matches:
+
+                json_lower = [
+                    part.lower()
+                    for part in json_path.parts
+                ]
+
+                if all(
+                    part in json_lower
+                    for part in group_parts
+                ):
+
+                    return json_path
 
         return None
 
     # ================================================================
-    # 이미지 읽기
-    #
-    # Windows 한글 경로 대응
+    # Windows 한글 경로 이미지 읽기
     # ================================================================
 
     def _read_image(
@@ -577,20 +756,12 @@ class YoloDataPreparer:
 
             return image
 
-        except Exception as error:
-
-            print(
-                f"[이미지 읽기 오류] {image_path}"
-            )
-
-            print(error)
+        except Exception:
 
             return None
 
     # ================================================================
-    # 이미지 저장
-    #
-    # Windows 한글 경로 대응
+    # Windows 한글 경로 이미지 저장
     # ================================================================
 
     def _save_image(
@@ -620,9 +791,7 @@ class YoloDataPreparer:
         return True
 
     # ================================================================
-    # bbox 변환
-    #
-    # 원본:
+    # 원본 bbox
     #
     # [x, y, width, height]
     #
@@ -652,44 +821,18 @@ class YoloDataPreparer:
             bbox[3]
         )
 
-        x1 = x
-        y1 = y
-
-        x2 = (
-            x + width
-        )
-
-        y2 = (
-            y + height
-        )
-
         return [
-            x1,
-            y1,
-            x2,
-            y2,
+            x,
+            y,
+            x + width,
+            y + height,
         ]
 
     # ================================================================
     # 640 x 640 Letterbox
     #
-    # 원본 비율을 유지합니다.
-    #
-    # 예:
-    #
-    # 1920 x 1080
-    #
-    # ↓
-    #
-    # 640 x 360
-    #
-    # ↓
-    #
-    # 위/아래 회색 padding
-    #
-    # ↓
-    #
-    # 640 x 640
+    # 비율 유지
+    # 남는 영역은 (114,114,114)
     # ================================================================
 
     def _letterbox(
@@ -702,11 +845,9 @@ class YoloDataPreparer:
             image.shape[:2]
         )
 
-        target_size = self.image_size
-
-        # ------------------------------------------------------------
-        # 축소 비율
-        # ------------------------------------------------------------
+        target_size = (
+            self.image_size
+        )
 
         scale = min(
             target_size / original_width,
@@ -727,10 +868,6 @@ class YoloDataPreparer:
             )
         )
 
-        # ------------------------------------------------------------
-        # 비율 유지 Resize
-        # ------------------------------------------------------------
-
         resized_image = cv2.resize(
             image,
             (
@@ -739,10 +876,6 @@ class YoloDataPreparer:
             ),
             interpolation=cv2.INTER_LINEAR,
         )
-
-        # ------------------------------------------------------------
-        # Padding 크기
-        # ------------------------------------------------------------
 
         pad_width = (
             target_size
@@ -759,8 +892,7 @@ class YoloDataPreparer:
         )
 
         right = (
-            pad_width
-            - left
+            pad_width - left
         )
 
         top = (
@@ -768,14 +900,11 @@ class YoloDataPreparer:
         )
 
         bottom = (
-            pad_height
-            - top
+            pad_height - top
         )
 
-        # ------------------------------------------------------------
-        # 회색 padding
-        # ------------------------------------------------------------
-
+        # YOLO에서 일반적으로 사용하는
+        # 회색 Letterbox
         letterboxed = cv2.copyMakeBorder(
             resized_image,
             top,
@@ -790,15 +919,13 @@ class YoloDataPreparer:
             ),
         )
 
-        # ------------------------------------------------------------
-        # bbox도 Letterbox 위치에 맞게 변경
-        # ------------------------------------------------------------
-
         converted_boxes = []
 
         for box in boxes:
 
-            class_id = box[0]
+            class_id = (
+                box[0]
+            )
 
             x1 = (
                 box[1]
@@ -824,7 +951,6 @@ class YoloDataPreparer:
                 + top
             )
 
-            # 이미지 영역 안으로 제한
             x1 = float(
                 np.clip(
                     x1,
@@ -857,7 +983,6 @@ class YoloDataPreparer:
                 )
             )
 
-            # 잘못된 bbox 제외
             if (
                 x2 <= x1
                 or y2 <= y1
@@ -880,15 +1005,7 @@ class YoloDataPreparer:
         )
 
     # ================================================================
-    # xyxy 픽셀 좌표
-    #
-    # →
-    #
-    # YOLO 좌표
-    #
-    # class x_center y_center width height
-    #
-    # 0 ~ 1 정규화
+    # 픽셀 bbox → YOLO 정규화
     # ================================================================
 
     def _xyxy_to_yolo(
@@ -896,18 +1013,20 @@ class YoloDataPreparer:
         box,
     ):
 
-        class_id = box[0]
+        class_id = (
+            box[0]
+        )
 
         x1 = box[1]
         y1 = box[2]
         x2 = box[3]
         y2 = box[4]
 
-        box_width = (
+        width = (
             x2 - x1
         )
 
-        box_height = (
+        height = (
             y2 - y1
         )
 
@@ -927,15 +1046,14 @@ class YoloDataPreparer:
             class_id,
             x_center / size,
             y_center / size,
-            box_width / size,
-            box_height / size,
+            width / size,
+            height / size,
         ]
 
     # ================================================================
-    # 파일명 중복 방지
+    # 출력 파일명
     #
-    # 서로 다른 영상 폴더에 같은 이미지 이름이 있을 수 있으므로
-    # 상위 폴더 이름까지 출력 파일명에 포함
+    # 경로까지 포함해서 중복 방지
     # ================================================================
 
     def _make_unique_name(
@@ -959,26 +1077,160 @@ class YoloDataPreparer:
             parents
             .replace(" ", "_")
             .replace(".", "_")
+            .replace("/", "_")
+            .replace("\\", "_")
         )
-
-        if parents:
-
-            return (
-                f"{data_type}_"
-                f"{parents}_"
-                f"{image_path.stem}.jpg"
-            )
 
         return (
             f"{data_type}_"
+            f"{parents}_"
             f"{image_path.stem}.jpg"
         )
 
     # ================================================================
-    # 메인 실행
+    # Dataset 이미지/라벨 1:1 검사
+    # ================================================================
+
+    def _check_dataset_pairs(self):
+
+        print()
+        print("=" * 70)
+        print("이미지 / 라벨 1:1 검사")
+        print("=" * 70)
+
+        for phase in [
+            "train",
+            "val",
+            "test",
+        ]:
+
+            image_dir = (
+                self.dest_root
+                / "images"
+                / phase
+            )
+
+            label_dir = (
+                self.dest_root
+                / "labels"
+                / phase
+            )
+
+            image_files = list(
+                image_dir.glob(
+                    "*.jpg"
+                )
+            )
+
+            label_files = list(
+                label_dir.glob(
+                    "*.txt"
+                )
+            )
+
+            image_stems = {
+                file.stem
+                for file in image_files
+            }
+
+            label_stems = {
+                file.stem
+                for file in label_files
+            }
+
+            missing_labels = (
+                image_stems
+                - label_stems
+            )
+
+            missing_images = (
+                label_stems
+                - image_stems
+            )
+
+            print()
+            print(
+                f"[{phase.upper()}]"
+            )
+
+            print(
+                f"이미지 : "
+                f"{len(image_files):,}"
+            )
+
+            print(
+                f"라벨   : "
+                f"{len(label_files):,}"
+            )
+
+            print(
+                f"라벨 없는 이미지 : "
+                f"{len(missing_labels):,}"
+            )
+
+            print(
+                f"이미지 없는 라벨 : "
+                f"{len(missing_images):,}"
+            )
+
+            if (
+                not missing_labels
+                and not missing_images
+            ):
+
+                print(
+                    "결과 : 정상 (1:1)"
+                )
+
+            else:
+
+                print(
+                    "결과 : 불일치"
+                )
+
+                if missing_labels:
+
+                    print(
+                        "라벨 없는 이미지 예시:"
+                    )
+
+                    for name in list(
+                        missing_labels
+                    )[:5]:
+
+                        print(
+                            f"  {name}"
+                        )
+
+                if missing_images:
+
+                    print(
+                        "이미지 없는 라벨 예시:"
+                    )
+
+                    for name in list(
+                        missing_images
+                    )[:5]:
+
+                        print(
+                            f"  {name}"
+                        )
+
+    # ================================================================
+    # 메인 전처리
     # ================================================================
 
     def run_cleaning(self):
+
+        # ------------------------------------------------------------
+        # 기존 dataset 제거
+        # ------------------------------------------------------------
+
+        self._clean_dataset()
+
+        # ------------------------------------------------------------
+        # 새로운 dataset 생성
+        # ------------------------------------------------------------
 
         self._make_directories()
 
@@ -1007,17 +1259,12 @@ class YoloDataPreparer:
 
         ]
 
-        # ============================================================
-        # 전체 카운터
-        # ============================================================
-
         counters = {
             "train": 0,
             "val": 0,
             "test": 0,
         }
 
-        # 클래스별 카운터
         class_counters = {
 
             "fl": {
@@ -1039,10 +1286,13 @@ class YoloDataPreparer:
             },
         }
 
-        skipped_indoor = 0
+        total_selected = 0
+        total_json_found = 0
+        total_outdoor = 0
+
         skipped_json = 0
+        skipped_indoor = 0
         skipped_image = 0
-        skipped_empty_bbox = 0
 
         # ============================================================
         # 불꽃 / 연기 / 정상
@@ -1050,63 +1300,60 @@ class YoloDataPreparer:
 
         for task in tasks:
 
-            img_root = task["img"]
-            lbl_root = task["lbl"]
-            data_type = task["type"]
-            data_name = task["name"]
+            img_root = (
+                task["img"]
+            )
+
+            lbl_root = (
+                task["lbl"]
+            )
+
+            data_type = (
+                task["type"]
+            )
+
+            data_name = (
+                task["name"]
+            )
 
             print()
             print()
             print("=" * 70)
             print(
-                f"{data_name} 데이터 처리 시작"
+                f"{data_name} 처리 시작"
             )
             print("=" * 70)
 
             print(
-                f"이미지 ROOT : {img_root}"
+                f"이미지 : {img_root}"
             )
 
             print(
-                f"라벨 ROOT   : {lbl_root}"
+                f"라벨   : {lbl_root}"
             )
 
             # --------------------------------------------------------
-            # 이미지 ROOT 존재 확인
+            # 폴더 존재 확인
             # --------------------------------------------------------
 
             if not img_root.exists():
 
-                print()
                 print(
-                    "[오류] 이미지 ROOT 폴더가 존재하지 않습니다."
-                )
-
-                print(
-                    img_root
+                    "[오류] 이미지 경로 없음"
                 )
 
                 continue
-
-            # --------------------------------------------------------
-            # 라벨 ROOT 존재 확인
-            # --------------------------------------------------------
 
             if not lbl_root.exists():
 
-                print()
                 print(
-                    "[오류] 라벨 ROOT 폴더가 존재하지 않습니다."
-                )
-
-                print(
-                    lbl_root
+                    "[오류] 라벨 경로 없음"
                 )
 
                 continue
 
             # --------------------------------------------------------
-            # 하위폴더까지 재귀적으로 이미지 검색
+            # 이미지 검색
             # --------------------------------------------------------
 
             all_images = (
@@ -1115,18 +1362,30 @@ class YoloDataPreparer:
                 )
             )
 
-            if len(all_images) == 0:
+            if not all_images:
 
-                print()
                 print(
-                    f"{data_name}: 사용할 이미지가 없습니다."
+                    "사용 이미지 없음"
                 )
 
                 continue
 
+            total_selected += len(
+                all_images
+            )
+
             # --------------------------------------------------------
-            # 영상 그룹 단위
-            # Train / Val / Test 분할
+            # JSON 인덱스
+            # --------------------------------------------------------
+
+            json_index = (
+                self._build_json_index(
+                    lbl_root
+                )
+            )
+
+            # --------------------------------------------------------
+            # 그룹 분할
             # --------------------------------------------------------
 
             phase_map = (
@@ -1135,10 +1394,6 @@ class YoloDataPreparer:
                     img_root,
                 )
             )
-
-            # --------------------------------------------------------
-            # 영상 그룹별 이미지 묶기
-            # --------------------------------------------------------
 
             grouped_images = {}
 
@@ -1151,25 +1406,21 @@ class YoloDataPreparer:
                     )
                 )
 
-                if group_name not in grouped_images:
-
-                    grouped_images[
-                        group_name
-                    ] = []
-
-                grouped_images[
-                    group_name
-                ].append(
+                grouped_images.setdefault(
+                    group_name,
+                    [],
+                ).append(
                     img_path
                 )
 
             # ========================================================
-            # 그룹 처리
+            # 영상 그룹 처리
             # ========================================================
 
-            for group_name, images in (
-                grouped_images.items()
-            ):
+            for (
+                group_name,
+                images,
+            ) in grouped_images.items():
 
                 phase = (
                     phase_map.get(
@@ -1184,21 +1435,58 @@ class YoloDataPreparer:
                     images
                 )
 
+                group_total = len(
+                    selected_images
+                )
+
                 print()
                 print(
                     f"[{phase.upper()}] "
-                    f"그룹 {group_name} "
-                    f"- {len(selected_images)}장"
+                    f"{group_name}"
+                )
+
+                print(
+                    f"처리 대상 : "
+                    f"{group_total:,}장"
                 )
 
                 # ====================================================
-                # 이미지 개별 처리
+                # 이미지 처리
                 # ====================================================
 
-                for img_path in selected_images:
+                for (
+                    image_index,
+                    img_path,
+                ) in enumerate(
+                    selected_images,
+                    start=1,
+                ):
 
                     # ------------------------------------------------
-                    # JSON 찾기
+                    # 100장마다 진행률 표시
+                    # ------------------------------------------------
+
+                    if (
+                        image_index == 1
+                        or image_index % 100 == 0
+                        or image_index == group_total
+                    ):
+
+                        progress = (
+                            image_index
+                            / group_total
+                            * 100
+                        )
+
+                        print(
+                            f"[{phase.upper()}] "
+                            f"{image_index:,}/"
+                            f"{group_total:,} "
+                            f"({progress:.1f}%)"
+                        )
+
+                    # ------------------------------------------------
+                    # JSON
                     # ------------------------------------------------
 
                     json_path = (
@@ -1206,18 +1494,13 @@ class YoloDataPreparer:
                             img_path,
                             img_root,
                             lbl_root,
+                            json_index,
                         )
                     )
 
                     if json_path is None:
 
                         skipped_json += 1
-
-                        print(
-                            f"[JSON 없음] "
-                            f"{img_path}"
-                        )
-
                         continue
 
                     # ------------------------------------------------
@@ -1236,21 +1519,15 @@ class YoloDataPreparer:
                                 file
                             )
 
-                    except Exception as error:
+                    except Exception:
 
                         skipped_json += 1
-
-                        print(
-                            f"[JSON 읽기 오류] "
-                            f"{json_path}"
-                        )
-
-                        print(error)
-
                         continue
 
+                    total_json_found += 1
+
                     # ------------------------------------------------
-                    # 실외 데이터만 사용
+                    # 실외만 사용
                     # ------------------------------------------------
 
                     attributes = (
@@ -1260,17 +1537,19 @@ class YoloDataPreparer:
                         )
                     )
 
-                    inout = (
+                    inout = str(
                         attributes.get(
-                            "inout"
+                            "inout",
+                            "",
                         )
-                    )
+                    ).strip().lower()
 
                     if inout != "out":
 
                         skipped_indoor += 1
-
                         continue
+
+                    total_outdoor += 1
 
                     # ------------------------------------------------
                     # 이미지 읽기
@@ -1285,23 +1564,16 @@ class YoloDataPreparer:
                     if image is None:
 
                         skipped_image += 1
-
                         continue
 
                     # ------------------------------------------------
-                    # Bounding Box
+                    # bbox
                     # ------------------------------------------------
 
                     boxes = []
 
-                    # 정상 이미지는 bbox를 만들지 않습니다.
+                    # 정상은 bbox 없음
                     if data_type != "none":
-
-                        # --------------------------------------------
-                        # category_index
-                        # →
-                        # category_name
-                        # --------------------------------------------
 
                         category_dict = {}
 
@@ -1327,10 +1599,6 @@ class YoloDataPreparer:
                                 category_index
                             ] = category_name
 
-                        # --------------------------------------------
-                        # annotation 처리
-                        # --------------------------------------------
-
                         for annotation in data.get(
                             "annotations",
                             [],
@@ -1349,20 +1617,12 @@ class YoloDataPreparer:
                                 )
                             ).lower()
 
-                            # ----------------------------------------
-                            # Fire
-                            # ----------------------------------------
-
                             if category_name in [
                                 "fl",
                                 "fire",
                             ]:
 
                                 class_id = 0
-
-                            # ----------------------------------------
-                            # Smoke
-                            # ----------------------------------------
 
                             elif category_name in [
                                 "sm",
@@ -1404,17 +1664,8 @@ class YoloDataPreparer:
                                 ]
                             )
 
-                        # --------------------------------------------
-                        # 화재/연기 이미지인데 bbox가 하나도 없으면
-                        # 경고용 카운터 증가
-                        # --------------------------------------------
-
-                        if len(boxes) == 0:
-
-                            skipped_empty_bbox += 1
-
                     # ------------------------------------------------
-                    # 640 x 640 Letterbox
+                    # 640x640 Letterbox
                     # ------------------------------------------------
 
                     image, boxes = (
@@ -1425,21 +1676,17 @@ class YoloDataPreparer:
                     )
 
                     # ------------------------------------------------
-                    # YOLO 정규화
+                    # YOLO 좌표
                     # ------------------------------------------------
 
                     yolo_boxes = []
 
                     for box in boxes:
 
-                        yolo_box = (
+                        yolo_boxes.append(
                             self._xyxy_to_yolo(
                                 box
                             )
-                        )
-
-                        yolo_boxes.append(
-                            yolo_box
                         )
 
                     # ------------------------------------------------
@@ -1460,20 +1707,12 @@ class YoloDataPreparer:
                         ).stem
                     )
 
-                    # ------------------------------------------------
-                    # 이미지 저장 경로
-                    # ------------------------------------------------
-
                     dest_img = (
                         self.dest_root
                         / "images"
                         / phase
                         / output_filename
                     )
-
-                    # ------------------------------------------------
-                    # 라벨 저장 경로
-                    # ------------------------------------------------
 
                     dest_lbl = (
                         self.dest_root
@@ -1486,26 +1725,16 @@ class YoloDataPreparer:
                     # 이미지 저장
                     # ------------------------------------------------
 
-                    success = (
-                        self._save_image(
-                            dest_img,
-                            image,
-                        )
-                    )
-
-                    if not success:
+                    if not self._save_image(
+                        dest_img,
+                        image,
+                    ):
 
                         skipped_image += 1
-
-                        print(
-                            f"[이미지 저장 실패] "
-                            f"{dest_img}"
-                        )
-
                         continue
 
                     # ------------------------------------------------
-                    # YOLO TXT 생성
+                    # YOLO TXT
                     # ------------------------------------------------
 
                     lines = []
@@ -1516,24 +1745,16 @@ class YoloDataPreparer:
                             box[0]
                         )
 
-                        x_center = box[1]
-                        y_center = box[2]
-                        bbox_width = box[3]
-                        bbox_height = box[4]
-
                         lines.append(
                             f"{class_id} "
-                            f"{x_center:.6f} "
-                            f"{y_center:.6f} "
-                            f"{bbox_width:.6f} "
-                            f"{bbox_height:.6f}"
+                            f"{box[1]:.6f} "
+                            f"{box[2]:.6f} "
+                            f"{box[3]:.6f} "
+                            f"{box[4]:.6f}"
                         )
 
-                    # ------------------------------------------------
-                    # 정상 이미지는 boxes가 없기 때문에
-                    # 자동으로 빈 TXT 파일 생성
-                    # ------------------------------------------------
-
+                    # 정상은 lines가 비어 있으므로
+                    # 빈 TXT가 생성됨
                     with open(
                         dest_lbl,
                         "w",
@@ -1546,10 +1767,6 @@ class YoloDataPreparer:
                             )
                         )
 
-                    # ------------------------------------------------
-                    # 카운터 증가
-                    # ------------------------------------------------
-
                     counters[
                         phase
                     ] += 1
@@ -1561,16 +1778,22 @@ class YoloDataPreparer:
                     ] += 1
 
         # ============================================================
-        # YAML 생성
+        # YAML
         # ============================================================
 
         self._create_yaml()
 
         # ============================================================
-        # 결과 출력
+        # 이미지 / 라벨 검사
         # ============================================================
 
-        total = (
+        self._check_dataset_pairs()
+
+        # ============================================================
+        # 최종 통계
+        # ============================================================
+
+        total_saved = (
             counters["train"]
             + counters["val"]
             + counters["test"]
@@ -1583,42 +1806,64 @@ class YoloDataPreparer:
         print("=" * 70)
 
         print()
-        print("[전체 데이터]")
+        print("[처리 과정]")
 
         print(
-            f"전체  : {total}장"
+            f"끝자리 1 선택 : "
+            f"{total_selected:,}장"
         )
 
         print(
-            f"Train : {counters['train']}장"
+            f"JSON 발견     : "
+            f"{total_json_found:,}장"
         )
 
         print(
-            f"Val   : {counters['val']}장"
+            f"실외(out)     : "
+            f"{total_outdoor:,}장"
         )
 
         print(
-            f"Test  : {counters['test']}장"
+            f"최종 저장     : "
+            f"{total_saved:,}장"
         )
 
-        if total > 0:
+        print()
+        print("[Train / Val / Test]")
+
+        print(
+            f"Train : "
+            f"{counters['train']:,}장"
+        )
+
+        print(
+            f"Val   : "
+            f"{counters['val']:,}장"
+        )
+
+        print(
+            f"Test  : "
+            f"{counters['test']:,}장"
+        )
+
+        if total_saved > 0:
 
             print()
-            print("[실제 비율]")
+            print("[실제 이미지 비율]")
 
             print(
                 f"Train : "
-                f"{counters['train'] / total * 100:.2f}%"
+                f"{counters['train'] / total_saved * 100:.2f}%"
             )
 
             print(
                 f"Val   : "
-                f"{counters['val'] / total * 100:.2f}%"
+                f"{counters['val'] / total_saved * 100:.2f}%"
             )
 
             print(
                 f"Test  : "
-                f"{counters['test'] / total * 100:.2f}%"
+                f"{counters['test'] / total_saved * 100:.2f}%"
             )
 
         print()
@@ -1626,17 +1871,17 @@ class YoloDataPreparer:
 
         print(
             f"Train : "
-            f"{class_counters['fl']['train']}장"
+            f"{class_counters['fl']['train']:,}"
         )
 
         print(
             f"Val   : "
-            f"{class_counters['fl']['val']}장"
+            f"{class_counters['fl']['val']:,}"
         )
 
         print(
             f"Test  : "
-            f"{class_counters['fl']['test']}장"
+            f"{class_counters['fl']['test']:,}"
         )
 
         print()
@@ -1644,17 +1889,17 @@ class YoloDataPreparer:
 
         print(
             f"Train : "
-            f"{class_counters['sm']['train']}장"
+            f"{class_counters['sm']['train']:,}"
         )
 
         print(
             f"Val   : "
-            f"{class_counters['sm']['val']}장"
+            f"{class_counters['sm']['val']:,}"
         )
 
         print(
             f"Test  : "
-            f"{class_counters['sm']['test']}장"
+            f"{class_counters['sm']['test']:,}"
         )
 
         print()
@@ -1662,120 +1907,103 @@ class YoloDataPreparer:
 
         print(
             f"Train : "
-            f"{class_counters['none']['train']}장"
+            f"{class_counters['none']['train']:,}"
         )
 
         print(
             f"Val   : "
-            f"{class_counters['none']['val']}장"
+            f"{class_counters['none']['val']:,}"
         )
 
         print(
             f"Test  : "
-            f"{class_counters['none']['test']}장"
+            f"{class_counters['none']['test']:,}"
         )
 
         print()
-        print("[제외 / 확인 데이터]")
+        print("[제외 데이터]")
 
         print(
-            f"실내 데이터        : "
-            f"{skipped_indoor}장"
+            f"JSON 없음/오류 : "
+            f"{skipped_json:,}"
         )
 
         print(
-            f"JSON 없음/오류     : "
-            f"{skipped_json}장"
+            f"실내 제외      : "
+            f"{skipped_indoor:,}"
         )
 
         print(
-            f"이미지 읽기/저장 오류 : "
-            f"{skipped_image}장"
-        )
-
-        print(
-            f"화재/연기 bbox 없음 : "
-            f"{skipped_empty_bbox}장"
+            f"이미지 오류    : "
+            f"{skipped_image:,}"
         )
 
         print()
-        print("[현재 설정]")
-
-        print(
-            "이미지 검색 : "
-            "모든 하위 폴더 재귀 탐색"
-        )
+        print("[전처리 설정]")
 
         print(
             "이미지 선택 : "
-            "파일명 마지막 문자가 1인 이미지"
+            "파일명 마지막 문자가 1"
         )
 
         print(
-            "분할 방식   : "
-            "영상 폴더 단위 Train/Val/Test"
+            "영상 분할   : "
+            "JPG 폴더 상위 경로 기준"
         )
 
         print(
             "분할 비율   : "
-            "8 : 1 : 1"
-        )
-
-        print(
-            "사용 데이터 : "
-            "실외(out)"
-        )
-
-        print(
-            "이미지 크기 : "
-            f"{self.image_size} x {self.image_size}"
+            "Train / Val / Test = 8 : 1 : 1"
         )
 
         print(
             "Resize      : "
-            "Letterbox"
+            "640 x 640 Letterbox"
         )
 
         print(
-            "증강        : "
-            "없음"
+            "Padding     : "
+            "(114, 114, 114)"
         )
 
         print(
-            "정상 라벨   : "
-            "빈 TXT"
+            "증강        : 없음"
+        )
+
+        print(
+            "정상 이미지 : 빈 TXT 라벨"
         )
 
         print()
-        print("[데이터셋 저장 위치]")
-
         print(
-            self.dest_root.resolve()
+            f"Dataset 위치 : "
+            f"{self.dest_root.resolve()}"
         )
-
-        print()
-        print("=" * 70)
 
 
 # ================================================================
-# 프로그램 실행
+# 실행
 # ================================================================
 
 if __name__ == "__main__":
 
     preparer = YoloDataPreparer(
 
-        # Train
+        # Train 80%
         train_ratio=0.8,
 
-        # Validation
+        # Validation 10%
         val_ratio=0.1,
 
-        # Test
+        # Test 10%
         test_ratio=0.1,
 
-        # Letterbox 크기
+        # 최종 크기
         image_size=640,
+
+        # 기존 dataset 삭제 후 새로 생성
+        clean_output=True,
     )
 
     preparer.run_cleaning()
+

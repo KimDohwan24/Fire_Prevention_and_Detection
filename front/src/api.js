@@ -106,6 +106,27 @@ export const authApi = {
     return await request('/auth/me');
   },
 
+  findId: async (user_name, user_email) => {
+    return await request('/auth/find-id', {
+      method: 'POST',
+      body: JSON.stringify({ user_name, user_email }),
+    });
+  },
+
+  requestPasswordReset: async (user_id, user_name, user_email) => {
+    return await request('/auth/password-reset/request', {
+      method: 'POST',
+      body: JSON.stringify({ user_id, user_name, user_email }),
+    });
+  },
+
+  confirmPasswordReset: async (user_id, code, user_pw) => {
+    return await request('/auth/password-reset/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ user_id, code, user_pw }),
+    });
+  },
+
   logout: () => {
     setAccessToken(null);
     setCurrentUserToStorage(null);
@@ -156,6 +177,12 @@ export const cctvApi = {
     return await request(`/cctvs/${cctv_no}`, {
       method: 'PUT',
       body: JSON.stringify(cctvData),
+    });
+  },
+
+  delete: async (cctv_no) => {
+    return await request(`/cctvs/${cctv_no}`, {
+      method: 'DELETE',
     });
   },
 };

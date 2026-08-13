@@ -6,9 +6,9 @@ import {
   Activity, UserCheck, Search, ShieldAlert, X, Clock,
   Film, AlertCircle, Info, FileText, CheckCircle2, Play,
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
-  BadgeCheck, ChevronRight, Edit3, MapPin
+  BadgeCheck, ChevronRight, Edit3, MapPin, Loader2
 } from 'lucide-react';
-import { cctvApi, userApi, eventApi, reportApi } from '../api';
+import { authApi, cctvApi, userApi, eventApi, reportApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 
 // 초기 CCTV 데이터
@@ -18,6 +18,10 @@ const AdminPage = () => {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState(null);
   const [activeTab, setActiveTab] = useState('cctv'); // 'cctv' | 'users' | 'logs'
+
+  // 로딩/버퍼링 상태 관리
+  const [isCctvLoading, setIsCctvLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 데이터 상태 (실시간 백엔드 DB 연동)
   const [cctvList, setCctvList] = useState(INITIAL_CCTVS);
@@ -57,23 +61,8 @@ const AdminPage = () => {
       navigate('/login');
     }
 
-    // 1. 백엔드 CCTV 목록 로드
-    cctvApi.list().then(res => {
-      const items = res?.items || res || [];
-      if (Array.isArray(items) && items.length > 0) {
-        const mapped = items.map(item => ({
-          id: `CCTV-${String(item.cctv_no).padStart(2, '0')}`,
-          cctv_no: item.cctv_no,
-          name: item.cctv_name,
-          location: item.cctv_location,
-          status: item.cctv_status === 'ACTIVE' ? 'normal' : item.cctv_status === 'INACTIVE' ? 'offline' : 'fire',
-          lat: parseFloat(item.cctv_lat) || 37.5665,
-          lng: parseFloat(item.cctv_lng) || 126.9780,
-          stream_url: item.cctv_stream_url
-        }));
-        setCctvList(mapped);
-      }
-    }).catch(err => console.warn('CCTV 백엔드 로드 오류:', err));
+    // 1. 백엔드 CCTV 목록 로드 함수
+    fetchCctvList();
 
     // 2. 백엔드 사용자 목록 로드
     userApi.list().then(res => {
@@ -123,8 +112,33 @@ const AdminPage = () => {
     }).catch(err => console.warn('감사 로그 로드 오류:', err));
   }, [navigate]);
 
+  const fetchCctvList = async () => {
+    setIsCctvLoading(true);
+    try {
+      const res = await cctvApi.list();
+      const items = res?.items || res || [];
+      if (Array.isArray(items)) {
+        const mapped = items.map(item => ({
+          id: `CCTV-${String(item.cctv_no).padStart(2, '0')}`,
+          cctv_no: item.cctv_no,
+          name: item.cctv_name,
+          location: item.cctv_location,
+          status: item.cctv_status === 'ACTIVE' ? 'normal' : item.cctv_status === 'INACTIVE' ? 'offline' : 'fire',
+          lat: parseFloat(item.cctv_lat) || 37.5665,
+          lng: parseFloat(item.cctv_lng) || 126.9780,
+          stream_url: item.cctv_stream_url
+        }));
+        setCctvList(mapped);
+      }
+    } catch (err) {
+      console.warn('CCTV 백엔드 로드 오류:', err);
+    } finally {
+      setIsCctvLoading(false);
+    }
+  };
+
   const handleLogout = () => {
-    localStorage.removeItem('currentUser');
+    authApi.logout();
     navigate('/login');
   };
 
@@ -147,57 +161,103 @@ const AdminPage = () => {
   };
 
   // CCTV 등록
-  const handleAddCCTV = (e) => {
+  const handleAddCCTV = async (e) => {
     e.preventDefault();
-    if (!newCctvName.trim()) return;
-    const newId = `CCTV-0${cctvList.length + 1}`;
-    const newCamera = {
-      id: newId,
-      name: newCctvName,
-      location: newCctvLoc || '위치 미지정',
-      status: newCctvStatus || 'normal',
-      lat: parseFloat(newCctvLat) || 37.5665,
-      lng: parseFloat(newCctvLng) || 126.9780,
-    };
-    setCctvList([...cctvList, newCamera]);
-    setNewCctvName('');
-    setNewCctvLoc('');
-    setNewCctvStatus('normal');
-    setNewCctvLat('37.5665');
-    setNewCctvLng('126.9780');
-    setIsAddingCctv(false);
-    alert(`[${newCamera.name}] 카메라 (위도: ${newCamera.lat}, 경도: ${newCamera.lng})가 성공적으로 등록되었습니다.`);
+    if (!newCctvName.trim() || isSubmitting) return;
+
+    setIsSubmitting(true);
+    try {
+      const statusMapToApi = {
+        normal: 'ACTIVE',
+        offline: 'INACTIVE',
+        fire: 'FIRE',
+      };
+
+      const payload = {
+        cctv_name: newCctvName,
+        cctv_location: newCctvLoc || '위치 미지정',
+        cctv_status: statusMapToApi[newCctvStatus] || 'ACTIVE',
+        cctv_lat: parseFloat(newCctvLat) || 37.5665,
+        cctv_lng: parseFloat(newCctvLng) || 126.9780,
+      };
+
+      await cctvApi.create(payload);
+      await fetchCctvList();
+
+      setNewCctvName('');
+      setNewCctvLoc('');
+      setNewCctvStatus('normal');
+      setNewCctvLat('37.5665');
+      setNewCctvLng('126.9780');
+      setIsAddingCctv(false);
+      alert(`[${payload.cctv_name}] 카메라가 성공적으로 등록되었습니다.`);
+    } catch (err) {
+      console.error('CCTV 등록 실패:', err);
+      alert(`CCTV 등록 실패: ${err.message || '오류가 발생했습니다.'}`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // CCTV 정보 수정
-  const handleUpdateCCTV = (e) => {
+  const handleUpdateCCTV = async (e) => {
     e.preventDefault();
-    if (!editingCctv || !editingCctv.name.trim()) return;
-    setCctvList(prev => prev.map(c => c.id === editingCctv.id ? editingCctv : c));
-    alert(`[${editingCctv.name}] CCTV 정보가 성공적으로 수정되었습니다.`);
-    setEditingCctv(null);
+    if (!editingCctv || !editingCctv.name.trim() || isSubmitting) return;
+
+    setIsSubmitting(true);
+    try {
+      const statusMapToApi = {
+        normal: 'ACTIVE',
+        offline: 'INACTIVE',
+        fire: 'FIRE',
+      };
+
+      const payload = {
+        cctv_name: editingCctv.name,
+        cctv_location: editingCctv.location || '위치 미지정',
+        cctv_status: statusMapToApi[editingCctv.status] || 'ACTIVE',
+        cctv_lat: parseFloat(editingCctv.lat) || 37.5665,
+        cctv_lng: parseFloat(editingCctv.lng) || 126.9780,
+      };
+
+      if (editingCctv.cctv_no) {
+        await cctvApi.update(editingCctv.cctv_no, payload);
+      }
+
+      await fetchCctvList();
+      alert(`[${editingCctv.name}] CCTV 정보가 성공적으로 수정되었습니다.`);
+      setEditingCctv(null);
+    } catch (err) {
+      console.error('CCTV 수정 실패:', err);
+      alert(`CCTV 정보 수정 실패: ${err.message || '오류가 발생했습니다.'}`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // CCTV 삭제
-  const handleDeleteCCTV = (id) => {
-    if (confirm('해당 CCTV를 모니터링 목록에서 삭제하시겠습니까?')) {
-      setCctvList(cctvList.filter(c => c.id !== id));
+  const handleDeleteCCTV = async (cctv) => {
+    if (isSubmitting) return;
+    if (confirm(`[${cctv.name}] CCTV를 모니터링 목록에서 삭제하시겠습니까?`)) {
+      setIsSubmitting(true);
+      try {
+        if (cctv.cctv_no) {
+          await cctvApi.delete(cctv.cctv_no);
+        }
+        await fetchCctvList();
+        alert(`[${cctv.name}] CCTV가 성공적으로 삭제되었습니다.`);
+      } catch (err) {
+        console.error('CCTV 삭제 실패:', err);
+        alert(`CCTV 삭제 실패: ${err.message || '오류가 발생했습니다.'}`);
+      } finally {
+        setIsSubmitting(false);
+      }
     }
   };
 
   // 회원 권한 토글
-  const toggleRole = (userId) => {
-    setUserList(prev => prev.map(u => {
-      if (u.id === userId) {
-        const nextRole = u.role === 'admin' ? 'user' : 'admin';
-        const updated = { ...u, role: nextRole };
-        if (selectedUser && selectedUser.id === userId) {
-          setSelectedUser(updated);
-        }
-        return updated;
-      }
-      return u;
-    }));
+  const toggleRole = () => {
+    alert('회원 권한 변경 API가 아직 연동되지 않아 권한은 변경되지 않았습니다.');
   };
 
   // 회원 승인
@@ -362,7 +422,23 @@ const AdminPage = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-hairline">
-                    {cctvList.map(cctv => (
+                    {isCctvLoading ? (
+                      <tr>
+                        <td colSpan="5" className="p-8 text-center text-mute">
+                          <div className="flex items-center justify-center gap-2 font-medium">
+                            <Loader2 className="w-5 h-5 animate-spin text-amber-500" />
+                            <span>CCTV 데이터 수신 대기 중... (버퍼링)</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : cctvList.length === 0 ? (
+                      <tr>
+                        <td colSpan="5" className="p-8 text-center text-mute font-medium">
+                          등록된 CCTV 자산이 없습니다. 상단의 신규 자산 등록 버튼을 클릭해주세요.
+                        </td>
+                      </tr>
+                    ) : (
+                      cctvList.map(cctv => (
                       <tr key={cctv.id} className="hover:bg-surface-soft/50 transition-colors">
                         <td className="p-4 font-mono font-bold text-ink">{cctv.id}</td>
                         <td className="p-4 font-semibold text-ink">{cctv.name}</td>
@@ -408,7 +484,7 @@ const AdminPage = () => {
                             <span>수정하기</span>
                           </button>
                           <button
-                            onClick={() => handleDeleteCCTV(cctv.id)}
+                            onClick={() => handleDeleteCCTV(cctv)}
                             className="px-2.5 py-1 text-xs font-semibold text-terminal-red bg-terminal-red/10 hover:bg-terminal-red/20 border border-terminal-red/20 rounded-lg transition-colors cursor-pointer inline-flex items-center gap-1"
                             title="CCTV 삭제"
                           >
@@ -417,7 +493,8 @@ const AdminPage = () => {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                    ))
+                  )}
                   </tbody>
                 </table>
               </div>
@@ -1081,10 +1158,20 @@ const AdminPage = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 h-10 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-5 h-10 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5"
                 >
-                  <CheckCircle2 className="w-4 h-4" />
-                  수정사항 저장하기
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>수정사항 저장 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>수정사항 저장하기</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -1211,10 +1298,20 @@ const AdminPage = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 h-10 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-5 h-10 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5"
                 >
-                  <PlusCircle className="w-4 h-4" />
-                  신규 CCTV 등록 완료
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>신규 CCTV 등록 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <PlusCircle className="w-4 h-4" />
+                      <span>신규 CCTV 등록 완료</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
