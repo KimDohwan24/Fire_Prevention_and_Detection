@@ -128,3 +128,42 @@ def update_user(user_no: int):
     if affected == 0:
         raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
     return jsonify({"user_no": user_no})
+
+
+@bp.put("/password")
+@login_required
+def change_password():
+    body = request.get_json(silent=True) or {}
+    current_password = body.get("current_password")
+    new_password = body.get("new_password")
+
+    if not current_password or not new_password:
+        raise ApiError(400, "BAD_REQUEST", "현재 비밀번호와 새 비밀번호를 모두 입력해주세요.")
+
+    # 현재 로그인된 사용자의 user_no 가져오기 (g.user 활용)
+    user_no = g.user.get("user_no")
+
+    # DB에서 현재 사용자의 아이디와 저장된 비밀번호 해시 조회
+    user = db.query_one("SELECT user_id, user_pw FROM users WHERE user_no = %s", (user_no,))
+    if not user:
+        raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+
+    # 1. 현재 비밀번호 검증 (bcrypt.checkpw 사용)
+    if not bcrypt.checkpw(current_password.encode(), user["user_pw"].encode()):
+        raise ApiError(400, "INVALID_CURRENT_PASSWORD", "현재 비밀번호가 일치하지 않습니다.")
+
+    # 2. 새 비밀번호 작성규칙 검증 (기존 유틸 함수 활용)
+    validate_password(new_password, user_id=user["user_id"])
+
+    # 3. 새 비밀번호 해시화 및 DB 업데이트
+    new_pw_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    db.execute(
+        """
+        UPDATE users 
+        SET user_pw = %s, user_updated_at = now() 
+        WHERE user_no = %s
+        """,
+        (new_pw_hash, user_no),
+    )
+
+    return jsonify({"message": "비밀번호가 성공적으로 변경되었습니다."})

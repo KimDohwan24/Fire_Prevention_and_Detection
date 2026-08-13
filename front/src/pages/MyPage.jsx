@@ -293,26 +293,54 @@ export default function MyPage() {
     }
   };
 
-  // 비밀번호 변경 저장
-  const handleSavePassword = (e) => {
-    e.preventDefault();
-    if (!pwForm.currentPassword) {
-      alert('현재 비밀번호를 입력해주세요.');
-      return;
-    }
-    if (pwForm.newPassword.length < 4) {
-      alert('새 비밀번호는 최소 4자리 이상이어야 합니다.');
-      return;
-    }
-    if (pwForm.newPassword !== pwForm.confirmPassword) {
-      alert('새 비밀번호와 비밀번호 확인이 일치하지 않습니다.');
+ // 비밀번호 변경 저장
+const handleSavePassword = async (e) => {
+  e.preventDefault();
+  if (!pwForm.currentPassword) {
+    alert('현재 비밀번호를 입력해주세요.');
+    return;
+  }
+  if (pwForm.newPassword.length < 4) {
+    alert('새 비밀번호는 최소 4자리 이상이어야 합니다.');
+    return;
+  }
+  if (pwForm.newPassword !== pwForm.confirmPassword) {
+    alert('새 비밀번호와 비밀번호 확인이 일치하지 않습니다.');
+    return;
+  }
+
+  // 스토리지에 저장된 'access_token' 가져오기
+  const token = localStorage.getItem('access_token');
+
+  try {
+    const response = await fetch('/api/users/password', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}` // 토큰 포함
+      },
+      body: JSON.stringify({
+        current_password: pwForm.currentPassword,
+        new_password: pwForm.newPassword
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      alert(data.message || '비밀번호 변경에 실패했습니다.');
       return;
     }
 
     setIsChangePasswordOpen(false);
     setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
     setIsPasswordChangeNoticeOpen(true);
-  };
+
+  } catch (error) {
+    console.error('Password change error:', error);
+    alert('서버 통신 중 오류가 발생했습니다.');
+  }
+};
 
   // 설정을 변경할 때의 핸들러
   const toggleSetting = (key) => {
@@ -1222,10 +1250,10 @@ export default function MyPage() {
               <AlertTriangle className="h-6 w-6" />
             </div>
             <h3 id="password-change-notice-title" className="text-heading-md font-bold text-ink">
-              비밀번호 변경 기능 준비 중
+              비밀번호가 정상적으로 변경되었습니다.
             </h3>
             <p className="mt-3 text-body-sm leading-6 text-body">
-              비밀번호 변경 API가 아직 연동되지 않아 입력하신 내용은 저장되지 않았습니다.
+
             </p>
             <button
               type="button"
