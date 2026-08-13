@@ -304,6 +304,100 @@ def test_frames_inside_window_still_confirm(client, monkeypatch):
     assert body["event_detected_frames"] == 3
 
 
+# ---------- 판정 기준의 갱신 시점 ----------
+# 임계값과 창 길이는 둘 다 config 에서 매 프레임 읽는다. 하나만 이벤트 행에 박제돼 있으면
+# 설정을 바꿔 재시작했을 때 진행 중인 이벤트의 판정 기준이 반쪽만 바뀐다
+# (2026-08-13 event 8: 임계값 30을 유지한 채 창만 늘어나 147.8초 만에 확정됐다).
+
+def test_threshold_change_applies_to_in_flight_event(client, monkeypatch):
+    """진행 중인 이벤트에도 바뀐 임계값이 즉시 적용된다 — 창과 같은 생애주기."""
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 5)
+    post_frame(client, captured_at="2026-08-08T14:30:00")
+    body = post_frame(client, captured_at="2026-08-08T14:30:10").get_json()
+    assert body["event_status"] == "PENDING"
+    assert body["event_threshold_frames"] == 5
+
+    # 설정을 낮추고 재시작한 상황 — 다음 프레임부터 새 기준으로 판정한다
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 3)
+    body = post_frame(client, captured_at="2026-08-08T14:30:20").get_json()
+    assert body["event_threshold_frames"] == 3
+    assert body["event_status"] == "CONFIRMED"
+    assert body["event_detected_frames"] == 3
+
+
+def test_event_row_reflects_current_threshold(client, monkeypatch):
+    """event_threshold_frames 컬럼은 '시작 당시 기준'이 아니라 '현재 적용 중인 기준'이다."""
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 9)
+    ev_no = post_frame(client, captured_at="2026-08-08T14:30:00").get_json()["event_no"]
+    assert get_event_row(ev_no)["event_threshold_frames"] == 9
+
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 4)
+    post_frame(client, captured_at="2026-08-08T14:30:10")
+    assert get_event_row(ev_no)["event_threshold_frames"] == 4
+
+
+# 2026-08-13 event 8 의 실제 프레임 시각. 30장이 09:41:10 ~ 09:43:38(147.8초)에 걸쳐 있는데
+# 창이 60초로만 동작했다면 결코 한 이벤트가 될 수 없다.
+EVENT8_FRAME_TIMES = [
+    "09:41:10.717464", "09:41:14.605383", "09:41:18.231717", "09:41:21.774414",
+    "09:41:25.257082", "09:41:28.815681", "09:41:32.556020", "09:41:36.147012",
+    "09:41:39.785431", "09:41:43.496584", "09:41:47.363057", "09:41:52.622522",
+    "09:41:56.317956", "09:41:59.850236", "09:42:03.166639", "09:42:06.738842",
+    "09:42:18.158103", "09:42:22.377445", "09:42:25.764969", "09:42:32.524992",
+    "09:42:36.022504", "09:42:39.550161", "09:42:55.872126", "09:42:59.711010",
+    "09:43:06.848322", "09:43:12.426933", "09:43:16.021399", "09:43:21.429696",
+    "09:43:33.269069", "09:43:38.522316",
+]
+
+
+def test_event8_replay_stays_within_window(client, monkeypatch):
+    """event 8 을 그대로 재생하면 여러 이벤트로 쪼개지고, 어느 것도 창을 넘지 않는다.
+
+    임계값을 당시 값(30)으로 두면 어느 창도 채우지 못해 확정도 일어나지 않는다.
+    """
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 30)
+
+    for t in EVENT8_FRAME_TIMES:
+        post_frame(client, captured_at=f"2026-08-13T{t}")
+
+    rows = db.query("""
+        SELECT e.event_no, e.event_status, e.event_first_detected_at,
+               max(m.media_captured_at) AS last_frame_at
+        FROM fire_event e JOIN event_media m ON m.event_no = e.event_no
+        GROUP BY e.event_no, e.event_status, e.event_first_detected_at
+        ORDER BY e.event_no
+    """)
+
+    assert len(rows) > 1, "147.8초짜리 프레임 묶음이 한 이벤트로 남았다"
+    window = timedelta(seconds=config.EVENT_WINDOW_SEC)
+    for row in rows:
+        span = row["last_frame_at"] - row["event_first_detected_at"]
+        assert span <= window, f"event {row['event_no']} 가 창을 {span} 만큼 벗어났다"
+        assert row["event_status"] != "CONFIRMED"
+
+
+def test_threshold_reachable_at_measured_detection_rate(client):
+    """기본 임계값은 실측 검출 레이트로 창 안에서 도달 가능해야 한다.
+
+    2026-08-13 실주행에서 검출 프레임 간격은 중앙값 3.62초였다(imgsz=640).
+    이 간격으로 흘렸을 때 창 안에서 확정되지 않으면 임계값이 검출률과 어긋난 것이다
+    — 실제로 기본값 30 시절에는 창당 최대 16프레임뿐이라 도달이 불가능했다.
+    """
+    interval = timedelta(seconds=3.62)
+    start = datetime(2026, 8, 8, 14, 30, 0)
+
+    body = None
+    for i in range(config.EVENT_THRESHOLD_FRAMES):
+        body = post_frame(client,
+                          captured_at=(start + interval * i).isoformat()).get_json()
+
+    assert body["event_status"] == "CONFIRMED", (
+        f"임계값 {config.EVENT_THRESHOLD_FRAMES}프레임을 3.62초 간격으로 채우면 "
+        f"{(config.EVENT_THRESHOLD_FRAMES - 1) * 3.62:.1f}초가 걸려 "
+        f"창 {config.EVENT_WINDOW_SEC}초를 넘는다"
+    )
+
+
 def test_sweep_stale_pending(client):
     """sweep_stale_pending: 창을 넘긴 PENDING 만 일괄 DISMISSED, 건수 반환."""
     stale_at = (datetime.now() - timedelta(seconds=config.EVENT_WINDOW_SEC + 30))

@@ -30,7 +30,18 @@ JWT_EXPIRES_HOURS = int(os.getenv("JWT_EXPIRES_HOURS", "12"))
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key")
 
 # 화재 확정 기준: 관측 창 안에서 이 프레임 수만큼 검출이 쌓이면 CONFIRMED
-EVENT_THRESHOLD_FRAMES = int(os.getenv("EVENT_THRESHOLD_FRAMES", "30"))
+#
+# 이 값은 EVENT_WINDOW_SEC 와 독립이 아니다 — **검출 프레임 레이트에 묶여 있다.**
+# 임계값 N 은 창 안에서 프레임 간격이 최대 EVENT_WINDOW_SEC/(N-1) 초일 때까지만
+# 도달 가능하다. 2026-08-13 실주행(imgsz=640) 실측 검출 간격은 중앙값 3.62초로
+# 창당 최대 16프레임이었고, 그래서 이전 기본값 30 은 산술적으로 도달 불가능했다
+# (event 4~7 이 전부 기준미달 처리된 원인).
+# N=10 이면 60/9 = 6.67초 간격까지 허용해 실측 대비 약 1.8배 여유가 있다.
+#
+# **imgsz 나 run_video.py 의 --fps 를 바꾸면 검출 레이트가 달라지므로 이 값을
+# 다시 산출해야 한다.** 회귀 테스트는
+# tests/test_internal_detections.py::test_threshold_reachable_at_measured_detection_rate.
+EVENT_THRESHOLD_FRAMES = int(os.getenv("EVENT_THRESHOLD_FRAMES", "10"))
 # 관측 창 길이(초). 창은 최초 감지 시각(event_first_detected_at)에 고정되며
 # 이후 검출로 연장되지 않는다 — 미달인 채로 창이 닫히면 기준미달(DISMISSED)
 EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "60"))
