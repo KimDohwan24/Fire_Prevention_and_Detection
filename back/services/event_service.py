@@ -15,6 +15,12 @@ EVENT_WINDOW_SEC 초 창 안에서 검출 프레임이 임계값만큼 쌓이면
   (이후 검출은 쿨다운 없이 새 이벤트로 처음부터 다시 센다)
 - 누적 프레임이 임계값(event_threshold_frames)에 도달하면 CONFIRMED 확정
   → 커밋 후 services.hooks.on_event_confirmed(event_no) 호출 (2단계 알림 훅)
+
+판정 기준 두 가지(EVENT_WINDOW_SEC · EVENT_THRESHOLD_FRAMES)는 **둘 다 프레임마다
+config 에서 읽는다.** event_threshold_frames 컬럼은 이벤트 시작 당시 값을 박제한 것이
+아니라 "지금 적용 중인 기준"의 기록이고, 매 프레임 갱신된다.
+한쪽만 박제하면 진행 중인 이벤트의 판정 기준이 반쪽만 바뀐다 — 2026-08-13 event 8 이
+임계값 30 을 유지한 채 창만 늘어나 147.8초 만에 확정된 사고가 그것이다.
 """
 import json
 from datetime import datetime, timedelta
@@ -135,19 +141,22 @@ def process_detection(cctv_no: int, captured_at: datetime,
             )
             event = dict(cur.fetchone())
         else:
-            # 누적: 프레임 수 +1, 클래스 병합, 신뢰도는 최고값 유지
+            # 누적: 프레임 수 +1, 클래스 병합, 신뢰도는 최고값 유지.
+            # 임계값도 매번 현재 config 값으로 갱신한다 — 창(EVENT_WINDOW_SEC)이
+            # 프레임마다 실시간 조회되므로 기준 두 개의 생애주기를 맞춰야 한다.
             cur.execute(
                 """
                 UPDATE fire_event
                 SET event_detected_frames = event_detected_frames + 1,
                     event_class = %s,
-                    event_confidence = GREATEST(coalesce(event_confidence, 0), %s)
+                    event_confidence = GREATEST(coalesce(event_confidence, 0), %s),
+                    event_threshold_frames = %s
                 WHERE event_no = %s
                 RETURNING event_no, event_status, event_detected_frames,
                           event_threshold_frames
                 """,
                 (_merge_class(event["event_class"], frame_classes),
-                 frame_conf, event["event_no"]),
+                 frame_conf, config.EVENT_THRESHOLD_FRAMES, event["event_no"]),
             )
             event = dict(cur.fetchone())
 
