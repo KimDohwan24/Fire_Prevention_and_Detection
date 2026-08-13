@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { cctvApi, userApi, eventApi, reportApi, adminUpgradeApi } from '../api';
+import { authApi, cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi } from '../api';
 import {
   ShieldCheck, Users, PlusCircle, LogOut,
   AlertTriangle, ArrowLeft, Video, CheckCircle, Trash2,
@@ -9,7 +9,6 @@ import {
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
   BadgeCheck, ChevronRight, Edit3, MapPin, Loader2
 } from 'lucide-react';
-
 import CctvPlayer from '../components/CctvPlayer';
 
 // 초기 CCTV 데이터
@@ -23,11 +22,14 @@ const AdminPage = () => {
   // 로딩/버퍼링 상태 관리
   const [isCctvLoading, setIsCctvLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAgencyLoading, setIsAgencyLoading] = useState(false);
+  const [isAgencySubmitting, setIsAgencySubmitting] = useState(false);
 
   // 데이터 상태 (실시간 백엔드 DB 연동)
   const [cctvList, setCctvList] = useState(INITIAL_CCTVS);
   const [userList, setUserList] = useState([]);
   const [systemLogs, setSystemLogs] = useState([]);
+  const [agencyList, setAgencyList] = useState([]);
 
   // 폼 및 검색 상태
   const [newCctvName, setNewCctvName] = useState('');
@@ -36,6 +38,14 @@ const AdminPage = () => {
   const [newCctvLat, setNewCctvLat] = useState('37.5665');
   const [newCctvLng, setNewCctvLng] = useState('126.9780');
   const [userSearch, setUserSearch] = useState('');
+  const [agencyForm, setAgencyForm] = useState({
+    agency_no: null,
+    agency_name: '',
+    agency_lat: '37.5665',
+    agency_lng: '126.9780',
+    agency_endpoint: '',
+    agency_is_active: true,
+  });
 
   // 팝업 모달 상태
   const [selectedLog, setSelectedLog] = useState(null);
@@ -141,6 +151,78 @@ const AdminPage = () => {
   const handleLogout = () => {
     authApi.logout();
     navigate('/login');
+  };
+
+  const resetAgencyForm = () => {
+    setAgencyForm({
+      agency_no: null,
+      agency_name: '',
+      agency_lat: '37.5665',
+      agency_lng: '126.9780',
+      agency_endpoint: '',
+      agency_is_active: true,
+    });
+  };
+
+  const fetchAgencyList = async () => {
+    setIsAgencyLoading(true);
+    try {
+      const res = await agencyApi.list();
+      const items = res?.items || res || [];
+      setAgencyList(Array.isArray(items) ? items : []);
+    } catch (err) {
+      console.warn('소방서 목록 로드 오류:', err);
+      alert(`소방서 목록을 불러오지 못했습니다: ${err.message || '오류가 발생했습니다.'}`);
+    } finally {
+      setIsAgencyLoading(false);
+    }
+  };
+
+  const handleSaveAgency = async (e) => {
+    e.preventDefault();
+    if (!agencyForm.agency_name.trim() || isAgencySubmitting) return;
+
+    const payload = {
+      agency_name: agencyForm.agency_name.trim(),
+      agency_lat: Number.parseFloat(agencyForm.agency_lat),
+      agency_lng: Number.parseFloat(agencyForm.agency_lng),
+      agency_endpoint: agencyForm.agency_endpoint.trim(),
+      agency_is_active: agencyForm.agency_is_active,
+    };
+
+    if (!Number.isFinite(payload.agency_lat) || !Number.isFinite(payload.agency_lng)) {
+      alert('위도와 경도는 숫자로 입력해주세요.');
+      return;
+    }
+
+    setIsAgencySubmitting(true);
+    try {
+      if (agencyForm.agency_no) {
+        await agencyApi.update(agencyForm.agency_no, payload);
+        alert(`[${payload.agency_name}] 소방서 정보를 수정했습니다.`);
+      } else {
+        await agencyApi.create(payload);
+        alert(`[${payload.agency_name}] 소방서를 등록했습니다.`);
+      }
+      resetAgencyForm();
+      await fetchAgencyList();
+    } catch (err) {
+      console.error('소방서 저장 실패:', err);
+      alert(`소방서 정보를 저장하지 못했습니다: ${err.message || '오류가 발생했습니다.'}`);
+    } finally {
+      setIsAgencySubmitting(false);
+    }
+  };
+
+  const handleEditAgency = (agency) => {
+    setAgencyForm({
+      agency_no: agency.agency_no,
+      agency_name: agency.agency_name || '',
+      agency_lat: String(agency.agency_lat ?? ''),
+      agency_lng: String(agency.agency_lng ?? ''),
+      agency_endpoint: agency.agency_endpoint || '',
+      agency_is_active: agency.agency_is_active !== false,
+    });
   };
 
   // 현재 브라우저 GPS 위치 좌표 받아오기
@@ -361,6 +443,20 @@ const AdminPage = () => {
             </button>
 
             <button
+              onClick={() => {
+                setActiveTab('agencies');
+                fetchAgencyList();
+              }}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'agencies'
+                  ? 'bg-amber-500 text-white shadow-sm'
+                  : 'text-body hover:text-ink hover:bg-surface-soft'
+                }`}
+            >
+              <MapPin className="w-4 h-4" />
+              <span>소방서 위치</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('logs')}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'logs'
                   ? 'bg-amber-500 text-white shadow-sm'
@@ -376,7 +472,6 @@ const AdminPage = () => {
 
       {/* 3. 메인 콘텐츠 영역 */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-8">
-
         {/* TAB 1: CCTV 카메라 관리 */}
         {activeTab === 'cctv' && (
           <div className="space-y-6 animate-in fade-in duration-200">
@@ -504,6 +599,99 @@ const AdminPage = () => {
         )}
 
         {/* TAB 2: 회원 권한 관리 */}
+        {activeTab === 'agencies' && (
+          <div className="space-y-6 animate-in fade-in duration-200">
+            <div className="bg-canvas border border-hairline rounded-2xl p-6 shadow-sm">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-heading-sm font-bold text-ink flex items-center gap-2">
+                    <MapPin className="w-5 h-5 text-amber-500" />
+                    소방서 위치 관리
+                  </h2>
+                  <p className="text-xs text-mute mt-1">관할 소방서의 이름과 위치 좌표를 직접 등록하거나 수정할 수 있습니다.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={fetchAgencyList}
+                  disabled={isAgencyLoading}
+                  className="h-10 px-4 rounded-full border border-hairline bg-surface-soft hover:border-amber-500 text-xs font-bold text-body hover:text-amber-700 disabled:opacity-60 inline-flex items-center gap-2 cursor-pointer"
+                >
+                  <Loader2 className={`w-4 h-4 ${isAgencyLoading ? 'animate-spin' : ''}`} />
+                  목록 새로고침
+                </button>
+              </div>
+
+              <div className="overflow-x-auto border border-hairline rounded-xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-surface-soft border-b border-hairline text-mute uppercase font-semibold">
+                    <tr>
+                      <th className="p-3.5">소방서명</th>
+                      <th className="p-3.5">위도 / 경도</th>
+                      <th className="p-3.5">상태</th>
+                      <th className="p-3.5 text-right">관리</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-hairline">
+                    {isAgencyLoading ? (
+                      <tr><td colSpan="4" className="p-8 text-center text-mute">소방서 목록을 불러오는 중입니다.</td></tr>
+                    ) : agencyList.length === 0 ? (
+                      <tr><td colSpan="4" className="p-8 text-center text-mute">등록된 소방서가 없습니다.</td></tr>
+                    ) : agencyList.map((agency) => (
+                      <tr key={agency.agency_no} className="hover:bg-surface-soft/60 transition-colors">
+                        <td className="p-3.5 font-bold text-ink">{agency.agency_name}</td>
+                        <td className="p-3.5 text-mute font-mono">{agency.agency_lat}, {agency.agency_lng}</td>
+                        <td className="p-3.5">
+                          <span className={`px-2 py-1 rounded-full font-bold ${agency.agency_is_active !== false ? 'bg-emerald-500/10 text-emerald-600' : 'bg-surface-soft text-mute'}`}>
+                            {agency.agency_is_active !== false ? '운영 중' : '비활성'}
+                          </span>
+                        </td>
+                        <td className="p-3.5 text-right">
+                          <button type="button" onClick={() => handleEditAgency(agency)} className="px-3 py-1.5 rounded-lg border border-hairline hover:border-amber-500 text-xs font-bold text-body hover:text-amber-700 inline-flex items-center gap-1 cursor-pointer">
+                            <Edit3 className="w-3.5 h-3.5" /> 수정
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveAgency} className="bg-canvas border border-hairline rounded-2xl p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-3 mb-5">
+                <div>
+                  <h3 className="text-body-md font-bold text-ink">{agencyForm.agency_no ? '소방서 정보 수정' : '소방서 직접 등록'}</h3>
+                  <p className="mt-1 text-xs text-mute">저장된 정보는 대시보드의 소방서 목록과 지도 마커에 반영됩니다.</p>
+                </div>
+                {agencyForm.agency_no && <button type="button" onClick={resetAgencyForm} className="text-xs font-bold text-mute hover:text-ink cursor-pointer">새로 등록</button>}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="text-xs font-bold text-body">소방서명
+                  <input required value={agencyForm.agency_name} onChange={(e) => setAgencyForm({ ...agencyForm, agency_name: e.target.value })} className="mt-1.5 block box-border w-full h-10 rounded-lg border border-hairline bg-canvas px-3 text-sm text-ink focus:outline-none focus-visible:outline-none" placeholder="예: 종로소방서" />
+                </label>
+                <label className="text-xs font-bold text-body">119 연동 주소
+                  <input required value={agencyForm.agency_endpoint} onChange={(e) => setAgencyForm({ ...agencyForm, agency_endpoint: e.target.value })} className="mt-1.5 block box-border w-full h-10 rounded-lg border border-hairline bg-canvas px-3 text-sm text-ink focus:outline-none focus-visible:outline-none" placeholder="http://..." />
+                </label>
+                <label className="text-xs font-bold text-body">위도
+                  <input required type="number" step="any" value={agencyForm.agency_lat} onChange={(e) => setAgencyForm({ ...agencyForm, agency_lat: e.target.value })} className="mt-1.5 block box-border w-full h-10 rounded-lg border border-hairline bg-canvas px-3 text-sm text-ink focus:outline-none focus-visible:outline-none" />
+                </label>
+                <label className="text-xs font-bold text-body">경도
+                  <input required type="number" step="any" value={agencyForm.agency_lng} onChange={(e) => setAgencyForm({ ...agencyForm, agency_lng: e.target.value })} className="mt-1.5 block box-border w-full h-10 rounded-lg border border-hairline bg-canvas px-3 text-sm text-ink focus:outline-none focus-visible:outline-none" />
+                </label>
+              </div>
+              <label className="mt-4 inline-flex items-center gap-2 text-xs text-body cursor-pointer">
+                <input type="checkbox" checked={agencyForm.agency_is_active} onChange={(e) => setAgencyForm({ ...agencyForm, agency_is_active: e.target.checked })} /> 운영 상태로 등록
+              </label>
+              <div className="mt-5 flex justify-end">
+                <button disabled={isAgencySubmitting} className="h-10 px-4 rounded-full bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold disabled:opacity-60 inline-flex items-center gap-2 cursor-pointer">
+                  {isAgencySubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {agencyForm.agency_no ? '소방서 정보 저장' : '소방서 등록'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
         {activeTab === 'users' && (
           <div className="space-y-6 animate-in fade-in duration-200">
             <div className="bg-canvas border border-hairline rounded-2xl p-6 shadow-sm">
