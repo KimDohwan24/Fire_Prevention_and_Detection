@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { adminUpgradeApi } from '../api';
 import {
   User, ShieldCheck, Mail, Phone, Building, Calendar,
   Lock, Bell, Shield, Key, CheckCircle, Clock,
@@ -238,9 +239,27 @@ export default function MyPage() {
     setIsEditProfileOpen(true);
   };
 
+
   // 관리자 승격 승인 요청 보내기
-  const handleRequestAdmin = () => {
-    showToast('관리자 승격 요청 API가 아직 연동되지 않아 요청은 제출되지 않았습니다.');
+  const handleRequestUpgrade = async () => {
+    try {
+      await adminUpgradeApi.requestUpgrade();
+      
+      // 로컬스토리지의 currentUser에 요청 상태 반영 후 새로고침
+      const stored = localStorage.getItem('currentUser');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          parsed.adminRequested = true;
+          parsed.adminRequestStatus = 'PENDING';
+          localStorage.setItem('currentUser', JSON.stringify(parsed));
+        } catch (e) {}
+      }
+
+      window.location.reload(); 
+    } catch (err) {
+      console.error('승급 요청 실패:', err);
+    }
   };
 
   // 프로필 수정 저장
@@ -448,7 +467,7 @@ export default function MyPage() {
                 <span className="font-semibold text-ink">직책: {currentUser?.position || '직책 미입력'}</span>
               </p>
 
-              {/* 관리자 승인 요청 상태 배지 및 버튼 */}
+              관리자 승인 요청 상태 배지 및 버튼
               <div className="pt-2 flex items-center gap-3">
                 {!isAdmin && (
                   currentUser?.adminRequested || currentUser?.adminRequestStatus === 'PENDING' ? (
@@ -458,7 +477,8 @@ export default function MyPage() {
                     </span>
                   ) : (
                     <button
-                      onClick={handleRequestAdmin}
+                      // onClick={handleRequestAdmin}
+                      onClick={handleRequestUpgrade}
                       className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-600 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3.5 py-1.5 rounded-full transition-all cursor-pointer shadow-xs"
                     >
                       <span>👑</span>

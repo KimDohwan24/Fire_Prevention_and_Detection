@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { cctvApi, userApi, eventApi, reportApi, adminUpgradeApi } from '../api';
 import {
   ShieldCheck, Users, PlusCircle, LogOut,
   AlertTriangle, ArrowLeft, Video, CheckCircle, Trash2,
@@ -8,7 +9,7 @@ import {
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
   BadgeCheck, ChevronRight, Edit3, MapPin, Loader2
 } from 'lucide-react';
-import { authApi, cctvApi, userApi, eventApi, reportApi } from '../api';
+
 import CctvPlayer from '../components/CctvPlayer';
 
 // 초기 CCTV 데이터

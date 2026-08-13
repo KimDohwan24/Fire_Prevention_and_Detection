@@ -15,7 +15,7 @@ from flask_cors import CORS
 import config
 from errors import register_error_handlers
 from routes import register_blueprints
-
+from request_role import request_role_bp
 
 class ApiJSONProvider(DefaultJSONProvider):
     """명세서 공통 규칙: 날짜는 ISO 8601, numeric 은 숫자로 내보낸다."""
@@ -63,7 +63,7 @@ def create_app(start_scheduler: bool = False) -> Flask:
 
     register_error_handlers(app)
     register_blueprints(app)
-
+    app.register_blueprint(request_role_bp)
     @app.get("/api/health")
     def health():
         return {"status": "ok"}
@@ -78,3 +78,5 @@ if __name__ == "__main__":
     create_app(start_scheduler=True).run(
         host="0.0.0.0", port=config.APP_PORT, debug=True, use_reloader=False,
     )
+
+
