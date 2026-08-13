@@ -37,13 +37,16 @@ EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "60"))
 
 # 알림 응답 유예 시간(초): alert_deadline_at = alert_sent_at + 이 값
 # 마감까지 무응답이면 에스컬레이션이 곧바로 119 신고로 넘어간다.
-# 기본 30초는 발표 슬라이드 11 타임라인(알림 02:14:08 → 신고 02:14:38) 기준.
-# 화재는 초 단위로 번지므로 유예를 분 단위로 잡을 여유가 없다.
-ALERT_DEADLINE_SEC = int(os.getenv("ALERT_DEADLINE_SEC", "30"))
+# 2026-08-13 에 30 → 60 으로 올렸다. 알림을 문자로 받고, 링크를 열고, 취소를
+# 누르는 실제 동선이 30초로는 빠듯했기 때문이다.
+# ⚠️ 발표 슬라이드 11 타임라인(알림 02:14:08 → 신고 02:14:38)은 30초 기준이라
+#    이제 덱과 어긋난다 — 덱을 고칠지는 사람이 판단한다.
+# 그래도 분 단위를 넘기지는 않는다. 화재는 초 단위로 번진다.
+ALERT_DEADLINE_SEC = int(os.getenv("ALERT_DEADLINE_SEC", "60"))
 
 # 에스컬레이션 스윕 주기(초): 스케줄러가 이 간격으로 run_escalation_tick 을 돌린다.
 # 유예 마감 초과가 실제 신고로 이어지기까지 최대 이만큼 늦어지므로,
-# 30초 유예에 대해 실제 유예는 30~35초가 된다. ALERT_DEADLINE_SEC 를 줄이면
+# 60초 유예에 대해 실제 유예는 60~65초가 된다. ALERT_DEADLINE_SEC 를 줄이면
 # 이 값도 같이 줄여야 실제 유예가 의도한 값에서 크게 벗어나지 않는다.
 ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "5"))
 

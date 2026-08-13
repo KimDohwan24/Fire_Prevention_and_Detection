@@ -105,9 +105,14 @@ def test_deadline_supports_sub_minute_grace(monkeypatch):
         assert a["alert_deadline_at"] - a["alert_sent_at"] == timedelta(seconds=30)
 
 
-def test_default_deadline_is_30_seconds():
-    """기본 유예는 30초 (슬라이드 11 타임라인: 알림 02:14:08 → 신고 02:14:38)."""
-    assert config.ALERT_DEADLINE_SEC == 30
+def test_default_deadline_is_60_seconds():
+    """기본 유예는 60초.
+
+    2026-08-13 에 30 → 60 으로 올렸다. 알림을 받고 링크를 열어 취소까지 누르는
+    실제 동선이 30초로는 빠듯했다. 발표 슬라이드 11 타임라인
+    (알림 02:14:08 → 신고 02:14:38)은 30초 기준이라 이제 덱과 어긋난다.
+    """
+    assert config.ALERT_DEADLINE_SEC == 60
 
 
 def test_send_alerts_sends_sms_once_to_owner_phone(monkeypatch):
