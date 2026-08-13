@@ -604,7 +604,8 @@ paths:
       tags: [cctvs]
       summary: 카메라 목록
       description: |
-        페이징 없이 전체를 내려준다.
+        페이징이 없다. 필터(`cctv_status`, `user_no`)를 주면 걸러진 목록이,
+        아무것도 안 주면 전체가 `cctv_no` 오름차순으로 내려온다.
         ITS 카메라의 `cctv_stream_url` 은 토큰이 만료되므로 응답 직전에 최신 값으로
         갈아끼운다 (외부 API 가 죽어 있으면 저장된 주소가 그대로 나간다).
       security:
@@ -614,6 +615,19 @@ paths:
           in: query
           schema:
             $ref: "#/components/schemas/CctvStatus"
+        - name: user_no
+          in: query
+          description: |
+            해당 사용자가 소유(담당)하는 카메라만 — 관리자 화면의 "이 사용자가 담당하는
+            카메라" 목록에 쓴다. 값은 `Cctv.user_no` 와 같은 사용자 번호다.
+
+            빼면 전체가 나온다. `cctv_status` 와 함께 주면 AND 로 걸린다
+            (예: `?user_no=3&cctv_status=ACTIVE` → 3번 사용자의 ACTIVE 카메라만).
+            담당 카메라가 없는 사용자는 404 가 아니라 `{"items": []}` 로 200 이다.
+          schema:
+            type: integer
+            format: int64
+            example: 3
       responses:
         "200":
           description: 조회 성공
@@ -626,6 +640,19 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Cctv"
+        "400":
+          description: 형식 오류 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bad_int:
+                  summary: 정수 파라미터 형식 오류
+                  value:
+                    code: BAD_REQUEST
+                    message: user_no 는 정수여야 합니다.
+                    field: user_no
         "401":
           $ref: "#/components/responses/Unauthorized"
     post:

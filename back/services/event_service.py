@@ -15,6 +15,12 @@ EVENT_WINDOW_SEC 초 창 안에서 검출 프레임이 임계값만큼 쌓이면
   (이후 검출은 쿨다운 없이 새 이벤트로 처음부터 다시 센다)
 - 누적 프레임이 임계값(event_threshold_frames)에 도달하면 CONFIRMED 확정
   → 커밋 후 services.hooks.on_event_confirmed(event_no) 호출 (2단계 알림 훅)
+
+판정 기준 두 가지(EVENT_WINDOW_SEC · EVENT_THRESHOLD_FRAMES)는 **둘 다 프레임마다
+config 에서 읽는다.** event_threshold_frames 컬럼은 이벤트 시작 당시 값을 박제한 것이
+아니라 "지금 적용 중인 기준"의 기록이고, 매 프레임 갱신된다.
+한쪽만 박제하면 진행 중인 이벤트의 판정 기준이 반쪽만 바뀐다 — 2026-08-13 event 8 이
+임계값 30 을 유지한 채 창만 늘어나 147.8초 만에 확정된 사고가 그것이다.
 """
 import json
 from datetime import datetime, timedelta
@@ -25,6 +31,32 @@ from services import hooks
 
 # 화재로 취급하는 검출 클래스 → 이벤트 클래스 표기
 FIRE_CLASSES = {"flame": "FLAME", "smoke": "SMOKE"}
+
+# event_media.media_url 정본 접두어 — GET /media/<path> 서빙 경로와 같다
+MEDIA_URL_PREFIX = "/media/"
+
+
+def _normalize_media_url(media_url) -> str | None:
+    """프레임 경로를 정본 형태 "/media/<상대경로>" 로 맞춘다.
+
+    AI 모델은 MEDIA_ROOT 기준 **상대경로**("events/2026-08-13/1_143005.jpg")를
+    보내는데, 이 값을 쓰는 쪽은 전부 "/media/..." 를 기대한다 — 프론트는
+    <img src> 에 그대로 넣고, report_service._primary_frame 은 "/media/" 를
+    떼어 파일을 읽는다. 그래서 수집 경계인 여기서 한 형태로 못박는다.
+    (안 맞추면 프론트는 상대경로 해석으로 404, 119 신고는 이미지 없이 나간다)
+
+    - 이미 "/" 로 시작하면 그대로 둔다 — 접두어가 두 번 붙지 않고,
+      의도적으로 절대경로를 넣은 값을 여기서 지어내지 않는다.
+    - 빈 문자열/공백은 NULL. "/media/" 만 남으면 디렉터리를 가리키게 된다.
+    """
+    if not isinstance(media_url, str):
+        return None
+    url = media_url.strip()
+    if not url:
+        return None
+    if url.startswith("/"):
+        return url
+    return MEDIA_URL_PREFIX + url
 
 
 def _fire_summary(detections: list) -> tuple[set, float | None]:
@@ -96,6 +128,7 @@ def process_detection(cctv_no: int, captured_at: datetime,
                       media_url: str | None, detections: list) -> dict:
     """프레임 1장의 검출 결과를 반영하고 이벤트 현재 상태를 돌려준다."""
     frame_classes, frame_conf = _fire_summary(detections)
+    media_url = _normalize_media_url(media_url)
     window = timedelta(seconds=config.EVENT_WINDOW_SEC)
     confirmed_no = None
 
@@ -135,19 +168,22 @@ def process_detection(cctv_no: int, captured_at: datetime,
             )
             event = dict(cur.fetchone())
         else:
-            # 누적: 프레임 수 +1, 클래스 병합, 신뢰도는 최고값 유지
+            # 누적: 프레임 수 +1, 클래스 병합, 신뢰도는 최고값 유지.
+            # 임계값도 매번 현재 config 값으로 갱신한다 — 창(EVENT_WINDOW_SEC)이
+            # 프레임마다 실시간 조회되므로 기준 두 개의 생애주기를 맞춰야 한다.
             cur.execute(
                 """
                 UPDATE fire_event
                 SET event_detected_frames = event_detected_frames + 1,
                     event_class = %s,
-                    event_confidence = GREATEST(coalesce(event_confidence, 0), %s)
+                    event_confidence = GREATEST(coalesce(event_confidence, 0), %s),
+                    event_threshold_frames = %s
                 WHERE event_no = %s
                 RETURNING event_no, event_status, event_detected_frames,
                           event_threshold_frames
                 """,
                 (_merge_class(event["event_class"], frame_classes),
-                 frame_conf, event["event_no"]),
+                 frame_conf, config.EVENT_THRESHOLD_FRAMES, event["event_no"]),
             )
             event = dict(cur.fetchone())
 

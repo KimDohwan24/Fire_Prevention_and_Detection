@@ -45,6 +45,23 @@ def _start_escalation_scheduler():
     return scheduler
 
 
+def _print_effective_config():
+    """지금 뜬 서버가 실제로 어떤 기준으로 도는지 한눈에 남긴다.
+
+    판정·알림 기준은 전부 환경변수로 덮을 수 있는데(`config.py`), 덮였는지
+    확인할 방법이 없어 "이 서버는 임계값 몇으로 떠 있나"를 매번 되짚어야 했다.
+    기본값과 다른 값으로 띄워 놓고 잊는 사고를 막는 것이 목적이다.
+    """
+    print(f"판정 기준 : 확정 {config.EVENT_THRESHOLD_FRAMES}프레임 / "
+          f"관측 창 {config.EVENT_WINDOW_SEC}초 (창은 최초 감지 시각에 고정)")
+    print(f"알림·신고 : 응답 유예 {config.ALERT_DEADLINE_SEC}초 / "
+          f"에스컬레이션 스윕 {config.ESCALATION_INTERVAL_SEC}초 / "
+          f"119 최대 {config.MAX_REPORT_ATTEMPTS}회, 타임아웃 "
+          f"{config.REPORT_HTTP_TIMEOUT_SEC}초")
+    print(f"DB · 미디어: {config.DB_NAME}@{config.DB_HOST}:{config.DB_PORT} · "
+          f"{config.MEDIA_ROOT}")
+
+
 def create_app(start_scheduler: bool = False) -> Flask:
     """앱 팩토리.
 
@@ -73,6 +90,7 @@ def create_app(start_scheduler: bool = False) -> Flask:
 
 
 if __name__ == "__main__":
+    _print_effective_config()
     # 디버그 리로더는 프로세스를 2개 띄워 create_app 이 두 번 불리고
     # 스케줄러도 이중으로 돌게 되므로 리로더를 끈다 (WERKZEUG_RUN_MAIN 가드 대신).
     create_app(start_scheduler=True).run(

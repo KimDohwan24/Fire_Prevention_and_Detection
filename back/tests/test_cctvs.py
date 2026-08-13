@@ -4,6 +4,8 @@
 """
 import pytest
 
+import db
+
 # 명세서가 문서화한 카메라 응답 키 — 이 집합에서 늘거나 줄면 명세 위반이다.
 # (SELECT * 를 쓰면 나중에 컬럼이 추가될 때 조용히 응답에 섞여 들어간다)
 CCTV_KEYS = {
@@ -61,6 +63,71 @@ def test_list_cctvs_filter_by_status(client, admin_headers):
     assert len(items) == 1
     assert items[0]["cctv_no"] == 1
     assert items[0]["cctv_status"] == "ACTIVE"
+
+
+def _add_cctv_for_viewer(status="ACTIVE"):
+    """user_no 2(viewer01)가 담당하는 카메라를 한 대 더 심는다.
+
+    시드 카메라 2대가 모두 user_no 1 소유라, 소유자 필터를 검증하려면
+    다른 소유자의 카메라가 최소 한 대는 있어야 한다 (없으면 필터가
+    빠져 있어도 테스트가 통과해버린다).
+    """
+    row = db.execute_returning(
+        """
+        INSERT INTO cctv (user_no, cctv_name, cctv_location, cctv_lat, cctv_lng,
+                          cctv_stream_url, cctv_width, cctv_height, cctv_status)
+        VALUES (2, '별관 카메라', '별관 주차장', 37.5680000, 126.9800000,
+                'http://192.168.0.20:8080/live/cam9.m3u8', 1920, 1080, %s)
+        RETURNING cctv_no
+        """,
+        (status,),
+    )
+    return row["cctv_no"]
+
+
+def test_list_cctvs_filter_by_user_no(client, admin_headers):
+    """?user_no=N 필터 시 그 사용자가 담당하는 카메라만 내려온다."""
+    other_no = _add_cctv_for_viewer()
+
+    r = client.get("/api/cctvs?user_no=1", headers=admin_headers)
+    assert r.status_code == 200
+    items = r.get_json()["items"]
+    assert [it["cctv_no"] for it in items] == [1, 2]
+    assert {it["user_no"] for it in items} == {1}
+
+    r = client.get("/api/cctvs?user_no=2", headers=admin_headers)
+    assert r.status_code == 200
+    items = r.get_json()["items"]
+    assert [it["cctv_no"] for it in items] == [other_no]
+    assert items[0]["user_no"] == 2
+
+
+def test_list_cctvs_filter_by_user_no_and_status(client, admin_headers):
+    """user_no 와 cctv_status 는 AND 로 함께 걸린다."""
+    _add_cctv_for_viewer()      # user_no 2 · ACTIVE
+
+    r = client.get("/api/cctvs?user_no=1&cctv_status=ACTIVE", headers=admin_headers)
+    assert r.status_code == 200
+    items = r.get_json()["items"]
+    assert [it["cctv_no"] for it in items] == [1]
+    assert items[0]["user_no"] == 1
+    assert items[0]["cctv_status"] == "ACTIVE"
+
+
+def test_list_cctvs_filter_by_user_no_without_match_returns_empty(client, admin_headers):
+    """담당 카메라가 없는 사용자는 200 + 빈 배열 (404 가 아니다)."""
+    r = client.get("/api/cctvs?user_no=4", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.get_json() == {"items": []}
+
+
+def test_list_cctvs_invalid_user_no_returns_400(client, admin_headers):
+    """user_no 가 정수가 아니면 400 — 어느 입력인지 field 로 알려준다."""
+    r = client.get("/api/cctvs?user_no=abc", headers=admin_headers)
+    assert r.status_code == 400
+    body = r.get_json()
+    assert body["code"] == "BAD_REQUEST"
+    assert body["field"] == "user_no"
 
 
 def test_list_cctvs_item_keys_are_exactly_documented(client, admin_headers):

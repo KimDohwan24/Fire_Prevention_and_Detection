@@ -30,20 +30,34 @@ JWT_EXPIRES_HOURS = int(os.getenv("JWT_EXPIRES_HOURS", "12"))
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key")
 
 # 화재 확정 기준: 관측 창 안에서 이 프레임 수만큼 검출이 쌓이면 CONFIRMED
-EVENT_THRESHOLD_FRAMES = int(os.getenv("EVENT_THRESHOLD_FRAMES", "30"))
+#
+# 이 값은 EVENT_WINDOW_SEC 와 독립이 아니다 — **검출 프레임 레이트에 묶여 있다.**
+# 임계값 N 은 창 안에서 프레임 간격이 최대 EVENT_WINDOW_SEC/(N-1) 초일 때까지만
+# 도달 가능하다. 2026-08-13 실주행(imgsz=640) 실측 검출 간격은 중앙값 3.62초로
+# 창당 최대 16프레임이었고, 그래서 이전 기본값 30 은 산술적으로 도달 불가능했다
+# (event 4~7 이 전부 기준미달 처리된 원인).
+# N=10 이면 60/9 = 6.67초 간격까지 허용해 실측 대비 약 1.8배 여유가 있다.
+#
+# **imgsz 나 run_video.py 의 --fps 를 바꾸면 검출 레이트가 달라지므로 이 값을
+# 다시 산출해야 한다.** 회귀 테스트는
+# tests/test_internal_detections.py::test_threshold_reachable_at_measured_detection_rate.
+EVENT_THRESHOLD_FRAMES = int(os.getenv("EVENT_THRESHOLD_FRAMES", "10"))
 # 관측 창 길이(초). 창은 최초 감지 시각(event_first_detected_at)에 고정되며
 # 이후 검출로 연장되지 않는다 — 미달인 채로 창이 닫히면 기준미달(DISMISSED)
 EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "60"))
 
 # 알림 응답 유예 시간(초): alert_deadline_at = alert_sent_at + 이 값
 # 마감까지 무응답이면 에스컬레이션이 곧바로 119 신고로 넘어간다.
-# 기본 30초는 발표 슬라이드 11 타임라인(알림 02:14:08 → 신고 02:14:38) 기준.
-# 화재는 초 단위로 번지므로 유예를 분 단위로 잡을 여유가 없다.
-ALERT_DEADLINE_SEC = int(os.getenv("ALERT_DEADLINE_SEC", "30"))
+# 2026-08-13 에 30 → 60 으로 올렸다. 알림을 문자로 받고, 링크를 열고, 취소를
+# 누르는 실제 동선이 30초로는 빠듯했기 때문이다.
+# ⚠️ 발표 슬라이드 11 타임라인(알림 02:14:08 → 신고 02:14:38)은 30초 기준이라
+#    이제 덱과 어긋난다 — 덱을 고칠지는 사람이 판단한다.
+# 그래도 분 단위를 넘기지는 않는다. 화재는 초 단위로 번진다.
+ALERT_DEADLINE_SEC = int(os.getenv("ALERT_DEADLINE_SEC", "60"))
 
 # 에스컬레이션 스윕 주기(초): 스케줄러가 이 간격으로 run_escalation_tick 을 돌린다.
 # 유예 마감 초과가 실제 신고로 이어지기까지 최대 이만큼 늦어지므로,
-# 30초 유예에 대해 실제 유예는 30~35초가 된다. ALERT_DEADLINE_SEC 를 줄이면
+# 60초 유예에 대해 실제 유예는 60~65초가 된다. ALERT_DEADLINE_SEC 를 줄이면
 # 이 값도 같이 줄여야 실제 유예가 의도한 값에서 크게 벗어나지 않는다.
 ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "5"))
 
