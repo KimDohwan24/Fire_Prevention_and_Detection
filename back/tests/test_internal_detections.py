@@ -231,6 +231,40 @@ def test_higher_confidence_frame_steals_primary(client):
     assert primaries[0]["media_url"] == "/m/f2.jpg"
 
 
+# ---------- 미디어 경로 정규화 ----------
+#
+# AI 모델(ai-model/run_video.py)은 프레임을 MEDIA_ROOT 아래에 저장하고 그 **상대경로**를
+# 보낸다. 반면 이 값을 쓰는 쪽은 전부 "/media/<상대경로>" 를 기대한다 —
+# 프론트는 <img src> 에 그대로 넣고, report_service 는 "/media/" 를 떼어 파일을 읽는다.
+# 그래서 수집 시점에 한 형태로 못박는다. 안 그러면 프론트는 404, 119 신고는 이미지 누락.
+
+def test_relative_media_url_is_normalized_to_media_path(client):
+    """모델이 보내는 상대경로는 "/media/" 를 붙여 저장한다."""
+    ev_no = post_frame(client, media_url="events/2026-08-13/1_143005_123456.jpg",
+                       captured_at="2026-08-08T14:30:00").get_json()["event_no"]
+
+    (m,) = get_media_rows(ev_no)
+    assert m["media_url"] == "/media/events/2026-08-13/1_143005_123456.jpg"
+
+
+def test_media_url_already_normalized_is_left_alone(client):
+    """이미 "/media/" 로 시작하면 그대로 — 접두어가 두 번 붙지 않는다."""
+    ev_no = post_frame(client, media_url="/media/events/raw/f001.jpg",
+                       captured_at="2026-08-08T14:30:00").get_json()["event_no"]
+
+    (m,) = get_media_rows(ev_no)
+    assert m["media_url"] == "/media/events/raw/f001.jpg"
+
+
+def test_blank_media_url_is_stored_as_null(client):
+    """빈 문자열은 NULL 로 — "/media/" 만 남으면 디렉터리를 가리키는 값이 된다."""
+    ev_no = post_frame(client, media_url="   ",
+                       captured_at="2026-08-08T14:30:00").get_json()["event_no"]
+
+    (m,) = get_media_rows(ev_no)
+    assert m["media_url"] is None
+
+
 # ---------- 관측 창 종료 · 정리 ----------
 #
 # 창은 최초 감지 시각(event_first_detected_at)에 고정된다 (발표 슬라이드 10).

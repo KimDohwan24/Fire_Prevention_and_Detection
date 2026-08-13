@@ -32,6 +32,32 @@ from services import hooks
 # 화재로 취급하는 검출 클래스 → 이벤트 클래스 표기
 FIRE_CLASSES = {"flame": "FLAME", "smoke": "SMOKE"}
 
+# event_media.media_url 정본 접두어 — GET /media/<path> 서빙 경로와 같다
+MEDIA_URL_PREFIX = "/media/"
+
+
+def _normalize_media_url(media_url) -> str | None:
+    """프레임 경로를 정본 형태 "/media/<상대경로>" 로 맞춘다.
+
+    AI 모델은 MEDIA_ROOT 기준 **상대경로**("events/2026-08-13/1_143005.jpg")를
+    보내는데, 이 값을 쓰는 쪽은 전부 "/media/..." 를 기대한다 — 프론트는
+    <img src> 에 그대로 넣고, report_service._primary_frame 은 "/media/" 를
+    떼어 파일을 읽는다. 그래서 수집 경계인 여기서 한 형태로 못박는다.
+    (안 맞추면 프론트는 상대경로 해석으로 404, 119 신고는 이미지 없이 나간다)
+
+    - 이미 "/" 로 시작하면 그대로 둔다 — 접두어가 두 번 붙지 않고,
+      의도적으로 절대경로를 넣은 값을 여기서 지어내지 않는다.
+    - 빈 문자열/공백은 NULL. "/media/" 만 남으면 디렉터리를 가리키게 된다.
+    """
+    if not isinstance(media_url, str):
+        return None
+    url = media_url.strip()
+    if not url:
+        return None
+    if url.startswith("/"):
+        return url
+    return MEDIA_URL_PREFIX + url
+
 
 def _fire_summary(detections: list) -> tuple[set, float | None]:
     """검출 목록에서 화재 클래스 집합과 최고 화재 신뢰도를 뽑는다.
@@ -102,6 +128,7 @@ def process_detection(cctv_no: int, captured_at: datetime,
                       media_url: str | None, detections: list) -> dict:
     """프레임 1장의 검출 결과를 반영하고 이벤트 현재 상태를 돌려준다."""
     frame_classes, frame_conf = _fire_summary(detections)
+    media_url = _normalize_media_url(media_url)
     window = timedelta(seconds=config.EVENT_WINDOW_SEC)
     confirmed_no = None
 
