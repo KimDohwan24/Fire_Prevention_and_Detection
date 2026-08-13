@@ -70,6 +70,115 @@ tags:
 
 paths:
 
+# ---------------------------------------------------------------- 관리자 권한 승인
+  /api/admin/request-upgrade:
+    post:
+      tags:
+        - users
+      summary: 관리자 권한 승인 요청
+      description: |
+        일반 회원이 관리자 권한 승인을 요청한다. 계정 상태가 `USER` 에서 `PENDING` (승인 대기)으로 변경된다.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 요청 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 관리자 권한 승인 요청이 완료되었습니다.
+        "400":
+          description: 이미 관리자이거나 대기 중인 경우 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                already_admin:
+                  summary: 이미 관리자 계정
+                  value:
+                    code: ALREADY_ADMIN
+                    message: 이미 관리자 계정입니다.
+                already_pending:
+                  summary: 이미 승인 대기 중인 계정
+                  value:
+                    code: ALREADY_PENDING
+                    message: 이미 승인 대기 중인 계정입니다.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
+  /api/admin/handle-request/{target_user_no}:
+    patch:
+      tags:
+        - users
+      summary: 관리자 권한 승인/거절 처리 (ADMIN)
+      description: |
+        관리자가 승인 대기(`PENDING`) 중인 유저의 요청을 처리한다.
+        - `action: "approve"` 면 `ADMIN` 으로 승격시킨다.
+        - `action: "reject"` 면 다시 `USER` 로 원복한다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: target_user_no
+          in: path
+          required: true
+          description: 처리할 대상 유저 번호
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  type: string
+                  enum: [approve, reject]
+                  example: approve
+      responses:
+        "200":
+          description: 처리 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: admin01 님의 관리자 승인이 완료되었습니다.
+        "400":
+          description: 대기 중이 아니거나 잘못된 액션 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                not_pending:
+                  summary: 대기 중인 유저가 아님
+                  value:
+                    code: NOT_PENDING
+                    message: 승인 대기 중인 유저가 아닙니다.
+                invalid_action:
+                  summary: 잘못된 액션 값
+                  value:
+                    code: INVALID_ACTION
+                    message: 올바르지 않은 액션입니다. ('approve' 또는 'reject' 입력 필요)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
   # ---------------------------------------------------------------- 인증
   /api/auth/login:
     post:
@@ -495,7 +604,8 @@ paths:
       tags: [cctvs]
       summary: 카메라 목록
       description: |
-        페이징 없이 전체를 내려준다.
+        페이징이 없다. 필터(`cctv_status`, `user_no`)를 주면 걸러진 목록이,
+        아무것도 안 주면 전체가 `cctv_no` 오름차순으로 내려온다.
         ITS 카메라의 `cctv_stream_url` 은 토큰이 만료되므로 응답 직전에 최신 값으로
         갈아끼운다 (외부 API 가 죽어 있으면 저장된 주소가 그대로 나간다).
       security:
@@ -505,6 +615,19 @@ paths:
           in: query
           schema:
             $ref: "#/components/schemas/CctvStatus"
+        - name: user_no
+          in: query
+          description: |
+            해당 사용자가 소유(담당)하는 카메라만 — 관리자 화면의 "이 사용자가 담당하는
+            카메라" 목록에 쓴다. 값은 `Cctv.user_no` 와 같은 사용자 번호다.
+
+            빼면 전체가 나온다. `cctv_status` 와 함께 주면 AND 로 걸린다
+            (예: `?user_no=3&cctv_status=ACTIVE` → 3번 사용자의 ACTIVE 카메라만).
+            담당 카메라가 없는 사용자는 404 가 아니라 `{"items": []}` 로 200 이다.
+          schema:
+            type: integer
+            format: int64
+            example: 3
       responses:
         "200":
           description: 조회 성공
@@ -517,6 +640,19 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Cctv"
+        "400":
+          description: 형식 오류 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bad_int:
+                  summary: 정수 파라미터 형식 오류
+                  value:
+                    code: BAD_REQUEST
+                    message: user_no 는 정수여야 합니다.
+                    field: user_no
         "401":
           $ref: "#/components/responses/Unauthorized"
     post:

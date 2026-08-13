@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { authApi, cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi } from '../api';
 import {
   ShieldCheck, Users, PlusCircle, LogOut,
   AlertTriangle, ArrowLeft, Video, CheckCircle, Trash2,
@@ -8,7 +9,6 @@ import {
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
   BadgeCheck, ChevronRight, Edit3, MapPin, Loader2
 } from 'lucide-react';
-import { authApi, cctvApi, userApi, eventApi, reportApi, agencyApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 
 // 초기 CCTV 데이터
@@ -669,8 +669,8 @@ const AdminPage = () => {
                 <label className="text-xs font-bold text-body">소방서명
                   <input required value={agencyForm.agency_name} onChange={(e) => setAgencyForm({ ...agencyForm, agency_name: e.target.value })} className="mt-1.5 block box-border w-full h-10 rounded-lg border border-hairline bg-canvas px-3 text-sm text-ink focus:outline-none focus-visible:outline-none" placeholder="예: 종로소방서" />
                 </label>
-                <label className="text-xs font-bold text-body">119 연동 주소 (선택)
-                  <input value={agencyForm.agency_endpoint} onChange={(e) => setAgencyForm({ ...agencyForm, agency_endpoint: e.target.value })} className="mt-1.5 block box-border w-full h-10 rounded-lg border border-hairline bg-canvas px-3 text-sm text-ink focus:outline-none focus-visible:outline-none" placeholder="http://..." />
+                <label className="text-xs font-bold text-body">119 연동 주소
+                  <input required value={agencyForm.agency_endpoint} onChange={(e) => setAgencyForm({ ...agencyForm, agency_endpoint: e.target.value })} className="mt-1.5 block box-border w-full h-10 rounded-lg border border-hairline bg-canvas px-3 text-sm text-ink focus:outline-none focus-visible:outline-none" placeholder="http://..." />
                 </label>
                 <label className="text-xs font-bold text-body">위도
                   <input required type="number" step="any" value={agencyForm.agency_lat} onChange={(e) => setAgencyForm({ ...agencyForm, agency_lat: e.target.value })} className="mt-1.5 block box-border w-full h-10 rounded-lg border border-hairline bg-canvas px-3 text-sm text-ink focus:outline-none focus-visible:outline-none" />

@@ -28,6 +28,12 @@
 --      |                                               | 생성 컬럼 + GiST 인덱스.
 --      |                                               | ⚠️ PostGIS 3 설치가 먼저다
 --      |                                               | ⚠️ superuser 로 실행해야 한다
+--  -----------------------------------------------------------------------------
+--  004 | 2026-08-13-invalidate-events-8-11             | 고정 창을 위반하고 확정된 이벤트
+--      |                                               | 8·11 을 event_is_test 로 무효 처리.
+--      |                                               | 구조 변경 아님 — 데이터 교정이라
+--      |                                               | schema.sql 은 그대로다.
+--      |                                               | 다른 DB 에서는 no-op 이다.
 -- =====================================================
 --
 -- ■ 번호를 붙인 이유
@@ -57,6 +63,11 @@
 --     SELECT n.nspname FROM pg_extension e
 --       JOIN pg_namespace n ON n.oid = e.extnamespace
 --      WHERE e.extname = 'postgis';
+--
+--     -- 004 적용됐나: 두 행이 event_is_test = true 면 적용된 것
+--     -- (2026-08-13 주행 데이터가 없는 DB 라면 0건이 정상이다 — 돌릴 필요가 없다)
+--     SELECT event_no, event_is_test FROM fireguard.fire_event
+--      WHERE event_no IN (8, 11);
 --
 -- ■ 새 마이그레이션을 추가할 때
 --     다음 번호를 붙이고(004-YYYY-MM-DD-주제.sql) 이 표에 한 줄 적는다.

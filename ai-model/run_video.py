@@ -33,6 +33,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BOX_COLORS = {"flame": (0, 80, 255), "smoke": (200, 200, 200)}
 DEFAULT_COLOR = (0, 255, 0)
 
+# 백엔드가 프레임을 서빙하는 경로 접두어 (back/routes/media_routes.py)
+MEDIA_URL_PREFIX = "/media/"
+
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
@@ -120,7 +123,12 @@ def draw_boxes(image, detections):
 
 
 def save_frame_jpg(image, media_root: Path, cctv_no: int, when: datetime) -> str:
-    """프레임을 MEDIA_ROOT 아래에 저장하고 백엔드에 넘길 상대경로를 돌려준다."""
+    """프레임을 MEDIA_ROOT 아래에 저장하고 백엔드에 넘길 URL 을 돌려준다.
+
+    반환값은 event_media.media_url 에 그대로 저장되고 프론트의 <img src> 가 되므로,
+    백엔드가 서빙하는 경로와 같은 "/media/<상대경로>" 형태여야 한다
+    (back/routes/media_routes.py 의 GET /media/<path>).
+    """
     import cv2
 
     rel = Path("events") / when.strftime("%Y-%m-%d") / \
@@ -128,7 +136,7 @@ def save_frame_jpg(image, media_root: Path, cctv_no: int, when: datetime) -> str
     target = media_root / rel
     target.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(target), image)
-    return rel.as_posix()
+    return MEDIA_URL_PREFIX + rel.as_posix()
 
 
 class Stats:
