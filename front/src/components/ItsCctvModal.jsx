@@ -20,7 +20,7 @@ const getTotalFromResponse = (response) => {
   return Number.isFinite(Number(total)) ? Number(total) : null;
 };
 
-export default function ItsCctvModal({ isOpen, onClose, onSelectCctv }) {
+export default function ItsCctvModal({ isOpen, onClose, onSelectCctv, canRegister = false, canPreview = false }) {
   const [search, setSearch] = useState('');
   const [cctvs, setCctvs] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
@@ -113,7 +113,7 @@ export default function ItsCctvModal({ isOpen, onClose, onSelectCctv }) {
   if (!isOpen) return null;
 
   const handleSelect = async (item) => {
-    if (addingName) return;
+    if (!canRegister || addingName) return;
     setAddingName(item.cctv_name);
     try {
       await onSelectCctv(item);
@@ -166,7 +166,11 @@ export default function ItsCctvModal({ isOpen, onClose, onSelectCctv }) {
             <span className="text-2xl">📹</span>
             <div>
               <h3 className="text-heading-md font-bold text-ink">ITS 국가교통정보센터 실시간 CCTV 위치 조회</h3>
-              <p className="text-caption-sm text-mute">API로 발급되어 연동 가능한 전국 공공 CCTV 라이브 위치 목록입니다.</p>
+              <p className="text-caption-sm text-mute">
+                {canRegister
+                  ? '전국 공공 CCTV 위치를 조회하고 관제용 CCTV로 등록할 수 있습니다.'
+                  : '전국 공공 CCTV의 명칭, 위치, GPS 좌표를 조회할 수 있습니다.'}
+              </p>
             </div>
           </div>
           <button
@@ -257,26 +261,36 @@ export default function ItsCctvModal({ isOpen, onClose, onSelectCctv }) {
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                    <button
-                      onClick={() => setPreviewItem((current) => current?.cctv_name === item.cctv_name ? null : item)}
-                      disabled={!!addingName}
-                      className="px-3 py-1.5 text-xs font-semibold bg-canvas border border-hairline hover:border-ink rounded-lg text-ink transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-40"
-                    >
-                      <Play className="w-3 h-3 fill-current" />
-                      <span>{previewItem?.cctv_name === item.cctv_name ? '접기' : '미리보기'}</span>
-                    </button>
-                    <button
-                      onClick={() => handleSelect(item)}
-                      disabled={!!addingName}
-                      className="px-3 py-1.5 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white rounded-lg transition-colors cursor-pointer shadow-xs disabled:opacity-50 flex items-center gap-1"
-                    >
-                      {addingName === item.cctv_name && <Loader2 className="w-3 h-3 animate-spin" />}
-                      <span>+ 지도 추가</span>
-                    </button>
+                    {canRegister ? (
+                      <>
+                        {canPreview && (
+                          <button
+                            onClick={() => setPreviewItem((current) => current?.cctv_name === item.cctv_name ? null : item)}
+                            disabled={!!addingName}
+                            className="px-3 py-1.5 text-xs font-semibold bg-canvas border border-hairline hover:border-ink rounded-lg text-ink transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-40"
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>{previewItem?.cctv_name === item.cctv_name ? '접기' : '미리보기'}</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleSelect(item)}
+                          disabled={!!addingName}
+                          className="px-3 py-1.5 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white rounded-lg transition-colors cursor-pointer shadow-xs disabled:opacity-50 flex items-center gap-1"
+                        >
+                          {addingName === item.cctv_name && <Loader2 className="w-3 h-3 animate-spin" />}
+                          <span>+ 지도 추가</span>
+                        </button>
+                      </>
+                    ) : (
+                      <span className="px-3 py-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                        위치 조회 전용
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                {previewItem?.cctv_name === item.cctv_name && (
+                {canPreview && previewItem?.cctv_name === item.cctv_name && (
                   <div className="p-4 bg-neutral-900 rounded-xl border border-neutral-800 space-y-3 animate-in fade-in slide-in-from-top-1 duration-200">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">

@@ -157,8 +157,15 @@ export const userApi = {
 
 // 3. CCTV API
 export const cctvApi = {
-  list: async (status = '') => {
-    const query = status ? `?cctv_status=${encodeURIComponent(status)}` : '';
+  list: async (filters = {}) => {
+    // 기존 list('ACTIVE') 호출도 유지하면서 user_no 등 신규 필터를 함께 지원한다.
+    const params = typeof filters === 'string'
+      ? { cctv_status: filters }
+      : filters;
+    const queryString = new URLSearchParams(
+      Object.entries(params).filter(([, value]) => value !== '' && value != null)
+    ).toString();
+    const query = queryString ? `?${queryString}` : '';
     return await request(`/cctvs${query}`);
   },
 
