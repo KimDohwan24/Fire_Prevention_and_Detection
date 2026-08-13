@@ -27,7 +27,8 @@ export default function MyPage() {
       id: 'admin',
       name: '최고 관리자',
       email: 'admin@fireguard.or.kr',
-      role: 'admin',
+      role: 'ADMIN',
+      user_status: 'ACTIVE',
       dept: '관제총괄팀',
       phone: '010-1234-5678',
       position: '총괄 관제 책임자',
@@ -36,7 +37,7 @@ export default function MyPage() {
       assignedZone: '전체 관제 구역'
     };
   });
-  
+  console.log("현재 currentUser 상태:", currentUser);
   // 내 관리 CCTV 모달 및 로딩 상태
   const [myCctvs, setMyCctvs] = useState([]);
   const [isCctvsLoading, setIsCctvsLoading] = useState(true);
@@ -92,6 +93,7 @@ export default function MyPage() {
           id: res.user_id,
           user_no: res.user_no,
           name: res.user_name || res.user_id,
+          user_status: res.user_status,
           email: res.user_email || `${res.user_id}@fireguard.or.kr`,
           phone: res.user_phone || '',
           role: res.user_role === 'ADMIN' ? 'admin' : 'user',
@@ -467,10 +469,10 @@ export default function MyPage() {
                 <span className="font-semibold text-ink">직책: {currentUser?.position || '직책 미입력'}</span>
               </p>
 
-              관리자 승인 요청 상태 배지 및 버튼
+              {/* 관리자 승인 요청 상태 배지 및 버튼 */}
               <div className="pt-2 flex items-center gap-3">
-                {!isAdmin && (
-                  currentUser?.adminRequested || currentUser?.adminRequestStatus === 'PENDING' ? (
+                {currentUser?.role !== 'ADMIN' && currentUser?.user_role !== 'ADMIN' ? (
+                currentUser?.status === 'PENDING' || currentUser?.user_status === 'PENDING' ? (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-600 bg-amber-500/10 border border-amber-500/30 px-3.5 py-1.5 rounded-full">
                       <span>⏳</span>
                       <span>관리자 승격 승인 요청 대기 중</span>
@@ -485,7 +487,7 @@ export default function MyPage() {
                       <span>관리자 승인 요청 보내기</span>
                     </button>
                   )
-                )}
+                ) : null}
               </div>
 
               <div className="pt-2 flex flex-wrap gap-y-2 gap-x-6 text-body-sm text-mute">
