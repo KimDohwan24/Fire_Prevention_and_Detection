@@ -11,7 +11,7 @@ import db
 from auth import admin_required, login_required
 from errors import ApiError
 from services import its_cctv
-from utils.validation import require_number, require_str
+from utils.validation import int_param, require_number, require_str
 
 bp = Blueprint("cctvs", __name__)
 
@@ -29,11 +29,18 @@ COLUMNS = """cctv_no, user_no, cctv_name, cctv_location, cctv_lat, cctv_lng,
 @bp.get("")
 @login_required
 def list_cctvs():
-    where = ""
+    conds = []
     params: list = []
-    if status := request.args.get("cctv_status"):
-        where = "WHERE cctv_status = %s"
-        params.append(status)
+    if v := request.args.get("cctv_status"):
+        conds.append("cctv_status = %s")
+        params.append(v)
+    # user_no: 특정 사용자가 담당(소유)하는 카메라만 — 관리자 화면에서 쓴다.
+    # 없으면 필터 없이 전체 (기존 호출자 동작 그대로)
+    if (v := int_param("user_no")) is not None:
+        conds.append("user_no = %s")
+        params.append(v)
+
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
 
     rows = db.query(
         f"SELECT {COLUMNS} FROM cctv {where} ORDER BY cctv_no", tuple(params)
