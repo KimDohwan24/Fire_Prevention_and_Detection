@@ -4,7 +4,7 @@ import {
   LogOut, Search, Bell, AlertTriangle, CheckCircle,
   Video, MapPin, Search as SearchIcon, VideoOff, X, ArrowLeft,
   ShieldCheck, Users, PlusCircle, Settings, ShieldAlert, UserCheck, Loader2,
-  Flame, Siren, PhoneCall, CheckCircle2, XCircle, Clock, ExternalLink, FileText
+  Flame, Siren, PhoneCall, CheckCircle2, XCircle, Clock, ExternalLink, FileText, RefreshCw
 } from 'lucide-react';
 import { authApi, cctvApi, agencyApi, eventApi, alertApi, reportApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
@@ -46,6 +46,8 @@ function Dashboard() {
   // 관할 소방서 및 이벤트 로그 목록 State (실시간 DB 연동)
   const [agencyList, setAgencyList] = useState(DEFAULT_AGENCIES);
   const [fireStation, setFireStation] = useState(null);
+  const [isAgencyLoading, setIsAgencyLoading] = useState(false);
+  const [agencyLoadError, setAgencyLoadError] = useState('');
   const [eventLogs, setEventLogs] = useState([]);
 
   // 지도 오버레이 및 탭 조작 UI State
@@ -72,6 +74,41 @@ function Dashboard() {
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleLoadAgencies = async () => {
+    setIsAgencyLoading(true);
+    setAgencyLoadError('');
+    try {
+      const agencyRes = await agencyApi.list();
+      const rawAgencies = agencyRes?.items || (Array.isArray(agencyRes) ? agencyRes : []);
+      const mappedAgencies = rawAgencies.map((ag, idx) => ({
+        agency_no: ag.agency_no || idx + 1,
+        name: ag.agency_name,
+        agency_name: ag.agency_name,
+        agency_lat: parseFloat(ag.agency_lat) || 37.5730,
+        agency_lng: parseFloat(ag.agency_lng) || 126.9790,
+        lat: parseFloat(ag.agency_lat) || 37.5730,
+        lng: parseFloat(ag.agency_lng) || 126.9790,
+        agency_endpoint: ag.agency_endpoint || 'http://127.0.0.1:6000/api/119/report',
+        agency_is_active: ag.agency_is_active !== false,
+        x: 50 + (idx * 22),
+        y: 35 + (idx * 15),
+        address: ag.agency_address || '관할 구역 긴급 센터',
+        phone: ag.agency_phone || '119 (비상 통합 상황실)',
+      }));
+
+      setAgencyList(mappedAgencies);
+      setFireStation((selected) => mappedAgencies.find((agency) => agency.agency_no === selected?.agency_no) || mappedAgencies[0] || null);
+      showToast(mappedAgencies.length ? `${mappedAgencies.length}개 소방서를 불러왔습니다.` : '등록된 소방서가 없습니다.');
+    } catch (err) {
+      const message = err.message || '소방서 목록을 불러오지 못했습니다.';
+      setAgencyLoadError(message);
+      showToast(message);
+      console.warn('소방서 DB 조회 실패:', message);
+    } finally {
+      setIsAgencyLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -611,14 +648,32 @@ function Dashboard() {
                   <span className="text-xs font-bold text-ink flex items-center gap-1.5">
                     🚒 소방서 목록
                   </span>
-                  <button
-                    onClick={() => setIsAgencyTabOpen(false)}
-                    className="text-mute hover:text-ink cursor-pointer p-1"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={handleLoadAgencies}
+                      disabled={isAgencyLoading}
+                      className="h-7 px-2 rounded-lg border border-hairline bg-surface-soft hover:border-red-400 hover:text-red-600 disabled:cursor-wait disabled:opacity-60 text-[10px] font-bold text-body flex items-center gap-1 cursor-pointer transition-colors"
+                      title="백엔드 API에서 소방서 목록 새로 불러오기"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isAgencyLoading ? 'animate-spin' : ''}`} />
+                      {isAgencyLoading ? '불러오는 중' : '소방서 불러오기'}
+                    </button>
+                    <button
+                      onClick={() => setIsAgencyTabOpen(false)}
+                      className="text-mute hover:text-ink cursor-pointer p-1"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
                 <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+                  {agencyLoadError && (
+                    <p className="px-2 py-1.5 text-[11px] text-red-600 bg-red-50 rounded-lg">{agencyLoadError}</p>
+                  )}
+                  {!isAgencyLoading && !agencyLoadError && agencyList.length === 0 && (
+                    <p className="px-2 py-3 text-center text-[11px] text-mute">불러오기 버튼을 눌러 소방서 목록을 조회하세요.</p>
+                  )}
                   {agencyList.map((ag) => (
                     <div
                       key={ag.agency_no}
