@@ -1,220 +1,372 @@
 import os
 import csv
+from pathlib import Path
 import torch
 import albumentations as A
-from pathlib import Path
 from ultralytics import YOLO
+from ultralytics.models.yolo.detect.train import DetectionTrainer
 
-def main():
-    # ============================================================
-    # [피드백 5, 6번 반영] 증강 정의 및 인자 주입 방식 변경 (몽키패치 제거)
-    # ============================================================
-    CUSTOM_AUGMENTATIONS = [
-        A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.40),
-        A.GaussNoise(std_range=(0.01, 0.03), mean_range=(0.0, 0.0), p=0.20),
-        A.GaussianBlur(blur_limit=(3, 5), sigma_limit=(0.1, 1.0), p=0.20),
-    ]
+# ============================================================
+# 1. 기본 설정 (런팟 및 모델 충돌 방지 독립 경로 지정)
+# ============================================================
+BASE_DIR = Path(__file__).resolve().parent
+DATA_YAML = (BASE_DIR / ".." / "data" / "data.yaml").resolve()
 
-    # [피드백 1, 2번 반영] 데이터 경로 설정 (평가는 test 스플릿 조준)
-    DATA_YAML_PATH = "../data/data.yaml"
-    
-    # 최종 평가(Background 전수조사) 대상 폴더를 'test' 스플릿으로 변경
-    TEST_IMAGE_DIR = "../data/yolo_split/images/test"
-    TEST_LABEL_DIR = "../data/yolo_split/labels/test"
-    CLASS_NAMES = ["fire", "smoke"]
-    
-    # ★ [교수 첨삭] 파일 충돌 및 오염 방지를 위해 v8 전용 날짜 폴더 정의
-    OUTPUT_PROJECT_DIR = "run_v8_0814"
-    RUN_NAME = "train_v8_compare"
-    
-    model_name = "yolov8n.pt"  
-    print(f"🔬 [RESEARCH] {model_name} 기반 피드백 반영 통일 실험을 시작합니다.")
-    print(f"📁 [PATH] 모든 실험 결과는 독립 폴더 '{OUTPUT_PROJECT_DIR}/{RUN_NAME}'에 안전하게 저장됩니다.")
-    model = YOLO(model_name) 
+# ★ [교수 첨삭] 조원들과 파일 오염을 방지하기 위한 v8 독립 폴더 지정
+OUTPUT_PROJECT_DIR = "run_v8_0814"
+TRAIN_RUN_NAME = "train_v8_compare"
+TEST_RUN_NAME = "train_v8_compare_test_evaluation"
+# ============================================================
+# 2. 클래스 및 환경 상수 (AI 통일 피드백 규격 주입)
+# ============================================================
+CLASS_NAMES = ["fire", "smoke"]
+EPOCHS = 10
+IMAGE_SIZE = 640
+BATCH_SIZE = 16  # 메모리 OOM 발생 시 8로 낮추어 실행하세요.
+WORKERS = 2      # 런팟 환경 병목 및 RAM 오버플로우 방지 최적화 값
+SEED = 42
 
-    # ============================================================
-    # [피드백 3, 4, 5, 7번 반영] 하이퍼파라미터 공정 통일 구역
-    # ============================================================
+CONF_THRESHOLD = 0.25
+IOU_THRESHOLD = 0.7
+MATCH_IOU_THRESHOLD = 0.5
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+# ============================================================
+# 6. 데이터 증강 (AI 피드백 준수: 몽키패치 배제형 클린 래퍼)
+# ============================================================
+CUSTOM_AUGMENTATIONS = [
+    A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.40),
+    A.HorizontalFlip(p=0.50),
+    A.GaussNoise(std_range=(0.01, 0.03), mean_range=(0.0, 0.0), p=0.20),
+    A.GaussianBlur(blur_limit=(3, 5), sigma_limit=(0.1, 1.0), p=0.20),
+]
+
+class CustomAugmentationTrainer(DetectionTrainer):
+    def build_dataset(self, img_path, mode="train", batch=None):
+        if mode == "train":
+            self.args.augmentations = CUSTOM_AUGMENTATIONS
+        return super().build_dataset(img_path, mode=mode, batch=batch)
+# ============================================================
+# 7 ~ 13. 데이터 파이프라인 및 IO 유틸리티 함수 (원본 로직 100% 유지)
+# ============================================================
+def check_yaml():
+    if not DATA_YAML.exists():
+        raise FileNotFoundError(f"data.yaml 파일을 찾을 수 없습니다.\n확인 경로: {DATA_YAML}")
+
+def get_dataset_paths():
+    import yaml
+    with open(DATA_YAML, "r", encoding="utf-8") as file:
+        yaml_data = yaml.safe_load(file)
+    
+    yaml_root = yaml_data.get("path", "")
+    if yaml_root:
+        dataset_root = Path(yaml_root)
+        if not dataset_root.is_absolute():
+            dataset_root = (DATA_YAML.parent / dataset_root).resolve()
+    else:
+        dataset_root = DATA_YAML.parent.resolve()
+        
+    return {
+        "root": dataset_root,
+        "train_images": (dataset_root / yaml_data.get("train")).resolve(),
+        "val_images": (dataset_root / yaml_data.get("val")).resolve(),
+        "test_images": (dataset_root / yaml_data.get("test")).resolve(),
+        "train_labels": image_to_label_dir((dataset_root / yaml_data.get("train")).resolve()),
+        "val_labels": image_to_label_dir((dataset_root / yaml_data.get("val")).resolve()),
+        "test_labels": image_to_label_dir((dataset_root / yaml_data.get("test")).resolve()),
+    }
+
+def image_to_label_dir(image_dir):
+    parts = list(image_dir.parts)
+    image_index = None
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index].lower() == "images":
+            image_index = index
+            break
+    if image_index is None:
+        raise ValueError(f"이미지 경로에서 'images' 폴더를 찾을 수 없습니다.\n{image_dir}")
+    parts[image_index] = "labels"
+    return Path(*parts)
+
+def find_images(directory):
+    images = [file for file in directory.rglob("*") if file.is_file() and file.suffix.lower() in IMAGE_EXTENSIONS]
+    return sorted(images)
+
+def find_label_path(image_path, image_root, label_root):
+    relative_path = image_path.relative_to(image_root)
+    return label_root / relative_path.parent / f"{image_path.stem}.txt"
+
+def read_label_classes(label_path):
+    if not label_path.exists():
+        return []
+    content = label_path.read_text(encoding="utf-8").strip()
+    if not content:
+        return []
+    classes = []
+    for line in content.splitlines():
+        parts = line.strip().split()
+        if len(parts) != 5: continue
+        classes.append(int(float(parts[0])))
+    return sorted(set(classes))
+
+def read_label_boxes(label_path):
+    if not label_path.exists():
+        return []
+    content = label_path.read_text(encoding="utf-8").strip()
+    if not content:
+        return []
+    return [tuple(float(value) for value in line.split()) for line in content.splitlines()]
+
+def get_device():
+    return 0 if torch.cuda.is_available() else "cpu"
+# ============================================================
+# 18. YOLOv8 대조군 실험 진행 (AI 통일 규격 주입)
+# ============================================================
+def train_model(device):
+    print("\n" + "=" * 70)
+    print("🚀 [RESEARCH] YOLOv8n 피드백 반영 대조군 학습 시작")
+    print("=" * 70)
+    
+    # ★ [교수 첨삭] 수강생의 개별 배정 모델인 v8 가중치 선언
+    model = YOLO("yolov8n.pt")
+    
     results = model.train(
-        data=DATA_YAML_PATH,   
-        imgsz=640,                 
-        epochs=10,                 # [피드백 3] epochs=10 통일
-        batch=8,                   
-        patience=10,               
+        trainer=CustomAugmentationTrainer,
+        data=str(DATA_YAML),
+        epochs=EPOCHS,
+        imgsz=IMAGE_SIZE,
+        batch=BATCH_SIZE,
         
-        # [피드백 4] optimizer="auto" 설정 및 lr0, momentum 제거
-        optimizer='auto',           
-        val=True,                  
-        conf=0.001,                
-        
-        # 런팟 OOM 방지 및 하드웨어 가속
-        device=0,                  
-        workers=2,                 
-        cache=False,               
-        
-        # [피드백 7] Seed 및 Deterministic 환경 고정
-        seed=42,
+        # [AI 피드백 지침 준수] 오토 옵티마이저 가동 및 초기 하이퍼파라미터 인자 제거
+        optimizer="auto",
+        seed=SEED,
         deterministic=True,
         
-        # [피드백 6] 증강 주입 방식을 'augmentations=' 인자로 직접 전달
-        augmentations=CUSTOM_AUGMENTATIONS,
+        device=device,
+        workers=WORKERS,
+        cache=False,  # VRAM/RAM 부족으로 인한 런팟 에러를 원천 차단합니다.
         
-        # [피드백 5] 내장 증강 플래그 전부 명시 및 제어
-        fliplr=0.5,         
-        flipud=0.0,         
-        degrees=0.0,        
-        translate=0.0,      
-        scale=0.0,          
-        shear=0.0,          
-        perspective=0.0,    
-        mosaic=0.0,         
-        mixup=0.0,          
-        cutmix=0.0,         
-        hsv_h=0.0,          
+        # [AI 피드백 지침 준수] YOLO 자체 내장 가변 증강 변동성 강제 OFF 
+        fliplr=0.0,
+        flipud=0.0,
+        degrees=0.0,
+        translate=0.0,
+        scale=0.0,
+        shear=0.0,
+        perspective=0.0,
+        mosaic=0.0,
+        mixup=0.0,
+        cutmix=0.0,
+        hsv_h=0.0,
         hsv_s=0.0,
         hsv_v=0.0,
         
-        # 결과 저장 및 시각화 자료 뽑기 강제 활성화
-        project=OUTPUT_PROJECT_DIR, # ★ 'run_v8_0814'로 경로 변경     
-        name=RUN_NAME,   
-        exist_ok=True,             
-        plots=True,                
-        box=7.5,
-        cls=0.5,
+        # [결과 저장 경로 독립 격리 변경] 
+        project=OUTPUT_PROJECT_DIR,
+        name=TRAIN_RUN_NAME,
+        exist_ok=True,
+        val=True,
+        plots=True,
+        pretrained=True,
+        save=True,
+        verbose=True,
     )
+    return Path(model.trainer.best).resolve()
 
-    # ============================================================
-    # [피드백 2번 반영] 최종 평가는 단 1개의 test 스플릿과 함수로 수행
-    # ============================================================
-    print("\n" + "="*60)
-    print("🎓 [EVALUATION] 학습 완료. 피드백 기준에 맞춰 'test' 스플릿 최종 평가를 시작합니다.")
-    print("="*60)
-
-    output_dir = Path(results.save_dir)
-    best_model_path = output_dir / "weights" / "best.pt"
-    
-    if not best_model_path.exists():
-        best_model_path = output_dir / "weights" / "last.pt"
-
-    # [피드백 2] 검증(val)이 아닌 최종 평가용 test 스플릿 적용
-    best_model = YOLO(str(best_model_path))
-    test_metrics = best_model.val(
-        data=DATA_YAML_PATH,
-        split="test",          # ★ 핵심: 최종 평가는 오직 test 스플릿으로 통일
-        imgsz=640,
-        batch=8,
-        device=0,
-        workers=2,
-        plots=True,            # 대조군 비교를 위한 Confusion Matrix, PR-Curve 시각화 출력
-        project=OUTPUT_PROJECT_DIR, # ★ 검증 플롯 파일도 'run_v8_0814' 내부로 경로 통일
-        name=f"{RUN_NAME}_test_evaluation",
-        exist_ok=True
-    )
-
-    # 메트릭 안전 추출
-    mp = test_metrics.box.mp        
-    mr = test_metrics.box.mr        
-    map50 = test_metrics.box.map50  
-    map95 = test_metrics.box.map    
-
-    print(f"📊 [{model_name} 최종 TEST 성능 보고서]")
-    print(f"✔️ Precision (정밀도) : {mp:.6f}")
-    print(f"✔️ Recall    (재현율) : {mr:.6f}")
-    print(f"✔️ mAP50              : {map50:.4f}")
-    print(f"✔️ mAP50-95           : {map95:.4f}")
-
-    # 성능 지표 CSV 저장 파이프라인
-    csv_path = output_dir / "metrics_summary.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.writer(file)
-        writer.writerow(["class_id", "class_name", "precision", "recall", "mAP50", "mAP50-95"])
-        writer.writerow(["all", "all", mp, mr, map50, map95])
-        
-        try:
-            for class_id, class_name in enumerate(CLASS_NAMES):
-                result = test_metrics.box.class_result(class_id)
-                writer.writerow([class_id, class_name, float(result), float(result), float(result), float(result)])
-            print(f"💾 클래스별 연구용 CSV 백업 완료: {csv_path}")
-        except Exception as e:
-            print(f"[WARNING] 클래스별 세부 지표 기록 생략 (전체 지표는 요약 저장됨): {e}")
-
-    # ============================================================
-    # [피드백 2번 연동] Background 포함 이미지 단위 평가 루틴 (test 셋 대상)
-    # ============================================================
-    evaluate_background_images_on_test(
-        model_path=best_model_path,
-        test_image_dir=TEST_IMAGE_DIR,
-        test_label_dir=TEST_LABEL_DIR,
-        conf_threshold=0.25,
-        iou_threshold=0.7,
-        imgsz=640,
-        device=0
-    )
-
-
-def evaluate_background_images_on_test(model_path, test_image_dir, test_label_dir, conf_threshold, iou_threshold, imgsz, device):
-    """ test 스플릿의 정상(Background) 이미지 단위 전수조사 함수 """
+# ============================================================
+# 20. 최종 TEST 평가 (AI 피드백 지침 준수: split="test")
+# ============================================================
+def evaluate_test(best_model_path, device):
     print("\n" + "=" * 70)
-    print("🎓 [EVALUATION] TEST 스플릿 기준 BACKGROUND 단위 상세 평가")
+    print("🎓 [EVALUATION] BEST 모델 최종 TEST 스플릿 평가")
     print("=" * 70)
     
-    model = YOLO(str(model_path))
-    test_images = sorted([f for f in Path(test_image_dir).iterdir() if f.is_file() and f.suffix.lower() in [".jpg", ".jpeg", ".png", ".bmp", ".webp"]])
-    
-    if not test_images:
-        print("[WARNING] test 스플릿 이미지 폴더가 비어있거나 경로가 올바르지 않습니다.")
-        return
+    best_model = YOLO(str(best_model_path))
+    metrics = best_model.val(
+        data=str(DATA_YAML),
+        split="test",  # ★ 핵심 지침: 평가는 무조건 test 스플릿 통일입니다.
+        imgsz=IMAGE_SIZE,
+        batch=BATCH_SIZE,
+        device=device,
+        workers=WORKERS,
+        conf=CONF_THRESHOLD,
+        iou=IOU_THRESHOLD,
+        plots=True,
+        project=OUTPUT_PROJECT_DIR,
+        name=TEST_RUN_NAME,
+        exist_ok=True,
+        verbose=True,
+    )
+    return metrics, Path(metrics.save_dir).resolve()
+import matplotlib.pyplot as plt
 
-    total_images = 0
-    actual_background = 0
-    actual_object_images = 0
-    background_correct = 0
-    background_false_positive = 0
-    object_detected_images = 0
-    object_missed_images = 0
+# ============================================================
+# 21 ~ 23. 성능 리포트 및 지표 CSV/컨퓨전 매트릭스 백업 + 커스텀 시각화
+# ============================================================
+def print_detection_metrics(metrics):
+    mp, mr = metrics.box.mp, metrics.box.mr
+    overall_f1 = (2 * mp * mr / (mp + mr)) if (mp + mr) > 0 else 0.0
+    print(f"\n📊 [TEST 객체 탐지 종합 성능]")
+    print(f"Precision : {mp:.6f}")
+    print(f"Recall    : {mr:.6f}")
+    print(f"F1 Score  : {overall_f1:.6f}")
+    print(f"mAP@0.5   : {metrics.box.map50:.6f}")
+    print(f"mAP50-95  : {metrics.box.map:.6f}\n")
+
+def save_detection_metrics(metrics, output_dir):
+    output_file = output_dir / "metrics_summary.csv"
+    mp, mr = metrics.box.mp, metrics.box.mr
+    overall_f1 = (2 * mp * mr / (mp + mr)) if (mp + mr) > 0 else 0.0
+    
+    # 챠트용 데이터 리스트
+    labels = ["All"]
+    map50_values = [metrics.box.map50]
+    
+    with open(output_file, "w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.writer(file)
+        writer.writerow(["class_id", "class_name", "precision", "recall", "f1_score", "mAP50", "mAP50-95"])
+        writer.writerow(["all", "all", mp, mr, overall_f1, metrics.box.map50, metrics.box.map])
+        
+        for class_id, class_name in enumerate(CLASS_NAMES):
+            try:
+                res = metrics.box.class_result(class_id)
+                cf1 = (2 * float(res[0]) * float(res[1]) / (float(res[0]) + float(res[1]))) if (float(res[0]) + float(res[1])) > 0 else 0.0
+                writer.writerow([class_id, class_name, float(res[0]), float(res[1]), cf1, float(res[2]), float(res[3])])
+                
+                # 가시화 챠트용 데이터 추가
+                labels.append(class_name)
+                map50_values.append(float(res[2]))
+            except: 
+                pass
+    print(f"💾 지표 CSV 저장 완료: {output_file}")
+    
+    # 📊 [발표용 커스텀 시각화 1] 클래스별 mAP@0.5 비교 막대그래프 자동 생성
+    try:
+        plt.figure(figsize=(8, 5))
+        colors = ['#4C72B0', '#DD8452', '#55A868']
+        bars = plt.bar(labels, map50_values, color=colors[:len(labels)], edgecolor='black', width=0.5)
+        plt.title("YOLOv8 Class-wise mAP@0.5 Performance", fontsize=14, fontweight='bold', pad=15)
+        plt.xlabel("Evaluation Target", fontsize=12)
+        plt.ylabel("mAP @ 0.5 Score", fontsize=12)
+        plt.ylim(0, 1.1)
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        
+        # 막대 위에 수치 텍스트 표시
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2.0, height + 0.02, f'{height:.4f}', ha='center', va='bottom', fontsize=11, fontweight='bold')
+            
+        chart_path = output_dir / "presentation_mAP_chart.png"
+        plt.savefig(chart_path, bbox_inches='tight', dpi=300)
+        plt.close()
+        print(f"📊 발표용 mAP 시각화 그래프 저장 완료: {chart_path}")
+    except Exception as e:
+        print(f"[WARNING] 커스텀 mAP 차트 생성 실패: {e}")
+
+def save_yolo_confusion_matrix(metrics, output_dir):
+    output_file = output_dir / "yolo_confusion_matrix.csv"
+    try:
+        matrix = metrics.confusion_matrix.matrix
+        names = CLASS_NAMES + ["background"]
+        
+        with open(output_file, "w", newline="", encoding="utf-8-sig") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Predicted / Actual"] + names)
+            for index, row in enumerate(matrix):
+                row_name = names[index] if index < len(names) else str(index)
+                writer.writerow([row_name] + [float(val) for val in row])
+        print(f"💾 컨퓨전 매트릭스 CSV 저장 완료: {output_file}")
+    except Exception as e:
+        print(f"[WARNING] 매트릭스 CSV 저장 실패: {e}")
+
+# ============================================================
+# 24. TEST Background 포함 이미지 단위 전수조사 + 오탐 분석 파이차트
+# ============================================================
+def evaluate_background_test(best_model_path, device, paths, output_dir):
+    print("\n" + "=" * 70)
+    print("🎓 [EVALUATION] TEST BACKGROUND 이미지 단위 상세 분석 루틴 가동")
+    print("=" * 70)
+    model = YOLO(str(best_model_path))
+    test_images = find_images(paths["test_images"])
+    
+    actual_background, actual_object = 0, 0
+    background_correct, background_false_positive = 0, 0
+    object_detected, object_missed = 0, 0
     
     for image_path in test_images:
-        total_images += 1
-        label_path = Path(test_label_dir) / f"{image_path.stem}.txt"
+        label_path = find_label_path(image_path, paths["test_images"], paths["test_labels"])
+        label_boxes = read_label_boxes(label_path)
+        actual_is_bg = (len(label_boxes) == 0)
         
-        if not label_path.exists() or not label_path.read_text(encoding="utf-8").strip():
-            actual_classes = []
-        else:
-            actual_classes = [int(float(line.split())) for line in label_path.read_text(encoding="utf-8").strip().splitlines() if line.split()]
+        results = model.predict(source=str(image_path), conf=CONF_THRESHOLD, iou=IOU_THRESHOLD, imgsz=IMAGE_SIZE, device=device, verbose=False)
+        pred_is_bg = True
+        if len(results) > 0 and results.boxes is not None and len(results.boxes) > 0:
+            pred_is_bg = False
             
-        actual_is_background = (len(actual_classes) == 0)
-        
-        results = model.predict(source=str(image_path), conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, device=device, verbose=False)
-        predicted_classes = []
-        if len(results) > 0 and results.boxes is not None:
-            predicted_classes = [int(cls) for cls in results.boxes.cls.cpu().tolist()]
-            
-        predicted_is_background = (len(predicted_classes) == 0)
-        
-        if actual_is_background:
+        if actual_is_bg:
             actual_background += 1
-            if predicted_is_background:
-                background_correct += 1
-            else:
-                background_false_positive += 1
+            if pred_is_bg: background_correct += 1
+            else: background_false_positive += 1
         else:
-            actual_object_images += 1
-            if predicted_is_background:
-                object_missed_images += 1
-            else:
-                object_detected_images += 1
+            actual_object += 1
+            if pred_is_bg: object_missed += 1
+            else: object_detected += 1
 
     bg_acc = (background_correct / actual_background) if actual_background > 0 else 0.0
     bg_fpr = (background_false_positive / actual_background) if actual_background > 0 else 0.0
-    obj_det_rate = (object_detected_images / actual_object_images) if actual_object_images > 0 else 0.0
-    obj_miss_rate = (object_missed_images / actual_object_images) if actual_object_images > 0 else 0.0
+    obj_det = (object_detected / actual_object) if actual_object > 0 else 0.0
+    obj_mis = (object_missed / actual_object) if actual_object > 0 else 0.0
     
-    print(f"평가 이미지 수 : {len(test_images)}")
-    print(f"✔️ [TEST] 정상 이미지 맞춘 정확도 : {bg_acc:.4f}")
-    print(f"✔️ [TEST] 정상 이미지 오탐 확률(FPR): {bg_fpr:.4f}")
-    print(f"✔️ [TEST] 화재 이미지 탐지 성공률    : {obj_det_rate:.4f}")
-    print(f"✔️ [TEST] 화재 이미지 미탐 확률(Miss) : {obj_miss_rate:.4f}")
+    print(f"🎯 총 평가 이미지 수 : {len(test_images)}")
+    print(f"✔️ 정상 이미지 오탐 차단 정밀도(TN Rate) : {bg_acc:.4f}")
+    print(f"✔️ 정상 이미지 오탐 초래 확률(FP Rate) : {bg_fpr:.4f}")
+    print(f"✔️ 화재 도메인 실제 검출 확률(TP Rate) : {obj_det:.4f}")
+    print(f"✔️ 화재 도메인 미탐 실책 확률(FN Rate) : {obj_mis:.4f}")
     print("=" * 70)
+
+    # 📊 [발표용 커스텀 시각화 2] 정상 이미지 대상 관제 정확도 파이 차트 생성
+    if actual_background > 0:
+        try:
+            plt.figure(figsize=(6, 6))
+            pie_labels = [f"Clean Normal\n({background_correct} imgs)", f"False Alarms (FP)\n({background_false_positive} imgs)"]
+            pie_sizes = [background_correct, background_false_positive]
+            pie_colors = ['#A1C9F4', '#FF9F9B'] # 깔끔한 파스텔톤
+            
+            plt.pie(pie_sizes, labels=pie_labels, autopct='%1.1f%%', startangle=90, 
+                    colors=pie_colors, textprops={'fontsize': 11, 'weight': 'bold'},
+                    wedgeprops={'edgecolor': 'black', 'linewidth': 1, 'antialiased': True})
+            
+            plt.title("CCTV Background Image Analysis\n(False Positive Monitoring)", fontsize=13, fontweight='bold', pad=20)
+            
+            pie_path = output_dir / "presentation_background_pie_chart.png"
+            plt.savefig(pie_path, bbox_inches='tight', dpi=300)
+            plt.close()
+            print(f"📊 발표용 백그라운드 파이차트 저장 완료: {pie_path}")
+        except Exception as e:
+            print(f"[WARNING] 파이차트 생성 실패: {e}")
+
+# ============================================================
+# Main 실행 컨트롤러 (전체 실험 파이프라인 제어)
+# ============================================================
+def main():
+    check_yaml()
+    dataset_paths = get_dataset_paths()
+    device = get_device()
+    
+    # 1. YOLOv8 학습 진행 및 최적 pt 추출
+    best_pt = train_model(device)
+    
+    # 2. 최종 오피셜 TEST 세트 평가 및 시각화 플롯 추출
+    metrics, eval_save_dir = evaluate_test(best_pt, device)
+    
+    # 3. 종합 성능 터미널 레포팅 및 CSV/Matrix 디스크 백업 (내부에서 막대차트 생성)
+    print_detection_metrics(metrics)
+    save_detection_metrics(metrics, eval_save_dir)
+    save_yolo_confusion_matrix(metrics, eval_save_dir)
+    
+    # 4. 백그라운드 정상 샘플 대상 오탐률/미탐률 전수조사 수행 (내부에서 파이차트 생성)
+    evaluate_background_test(best_pt, device, dataset_paths, eval_save_dir)
 
 if __name__ == "__main__":
     main()
