@@ -1,6 +1,7 @@
 """인증 API.
 
 POST /api/auth/login                    로그인, JWT 발급
+POST /api/auth/logout                   로그아웃 (활동이력에 LOGOUT 을 남기려고 있다)
 GET  /api/auth/me                       내 정보 (세션 복원용)
 POST /api/auth/find-id                  아이디 찾기 (이름 + 이메일)
 POST /api/auth/password-reset/request   재설정 인증코드 발급 → SMS
@@ -30,6 +31,18 @@ _RESET_ACCEPTED = {
 }
 
 
+def _record_activity(user_no: int, activity_type: str) -> None:
+    """활동이력 1행을 남긴다 (LOGIN / LOGOUT).
+
+    실패한 로그인은 부르지 않는다 — 침입 시도는 접속 이력과 다른 것이고,
+    한 표에 섞이면 '이 사람이 언제 들어왔나'를 읽을 수 없게 된다.
+    """
+    db.execute(
+        "INSERT INTO user_activity (user_no, activity_type) VALUES (%s, %s)",
+        (user_no, activity_type),
+    )
+
+
 @bp.post("/login")
 def login():
     body = request.get_json(silent=True) or {}
@@ -55,6 +68,8 @@ def login():
     if user["user_status"] == "WITHDRAWN":
         raise ApiError(403, "ACCOUNT_WITHDRAWN", "탈퇴한 계정입니다.")
 
+    _record_activity(user["user_no"], "LOGIN")
+
     return jsonify({
         "access_token": issue_token(user),
         "user": {
@@ -64,6 +79,22 @@ def login():
             "user_role": user["user_role"],
         },
     })
+
+
+@bp.post("/logout")
+@login_required
+def logout():
+    """활동이력에 LOGOUT 을 남긴다. 토큰 자체는 무효화하지 않는다.
+
+    JWT 는 무상태라 서버가 이미 발급한 토큰을 되돌릴 수 없다. 실제 로그아웃은
+    프론트가 토큰을 지우는 것으로 끝나고(api.js 의 authApi.logout), 이 엔드포인트는
+    "나갔다"는 사실을 서버가 알 수 있는 유일한 통로다. 프론트가 이걸 안 부르면
+    LOGOUT 행은 영영 쌓이지 않는다.
+
+    토큰을 진짜로 죽이려면 폐기 목록(blocklist)이 따로 필요한데, 지금 범위가 아니다.
+    """
+    _record_activity(g.user["user_no"], "LOGOUT")
+    return jsonify({"message": "로그아웃되었습니다."})
 
 
 @bp.post("/find-id")

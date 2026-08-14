@@ -1,8 +1,9 @@
 """관리자 계정 API — 명세서 3번 섹션.
 
-GET  /api/users             목록 (ADMIN)
-POST /api/users             등록 (ADMIN)
-PUT  /api/users/<user_no>   수정 · 정지 · 탈퇴 (ADMIN 전체 / 일반 사용자는 본인만)
+GET  /api/users                        목록 (ADMIN)
+POST /api/users                        등록 (ADMIN)
+PUT  /api/users/<user_no>              수정 · 정지 · 탈퇴 (ADMIN 전체 / 일반 사용자는 본인만)
+GET  /api/users/<user_no>/activities   접속·로그아웃 이력 (ADMIN 전체 / 일반 사용자는 본인만)
 """
 import bcrypt
 from flask import Blueprint, g, jsonify, request
@@ -128,3 +129,36 @@ def update_user(user_no: int):
     if affected == 0:
         raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
     return jsonify({"user_no": user_no})
+
+
+@bp.get("/<int:user_no>/activities")
+@login_required
+def list_user_activities(user_no: int):
+    """접속(LOGIN)·로그아웃(LOGOUT) 이력을 최신순으로 돌려준다.
+
+    권한은 PUT 과 같은 규칙이다 — ADMIN 은 전체, 일반 사용자는 본인 것만.
+    접속 이력은 감사 자료라 아무나 남의 것을 들여다볼 수 있으면 안 된다.
+    """
+    if g.user.get("user_role") != "ADMIN" and g.user.get("user_no") != user_no:
+        raise ApiError(403, "FORBIDDEN", "본인 계정의 활동이력만 조회할 수 있습니다.")
+
+    # 이력이 0건인 것과 사용자가 없는 것은 다르다 — 빈 배열로 뭉개면 프론트가
+    # 오타 난 user_no 를 '활동 없음'으로 표시하게 된다
+    if db.query_one("SELECT 1 FROM users WHERE user_no = %s", (user_no,)) is None:
+        raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+
+    page, size = get_page_params()
+    total = db.query_one(
+        "SELECT count(*) AS cnt FROM user_activity WHERE user_no = %s", (user_no,)
+    )["cnt"]
+    rows = db.query(
+        """
+        SELECT activity_no, user_no, activity_type, activity_at
+        FROM user_activity
+        WHERE user_no = %s
+        ORDER BY activity_at DESC, activity_no DESC
+        LIMIT %s OFFSET %s
+        """,
+        (user_no, size, (page - 1) * size),
+    )
+    return jsonify(paged_response(rows, page, size, total))

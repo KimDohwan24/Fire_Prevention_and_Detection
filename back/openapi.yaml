@@ -122,6 +122,36 @@ paths:
         "403":
           $ref: "#/components/responses/AccountBlocked"
 
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: 로그아웃
+      description: |
+        활동이력에 `LOGOUT` 을 1행 남긴다. **토큰은 무효화되지 않는다** —
+        JWT 는 무상태라 이미 발급한 토큰을 서버가 되돌릴 수 없다.
+
+        실제 로그아웃은 프론트가 저장한 토큰을 지우는 것으로 끝난다. 이 엔드포인트는
+        "사용자가 나갔다"는 사실을 서버가 알 수 있는 **유일한 통로**다. 프론트가
+        토큰만 지우고 이걸 안 부르면 `LOGOUT` 행은 영영 쌓이지 않는다.
+
+        브라우저를 그냥 닫은 경우는 잡히지 않는다 — 명시적 로그아웃만 기록된다.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 기록 완료
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              example:
+                message: 로그아웃되었습니다.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /api/auth/me:
     get:
       tags: [auth]
@@ -486,6 +516,57 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/ForbiddenUserUpdate"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
+  /api/users/{user_no}/activities:
+    get:
+      tags: [users]
+      summary: 활동이력 (접속 · 로그아웃)
+      description: |
+        해당 사용자의 접속(`LOGIN`)과 로그아웃(`LOGOUT`) 이력을 **최신순**으로 준다.
+        남기는 종류는 이 둘뿐이며 IP·User-Agent 는 수집하지 않는다.
+
+        권한은 계정 수정과 같은 규칙이다 — ADMIN 은 전체, 일반 사용자는 본인 것만.
+        접속 이력은 감사 자료라 남의 것을 아무나 볼 수 없다.
+
+        회원 상세 화면의 "최근 로그인"은 첫 번째 `LOGIN` 항목을 쓰면 된다
+        (`?size=1` 로 한 건만 받아도 된다).
+
+        주의: 로그인 **실패**는 여기 쌓이지 않는다. 그리고 `LOGOUT` 은 프론트가
+        `POST /api/auth/logout` 을 불러야만 생긴다 — 브라우저를 그냥 닫으면
+        `LOGIN` 만 있고 짝이 되는 `LOGOUT` 이 없는 행이 남는다. 정상이다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserNo"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: 조회 성공 (이력이 없으면 `items` 가 빈 배열)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/UserActivity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: 남의 활동이력 조회 시도 (`FORBIDDEN`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: FORBIDDEN
+                message: 본인 계정의 활동이력만 조회할 수 있습니다.
         "404":
           $ref: "#/components/responses/UserNotFound"
 
@@ -1775,6 +1856,37 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    ActivityType:
+      type: string
+      description: |
+        `LOGIN` 접속 · `LOGOUT` 로그아웃.
+        로그인 **실패**는 여기 들어오지 않는다 (침입 시도는 접속 이력이 아니다).
+      enum: [LOGIN, LOGOUT]
+
+    UserActivity:
+      type: object
+      description: |
+        사용자 활동이력 1행 (`GET /api/users/{user_no}/activities`).
+        사용자 1명에 N행이 쌓인다. IP·User-Agent 는 수집하지 않는다.
+      properties:
+        activity_no:
+          type: integer
+          format: int64
+        user_no:
+          type: integer
+          format: int64
+        activity_type:
+          $ref: "#/components/schemas/ActivityType"
+        activity_at:
+          type: string
+          format: date-time
+          description: 활동 일시
+      example:
+        activity_no: 42
+        user_no: 1
+        activity_type: LOGIN
+        activity_at: "2026-08-14T09:12:33"
 
     UserCreate:
       type: object
