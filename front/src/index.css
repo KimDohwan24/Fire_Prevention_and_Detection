@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* 앱의 테마 토글(html.dark)만 Tailwind dark: variant의 기준으로 사용한다. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   /* Colors */
   --color-primary: #000000;

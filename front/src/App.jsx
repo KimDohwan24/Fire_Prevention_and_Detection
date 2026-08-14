@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import FindAccount from './pages/FindAccount';
 import Dashboard from './pages/Dashboard';
+import Monitoring from './pages/Monitoring';
 import AdminPage from './pages/AdminPage';
 import MyPage from './pages/MyPage';
 import DarkModeToggle from './components/DarkModeToggle';
@@ -19,6 +20,7 @@ function App() {
         <Route path="/find-account" element={<FindAccount />} />
         <Route path="/find-id-pw" element={<FindAccount />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/monitoring" element={<Monitoring />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/mypage" element={<MyPage />} />
         {/* Placeholder for other routes */}
