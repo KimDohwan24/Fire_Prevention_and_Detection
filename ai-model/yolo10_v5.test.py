@@ -1,824 +1,2936 @@
-"""
-YOLOv10 화재/연기 객체탐지 학습 + 평가 + 시각화 통합 코드
-
-기능
-1. YOLOv10n 학습
-2. best.pt 기준 Validation 평가
-3. Precision / Recall / F1 / mAP50 / mAP50-95 출력
-4. 클래스별 AP(mAP50-95 기준) 출력
-5. Test 예측 기반 평균 IoU 계산
-6. Confidence Score 평균/최소/최대 계산
-7. Confusion Matrix, PR/P/R/F1 Curve, results.png 저장
-8. 발표용 추가 그래프 저장
-9. final_metrics.csv / final_summary.txt 저장
-10. 마지막에 핵심 결과를 print()로 출력
-
-전처리 데이터 구조
-
-dataset/
-├─ data.yaml
-├─ images/train, val, test
-└─ labels/train, val, test
-
-클래스
-0 = fire
-1 = smoke
-
-정상 이미지는 빈 TXT 라벨로 처리되어 있다고 가정합니다.
-"""
-
-from __future__ import annotations
-
-import csv
-import time
 from pathlib import Path
+import csv
 
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
 import albumentations as A
 from ultralytics import YOLO
+from ultralytics.models.yolo.detect.train import DetectionTrainer
 
 
-class YOLOv10FireTrainer:
+# ============================================================
+# 1. 기본 설정
+# ============================================================
 
-    def __init__(
+# ------------------------------------------------------------
+# data.yaml 경로
+#
+# 현재 Python 파일 위치를 기준으로
+#
+# ../data/data.yaml
+#
+# 을 사용합니다.
+#
+# 예:
+# project/
+# ├── data/
+# │   └── data.yaml
+# │
+# └── ai-model/
+#     └── yolo11_test.py
+#
+# ------------------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parent
+
+DATA_YAML = (
+    BASE_DIR
+    / ".."
+    / "data"
+    / "data.yaml"
+).resolve()
+
+
+# ------------------------------------------------------------
+# 결과 저장 위치
+# ------------------------------------------------------------
+
+RUNS_DIR = (
+    BASE_DIR
+    / "runs"
+    / "data"
+).resolve()
+
+
+# ------------------------------------------------------------
+# 실행 이름
+# ------------------------------------------------------------
+
+TRAIN_RUN_NAME = "fire_yolov10n"
+
+TEST_RUN_NAME = "fire_yolov10n_test"
+
+
+# ============================================================
+# 2. 클래스
+# ============================================================
+
+# 객체 클래스
+#
+# 0 = fire
+# 1 = smoke
+#
+# 정상(background)은 클래스 번호를 부여하지 않습니다.
+# 객체가 없는 빈 txt 라벨을 정상으로 사용합니다.
+
+CLASS_NAMES = [
+    "fire",
+    "smoke",
+]
+
+
+# ============================================================
+# 3. 학습 설정
+# ============================================================
+
+EPOCHS = 10
+
+IMAGE_SIZE = 640
+
+BATCH_SIZE = 16
+
+WORKERS = 0
+
+SEED = 42
+
+
+# ============================================================
+# 4. 최종 Test 예측 설정
+# ============================================================
+
+# Confidence threshold
+CONF_THRESHOLD = 0.25
+
+# NMS IoU threshold
+IOU_THRESHOLD = 0.7
+
+# 이미지 단위 평가에서 예측 박스와 실제 박스를 정탐으로 연결할 IoU
+MATCH_IOU_THRESHOLD = 0.5
+
+
+# ============================================================
+# 5. 이미지 확장자
+# ============================================================
+
+IMAGE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".webp",
+    ".tif",
+    ".tiff",
+}
+
+
+# ============================================================
+# 6. 데이터 증강
+# ============================================================
+#
+# 사용자 정의 Trainer가 아래 Albumentations 목록을
+# Ultralytics 데이터 파이프라인에 연결합니다.
+#
+# ============================================================
+
+CUSTOM_AUGMENTATIONS = [
+
+    A.RandomBrightnessContrast(
+        brightness_limit=0.15,
+        contrast_limit=0.15,
+        p=0.40
+    ),
+
+    A.HorizontalFlip(
+        p=0.50
+    ),
+
+    A.GaussNoise(
+        std_range=(0.01, 0.03),
+        mean_range=(0.0, 0.0),
+        p=0.20
+    ),
+
+    A.GaussianBlur(
+        blur_limit=(3, 5),
+        sigma_limit=(0.1, 1.0),
+        p=0.20
+    ),
+]
+
+
+class CustomAugmentationTrainer(DetectionTrainer):
+
+    def build_dataset(
         self,
-        model_name="yolov10n.pt",
-        yaml_path="../data/data.yaml",
-        image_size=640,
-        epochs=10,
-        batch=8,
-        patience=10,
-        conf_threshold=0.25,
+        img_path,
+        mode="train",
+        batch=None
     ):
-        # 모델 및 데이터 경로
-        self.model_name = model_name
-        self.yaml_path = Path(yaml_path)
 
-        # 학습 조건
-        self.image_size = image_size
-        self.epochs = epochs
-        self.batch = batch
-        self.patience = patience
+        if mode == "train":
 
-        # Test 예측 분석 때 사용할 최소 Confidence
-        self.conf_threshold = conf_threshold
+            # model.train()의 설정 검증이 끝난 뒤 데이터셋 생성 직전에
+            # Ultralytics v8_transforms가 읽는 내부 설정을 추가합니다.
+            self.args.augmentations = CUSTOM_AUGMENTATIONS
 
-        # NVIDIA GPU가 있으면 GPU(0), 없으면 CPU 사용
-        self.device = 0 if torch.cuda.is_available() else "cpu"
+        return super().build_dataset(
+            img_path,
+            mode=mode,
+            batch=batch
+        )
 
-        # 결과 저장 위치
-        self.project_dir = Path("./runs/fire_detection")
-        self.run_name = "yolov10n_fire"
 
-        self.train_result = None
-        self.best_model = None
-        self.save_dir = None
+# ============================================================
+# 7. YAML 경로 확인
+# ============================================================
 
-    # ============================================================
-    # 1. 환경 확인
-    # ============================================================
-    def check_environment(self):
-        """학습 시작 전 파일 경로와 장치를 확인합니다."""
+def check_yaml():
 
-        print("\n" + "=" * 70)
-        print("1. 학습 환경 확인")
-        print("=" * 70)
+    print()
+    print("=" * 70)
+    print("DATA.YAML 확인")
+    print("=" * 70)
 
-        if not self.yaml_path.exists():
+    print()
+    print(f"Python 파일 위치 : {BASE_DIR}")
+    print(f"data.yaml 위치   : {DATA_YAML}")
+
+    if not DATA_YAML.exists():
+
+        raise FileNotFoundError(
+            "\n"
+            "data.yaml 파일을 찾을 수 없습니다.\n"
+            f"확인 경로: {DATA_YAML}\n"
+        )
+
+    print()
+    print("[OK] data.yaml 확인 완료")
+
+
+# ============================================================
+# 8. data.yaml에서 Dataset Root 찾기
+# ============================================================
+
+def get_dataset_paths():
+
+    try:
+
+        import yaml
+
+    except ImportError:
+
+        raise ImportError(
+            "\nPyYAML이 설치되어 있지 않습니다.\n"
+            "다음 명령으로 설치하세요:\n"
+            "pip install pyyaml"
+        )
+
+
+    with open(
+        DATA_YAML,
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        yaml_data = yaml.safe_load(file)
+
+
+    # ========================================================
+    # path 처리
+    # ========================================================
+
+    yaml_root = yaml_data.get(
+        "path",
+        ""
+    )
+
+
+    if yaml_root:
+
+        dataset_root = Path(
+            yaml_root
+        )
+
+
+        # 상대 경로라면
+        # data.yaml 기준으로 계산
+        if not dataset_root.is_absolute():
+
+            dataset_root = (
+                DATA_YAML.parent
+                / dataset_root
+            ).resolve()
+
+    else:
+
+        dataset_root = (
+            DATA_YAML.parent
+        ).resolve()
+
+
+    # ========================================================
+    # train / val / test
+    # ========================================================
+
+    train_value = yaml_data.get(
+        "train"
+    )
+
+    val_value = yaml_data.get(
+        "val"
+    )
+
+    test_value = yaml_data.get(
+        "test"
+    )
+
+
+    if train_value is None:
+
+        raise ValueError(
+            "data.yaml에 train 항목이 없습니다."
+        )
+
+
+    if val_value is None:
+
+        raise ValueError(
+            "data.yaml에 val 항목이 없습니다."
+        )
+
+
+    if test_value is None:
+
+        raise ValueError(
+            "data.yaml에 test 항목이 없습니다."
+        )
+
+
+    # --------------------------------------------------------
+    # 이번 코드는 일반적인
+    # images/train
+    # images/val
+    # images/test
+    #
+    # 형태를 기준으로 합니다.
+    # --------------------------------------------------------
+
+    train_images = (
+        dataset_root
+        / train_value
+    ).resolve()
+
+
+    val_images = (
+        dataset_root
+        / val_value
+    ).resolve()
+
+
+    test_images = (
+        dataset_root
+        / test_value
+    ).resolve()
+
+
+    # --------------------------------------------------------
+    # labels 경로 자동 계산
+    # --------------------------------------------------------
+
+    train_labels = image_to_label_dir(
+        train_images
+    )
+
+    val_labels = image_to_label_dir(
+        val_images
+    )
+
+    test_labels = image_to_label_dir(
+        test_images
+    )
+
+
+    return {
+        "root": dataset_root,
+
+        "train_images": train_images,
+        "train_labels": train_labels,
+
+        "val_images": val_images,
+        "val_labels": val_labels,
+
+        "test_images": test_images,
+        "test_labels": test_labels,
+    }
+
+
+# ============================================================
+# 9. images 경로 → labels 경로 변환
+# ============================================================
+
+def image_to_label_dir(
+    image_dir
+):
+
+    parts = list(
+        image_dir.parts
+    )
+
+
+    # 마지막 images 항목 찾기
+    image_index = None
+
+
+    for index in range(
+        len(parts) - 1,
+        -1,
+        -1
+    ):
+
+        if parts[index].lower() == "images":
+
+            image_index = index
+
+            break
+
+
+    if image_index is None:
+
+        raise ValueError(
+            "\n"
+            "이미지 경로에서 'images' 폴더를 "
+            "찾을 수 없습니다.\n"
+            f"{image_dir}"
+        )
+
+
+    parts[image_index] = "labels"
+
+
+    return Path(
+        *parts
+    )
+
+
+# ============================================================
+# 10. 데이터 폴더 확인
+# ============================================================
+
+def check_dataset():
+
+    paths = get_dataset_paths()
+
+
+    print()
+    print("=" * 70)
+    print("DATASET 경로")
+    print("=" * 70)
+
+
+    print()
+    print("[TRAIN]")
+
+    print(
+        f"Image : "
+        f"{paths['train_images']}"
+    )
+
+    print(
+        f"Label : "
+        f"{paths['train_labels']}"
+    )
+
+
+    print()
+    print("[VAL]")
+
+    print(
+        f"Image : "
+        f"{paths['val_images']}"
+    )
+
+    print(
+        f"Label : "
+        f"{paths['val_labels']}"
+    )
+
+
+    print()
+    print("[TEST]")
+
+    print(
+        f"Image : "
+        f"{paths['test_images']}"
+    )
+
+    print(
+        f"Label : "
+        f"{paths['test_labels']}"
+    )
+
+
+    # --------------------------------------------------------
+    # 폴더 존재 확인
+    # --------------------------------------------------------
+
+    folders = [
+
+        paths["train_images"],
+        paths["train_labels"],
+
+        paths["val_images"],
+        paths["val_labels"],
+
+        paths["test_images"],
+        paths["test_labels"],
+    ]
+
+
+    for folder in folders:
+
+        if not folder.exists():
+
             raise FileNotFoundError(
-                f"data.yaml을 찾을 수 없습니다: {self.yaml_path.resolve()}"
+                "\n"
+                "데이터 폴더를 찾을 수 없습니다.\n"
+                f"{folder}"
             )
 
-        print(f"모델             : {self.model_name}")
-        print(f"data.yaml        : {self.yaml_path.resolve()}")
-        print(f"입력 이미지 크기 : {self.image_size} x {self.image_size}")
-        print(f"Epochs           : {self.epochs}")
-        print(f"Batch            : {self.batch}")
-        print(f"Patience         : {self.patience}")
-        print(f"Confidence 기준  : {self.conf_threshold}")
 
-        if self.device == "cpu":
-            print("학습 장치         : CPU")
-        else:
-            print(f"학습 장치         : GPU ({torch.cuda.get_device_name(0)})")
+    return paths
 
-    # ============================================================
-    # 2. YOLOv10 학습
-    # ============================================================
-    def train(self):
-        """
-        YOLOv10n 사전학습 모델을 Fire/Smoke 데이터로 Fine-Tuning 합니다.
 
-        plots=True로 설정하면 Ultralytics가 다음 자료를 자동 저장합니다.
-        - results.png
-        - confusion_matrix.png
-        - confusion_matrix_normalized.png
-        - PR_curve.png
-        - P_curve.png
-        - R_curve.png
-        - F1_curve.png
-        """
+# ============================================================
+# 11. 이미지 검색
+# ============================================================
 
-        print("\n" + "=" * 70)
-        print("2. YOLOv10 모델 학습 시작")
-        print("=" * 70)
+def find_images(
+    directory
+):
 
-        model = YOLO(self.model_name)
+    images = [
 
-        # ============================================================
-        # 커스텀 Albumentations 증강
-        # ============================================================
-        # CCTV 환경에서 발생할 수 있는 밝기 변화, 센서 노이즈,
-        # 약한 흐림을 가정한 증강입니다.
-        #
-        # Train 데이터에만 학습 중 적용되며 Val/Test에는 적용되지 않습니다.
-        # 아래 3개는 이미지의 픽셀 값만 바꾸므로 bbox 위치는 그대로 유지됩니다.
-        custom_augmentations = [
-            # 밝기 ±15%, 대비 ±15% / 40% 확률
-            A.RandomBrightnessContrast(
-                brightness_limit=0.15,
-                contrast_limit=0.15,
-                p=0.40,
-            ),
+        file
 
-            # 약한 Gaussian Noise / 20% 확률
-            A.GaussNoise(
-                std_range=(0.01, 0.03),
-                mean_range=(0.0, 0.0),
-                p=0.20,
-            ),
+        for file in directory.rglob("*")
 
-            # 약한 Gaussian Blur(3x3~5x5) / 20% 확률
-            A.GaussianBlur(
-                blur_limit=(3, 5),
-                sigma_limit=(0.1, 1.0),
-                p=0.20,
-            ),
-        ]
+        if (
+            file.is_file()
+            and
+            file.suffix.lower()
+            in IMAGE_EXTENSIONS
+        )
+    ]
 
-        print("\n[학습 증강 설정]")
-        print("- RandomBrightnessContrast : p=0.40")
-        print("- GaussNoise               : p=0.20")
-        print("- GaussianBlur             : p=0.20")
 
-        start_time = time.time()
+    return sorted(
+        images
+    )
 
-        self.train_result = model.train(
-            data=str(self.yaml_path),
-            epochs=self.epochs,
-            imgsz=self.image_size,
-            batch=self.batch,
-            device=self.device,
-            patience=self.patience,
 
-            # 사용자 정의 Albumentations 증강 적용
-            augmentations=custom_augmentations,
+# ============================================================
+# 12. 이미지에 대응하는 Label 찾기
+# ============================================================
 
-            plots=True,
-            save=True,
-            seed=42,
-            deterministic=True,
-            optimizer="auto",
-            val=True,
-            project=str(self.project_dir),
-            name=self.run_name,
-            exist_ok=False,
-            verbose=True,
+def find_label_path(
+    image_path,
+    image_root,
+    label_root
+):
+
+    relative_path = (
+        image_path.relative_to(
+            image_root
+        )
+    )
+
+
+    label_path = (
+
+        label_root
+
+        / relative_path.parent
+
+        / (
+            image_path.stem
+            + ".txt"
+        )
+    )
+
+
+    return label_path
+
+
+# ============================================================
+# 13. Label 클래스 읽기
+# ============================================================
+
+def read_label_classes(
+    label_path
+):
+
+    # --------------------------------------------------------
+    # 라벨 파일 자체가 없으면
+    # background로 처리
+    # --------------------------------------------------------
+
+    if not label_path.exists():
+
+        return []
+
+
+    content = label_path.read_text(
+        encoding="utf-8"
+    ).strip()
+
+
+    # --------------------------------------------------------
+    # 빈 txt
+    # background
+    # --------------------------------------------------------
+
+    if not content:
+
+        return []
+
+
+    classes = []
+
+
+    for line in content.splitlines():
+
+        parts = (
+            line
+            .strip()
+            .split()
         )
 
-        elapsed = time.time() - start_time
 
-        self.save_dir = Path(self.train_result.save_dir)
-        best_path = self.save_dir / "weights" / "best.pt"
+        if len(parts) != 5:
 
-        if not best_path.exists():
-            raise FileNotFoundError(f"best.pt를 찾을 수 없습니다: {best_path}")
+            raise ValueError(
+                f"잘못된 YOLO 라벨 형식: {label_path}\n"
+                f"각 행은 class x_center y_center width height 형식이어야 합니다: {line}"
+            )
 
-        self.best_model = YOLO(str(best_path))
 
-        print("\n학습 완료")
-        print(f"학습 시간      : {elapsed / 60:.2f}분")
-        print(f"결과 저장 위치 : {self.save_dir}")
-        print(f"Best 모델      : {best_path}")
+        try:
 
-        return elapsed
+            values = [float(value) for value in parts]
 
-    # ============================================================
-    # 3. Validation 평가
-    # ============================================================
-    def validate(self):
-        """
-        best.pt를 Validation 데이터로 평가합니다.
+            if not values[0].is_integer():
 
-        Precision : 탐지했다고 판단한 객체 중 실제 정답 비율
-        Recall    : 실제 객체 중 모델이 찾아낸 비율
-        mAP50     : IoU 0.50 기준 AP의 클래스 평균
-        mAP50-95  : IoU 0.50~0.95 기준 AP 평균
-        """
+                raise ValueError(
+                    f"클래스 ID는 정수여야 합니다: {label_path}\n{line}"
+                )
 
-        print("\n" + "=" * 70)
-        print("3. Validation 성능 평가")
-        print("=" * 70)
+            class_id = int(values[0])
 
-        metrics = self.best_model.val(
-            data=str(self.yaml_path),
-            split="val",
-            imgsz=self.image_size,
-            device=self.device,
-            conf=0.001,
-            plots=True,
-            project=str(self.save_dir),
-            name="validation",
+
+            if not 0 <= class_id < len(CLASS_NAMES):
+
+                raise ValueError(
+                    f"지원하지 않는 클래스 ID {class_id}: {label_path}"
+                )
+
+            x_center, y_center, width, height = values[1:]
+
+            if not (
+                0.0 <= x_center <= 1.0
+                and 0.0 <= y_center <= 1.0
+                and 0.0 < width <= 1.0
+                and 0.0 < height <= 1.0
+            ):
+
+                raise ValueError(
+                    f"라벨 좌표는 0~1 범위이고 폭/높이는 0보다 커야 합니다: "
+                    f"{label_path}\n{line}"
+                )
+
+            classes.append(class_id)
+
+
+        except ValueError as error:
+
+            if str(error).startswith((
+                "클래스 ID",
+                "지원하지 않는",
+                "라벨 좌표",
+            )):
+
+                raise
+
+            raise ValueError(
+                f"숫자로 변환할 수 없는 YOLO 라벨입니다: {label_path}\n{line}"
+            ) from error
+
+
+    return sorted(
+        set(classes)
+    )
+
+
+def read_label_boxes(
+    label_path
+):
+
+    # 먼저 공통 검증을 수행합니다. 라벨 없음/빈 파일은 background입니다.
+    read_label_classes(label_path)
+
+    if not label_path.exists():
+
+        return []
+
+    content = label_path.read_text(
+        encoding="utf-8"
+    ).strip()
+
+    if not content:
+
+        return []
+
+    return [
+        tuple(float(value) for value in line.split())
+        for line in content.splitlines()
+    ]
+
+
+def xywh_to_xyxy(
+    box
+):
+
+    x_center, y_center, width, height = box
+
+    return (
+        x_center - width / 2,
+        y_center - height / 2,
+        x_center + width / 2,
+        y_center + height / 2,
+    )
+
+
+def box_iou(
+    first_box,
+    second_box
+):
+
+    first = xywh_to_xyxy(first_box)
+    second = xywh_to_xyxy(second_box)
+
+    intersection_width = max(
+        0.0,
+        min(first[2], second[2]) - max(first[0], second[0])
+    )
+
+    intersection_height = max(
+        0.0,
+        min(first[3], second[3]) - max(first[1], second[1])
+    )
+
+    intersection = intersection_width * intersection_height
+    first_area = max(0.0, first[2] - first[0]) * max(0.0, first[3] - first[1])
+    second_area = max(0.0, second[2] - second[0]) * max(0.0, second[3] - second[1])
+    union = first_area + second_area - intersection
+
+    return intersection / union if union > 0.0 else 0.0
+
+
+def match_predictions(
+    actual_boxes,
+    predicted_boxes
+):
+
+    candidates = []
+
+    for actual_index, actual in enumerate(actual_boxes):
+
+        for predicted_index, predicted in enumerate(predicted_boxes):
+
+            iou = box_iou(actual[1:], predicted[1:])
+
+            if iou >= MATCH_IOU_THRESHOLD:
+
+                candidates.append((iou, actual_index, predicted_index))
+
+    matched_actual = set()
+    matched_predicted = set()
+    matches = []
+
+    for iou, actual_index, predicted_index in sorted(candidates, reverse=True):
+
+        if actual_index in matched_actual or predicted_index in matched_predicted:
+
+            continue
+
+        matched_actual.add(actual_index)
+        matched_predicted.add(predicted_index)
+        matches.append((actual_index, predicted_index, iou))
+
+    return matches
+
+
+# ============================================================
+# 14. Dataset 통계
+# ============================================================
+
+def print_dataset_statistics(
+    name,
+    image_dir,
+    label_dir
+):
+
+    images = find_images(
+        image_dir
+    )
+
+
+    fire_images = 0
+
+    smoke_images = 0
+
+    background_images = 0
+
+    fire_boxes = 0
+
+    smoke_boxes = 0
+
+
+    for image_path in images:
+
+        label_path = find_label_path(
+
+            image_path,
+
+            image_dir,
+
+            label_dir
         )
 
-        precision = float(metrics.box.mp)
-        recall = float(metrics.box.mr)
-        map50 = float(metrics.box.map50)
-        map50_95 = float(metrics.box.map)
 
-        # F1 Score 직접 계산
-        f1 = (
-            2 * precision * recall / (precision + recall)
-            if precision + recall > 0
+        label_boxes = read_label_boxes(label_path)
+
+        if not label_boxes:
+
+            background_images += 1
+
+            continue
+
+        label_classes = [int(box[0]) for box in label_boxes]
+
+        found_fire = 0 in label_classes
+
+        found_smoke = 1 in label_classes
+
+        fire_boxes += label_classes.count(0)
+
+        smoke_boxes += label_classes.count(1)
+
+
+        if found_fire:
+
+            fire_images += 1
+
+
+        if found_smoke:
+
+            smoke_images += 1
+
+
+    print()
+    print("-" * 70)
+    print(f"{name} DATA")
+    print("-" * 70)
+
+    print(
+        f"전체 이미지             : "
+        f"{len(images)}"
+    )
+
+    print(
+        f"Fire 포함 이미지        : "
+        f"{fire_images}"
+    )
+
+    print(
+        f"Smoke 포함 이미지       : "
+        f"{smoke_images}"
+    )
+
+    print(
+        f"Background 정상 이미지 : "
+        f"{background_images}"
+    )
+
+    print(
+        f"Fire Bounding Box       : "
+        f"{fire_boxes}"
+    )
+
+    print(
+        f"Smoke Bounding Box      : "
+        f"{smoke_boxes}"
+    )
+
+
+# ============================================================
+# 15. 전체 데이터 통계
+# ============================================================
+
+def print_all_dataset_statistics(
+    paths
+):
+
+    print()
+    print("=" * 70)
+    print("DATASET 구성")
+    print("=" * 70)
+
+
+    print_dataset_statistics(
+
+        "TRAIN",
+
+        paths["train_images"],
+
+        paths["train_labels"]
+    )
+
+
+    print_dataset_statistics(
+
+        "VALIDATION",
+
+        paths["val_images"],
+
+        paths["val_labels"]
+    )
+
+
+    print_dataset_statistics(
+
+        "TEST",
+
+        paths["test_images"],
+
+        paths["test_labels"]
+    )
+
+
+# ============================================================
+# 16. GPU / CPU 확인
+# ============================================================
+
+def get_device():
+
+    print()
+    print("=" * 70)
+    print("학습 장치")
+    print("=" * 70)
+
+
+    if torch.cuda.is_available():
+
+        device = 0
+
+
+        print(
+            "CUDA : 사용 가능"
+        )
+
+
+        print(
+            "GPU  : "
+            f"{torch.cuda.get_device_name(0)}"
+        )
+
+
+        gpu_memory = (
+
+            torch.cuda
+            .get_device_properties(0)
+            .total_memory
+
+            / 1024 ** 3
+        )
+
+
+        print(
+            f"VRAM : "
+            f"{gpu_memory:.2f} GB"
+        )
+
+
+    else:
+
+        device = "cpu"
+
+
+        print(
+            "CUDA : 사용 불가"
+        )
+
+
+        print(
+            "CPU로 학습합니다."
+        )
+
+
+    return device
+
+
+# ============================================================
+# 17. 실험 설정 출력
+# ============================================================
+
+def print_experiment_settings():
+
+    print()
+    print("=" * 70)
+    print("YOLOv10n 실험 설정")
+    print("=" * 70)
+
+
+    print(
+        f"data.yaml    : "
+        f"{DATA_YAML}"
+    )
+
+    print(
+        f"Epoch        : "
+        f"{EPOCHS}"
+    )
+
+    print(
+        f"Batch        : "
+        f"{BATCH_SIZE}"
+    )
+
+    print(
+        f"Image Size   : "
+        f"{IMAGE_SIZE}"
+    )
+
+    print(
+        "Optimizer    : auto"
+    )
+
+    print(
+        f"Seed         : "
+        f"{SEED}"
+    )
+
+    print(
+        "Deterministic: True"
+    )
+
+
+    print()
+    print("[데이터 사용]")
+
+    print(
+        "학습             : train"
+    )
+
+    print(
+        "학습 중 검증     : val"
+    )
+
+    print(
+        "최종 평가        : test"
+    )
+
+
+    print()
+    print("[데이터 증강]")
+
+    print(
+        "음영/밝기/대비   : ±15%, p=0.40"
+    )
+
+    print(
+        "좌우반전         : p=0.50"
+    )
+
+    print(
+        "Gaussian Noise   : p=0.20"
+    )
+
+    print(
+        "Gaussian Blur    : p=0.20"
+    )
+
+    print()
+    print("[비활성화 증강]")
+
+    print(
+        "YOLO flipud      : OFF"
+    )
+
+    print(
+        "Mosaic           : OFF"
+    )
+
+    print(
+        "MixUp            : OFF"
+    )
+
+    print(
+        "CutMix           : OFF"
+    )
+
+    print(
+        "회전             : OFF"
+    )
+
+    print(
+        "이동             : OFF"
+    )
+
+    print(
+        "확대/축소        : OFF"
+    )
+
+# ============================================================
+# 18. YOLOv10n 학습
+# ============================================================
+
+def train_model(
+    device
+):
+
+    print()
+    print("=" * 70)
+    print("YOLOv10n 학습 시작")
+    print("=" * 70)
+
+
+    # --------------------------------------------------------
+    # YOLOv10n pretrained
+    # --------------------------------------------------------
+
+    model = YOLO(
+        "yolov10n.pt"
+    )
+
+
+    # --------------------------------------------------------
+    # 학습
+    #
+    # data.yaml의
+    #
+    # train → 학습
+    # val   → 학습 중 검증
+    #
+    # --------------------------------------------------------
+
+    results = model.train(
+
+        trainer=CustomAugmentationTrainer,
+
+        data=str(DATA_YAML),
+
+
+        # ====================================================
+        # 공통 실험 조건
+        # ====================================================
+
+        epochs=EPOCHS,
+
+        imgsz=IMAGE_SIZE,
+
+        batch=BATCH_SIZE,
+
+        optimizer="auto",
+
+        seed=SEED,
+
+        deterministic=True,
+
+
+        # ====================================================
+        # 장치
+        # ====================================================
+
+        device=device,
+
+        workers=WORKERS,
+
+
+        # ====================================================
+        # 증강
+        # ====================================================
+
+        # ----------------------------------------------------
+        # 좌우반전은 CUSTOM_AUGMENTATIONS에서 처리
+        # ----------------------------------------------------
+
+        fliplr=0.0,
+
+        flipud=0.0,
+
+
+        # ----------------------------------------------------
+        # 다른 YOLO 증강 OFF
+        # ----------------------------------------------------
+
+        degrees=0.0,
+
+        translate=0.0,
+
+        scale=0.0,
+
+        shear=0.0,
+
+        perspective=0.0,
+
+        mosaic=0.0,
+
+        mixup=0.0,
+
+        cutmix=0.0,
+
+
+        # 밝기/대비는 CUSTOM_AUGMENTATIONS에서 처리
+        hsv_h=0.0,
+
+        hsv_s=0.0,
+
+        hsv_v=0.0,
+
+
+        # ====================================================
+        # 저장
+        # ====================================================
+
+        project=str(RUNS_DIR),
+
+        name=TRAIN_RUN_NAME,
+
+        exist_ok=False,
+
+        val=True,
+
+        plots=True,
+
+        pretrained=True,
+
+        save=True,
+
+        verbose=True,
+    )
+
+
+    best_model_path = Path(model.trainer.best).resolve()
+
+    if not best_model_path.exists():
+
+        raise FileNotFoundError(
+            f"학습 후 best.pt를 찾을 수 없습니다: {best_model_path}"
+        )
+
+    return best_model_path
+
+
+# ============================================================
+# 20. 최종 TEST 평가
+# ============================================================
+
+def evaluate_test(
+    best_model_path,
+    device
+):
+
+
+    print()
+    print("=" * 70)
+    print("BEST 모델 최종 TEST 평가")
+    print("=" * 70)
+
+
+    print()
+    print(
+        f"Model : "
+        f"{best_model_path}"
+    )
+
+
+    print(
+        "Split : test"
+    )
+
+
+    best_model = YOLO(
+        str(best_model_path)
+    )
+
+
+    # --------------------------------------------------------
+    # 중요
+    #
+    # 최종 평가는 반드시
+    #
+    # split="test"
+    #
+    # --------------------------------------------------------
+
+    metrics = best_model.val(
+
+        data=str(DATA_YAML),
+
+        split="test",
+
+        imgsz=IMAGE_SIZE,
+
+        batch=BATCH_SIZE,
+
+        device=device,
+
+        workers=WORKERS,
+
+        conf=CONF_THRESHOLD,
+
+        iou=IOU_THRESHOLD,
+
+        plots=True,
+
+        project=str(RUNS_DIR),
+
+        name=TEST_RUN_NAME,
+
+        exist_ok=False,
+
+        verbose=True,
+    )
+
+
+    return (
+        metrics,
+        Path(metrics.save_dir).resolve()
+    )
+
+
+# ============================================================
+# 21. 객체 탐지 성능 출력
+# ============================================================
+
+def print_detection_metrics(
+    metrics
+):
+
+    print()
+    print("=" * 70)
+    print("TEST 객체 탐지 성능")
+    print("=" * 70)
+
+
+    print()
+
+    print(
+        f"Precision       : "
+        f"{metrics.box.mp:.6f}"
+    )
+
+    print(
+        f"Recall          : "
+        f"{metrics.box.mr:.6f}"
+    )
+
+    overall_f1 = (
+        2 * metrics.box.mp * metrics.box.mr
+        / (metrics.box.mp + metrics.box.mr)
+        if metrics.box.mp + metrics.box.mr > 0
+        else 0.0
+    )
+
+    print(
+        f"F1 Score        : "
+        f"{overall_f1:.6f}"
+    )
+
+    print(
+        f"mAP@0.5         : "
+        f"{metrics.box.map50:.6f}"
+    )
+
+    print(
+        f"mAP@0.5:0.95    : "
+        f"{metrics.box.map:.6f}"
+    )
+
+
+    print()
+    print("-" * 70)
+    print("클래스별 성능")
+    print("-" * 70)
+
+
+    for class_id, class_name in enumerate(
+        CLASS_NAMES
+    ):
+
+        try:
+
+            result = (
+                metrics.box.class_result(
+                    class_id
+                )
+            )
+
+
+            print()
+            print(
+                f"[{class_id}] "
+                f"{class_name}"
+            )
+
+            print(
+                f"Precision       : "
+                f"{float(result[0]):.6f}"
+            )
+
+            print(
+                f"Recall          : "
+                f"{float(result[1]):.6f}"
+            )
+
+            class_precision = float(result[0])
+            class_recall = float(result[1])
+            class_f1 = (
+                2 * class_precision * class_recall
+                / (class_precision + class_recall)
+                if class_precision + class_recall > 0
+                else 0.0
+            )
+
+            print(
+                f"F1 Score        : "
+                f"{class_f1:.6f}"
+            )
+
+            print(
+                f"mAP@0.5         : "
+                f"{float(result[2]):.6f}"
+            )
+
+            print(
+                f"mAP@0.5:0.95    : "
+                f"{float(result[3]):.6f}"
+            )
+
+
+        except Exception as error:
+
+            print(
+                f"[WARNING] "
+                f"{class_name} 성능 출력 실패"
+            )
+
+            print(error)
+
+
+# ============================================================
+# 22. Detection Metric CSV
+# ============================================================
+
+def save_detection_metrics(
+    metrics,
+    output_dir
+):
+
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+
+    output_file = (
+
+        output_dir
+
+        / "metrics_summary.csv"
+    )
+
+
+    with open(
+        output_file,
+        "w",
+        newline="",
+        encoding="utf-8-sig"
+    ) as file:
+
+        writer = csv.writer(
+            file
+        )
+
+
+        writer.writerow([
+            "class_id",
+            "class_name",
+            "precision",
+            "recall",
+            "f1_score",
+            "mAP50",
+            "mAP50-95"
+        ])
+
+
+        # 전체
+        overall_f1 = (
+            2 * metrics.box.mp * metrics.box.mr
+            / (metrics.box.mp + metrics.box.mr)
+            if metrics.box.mp + metrics.box.mr > 0
             else 0.0
         )
 
-        # 클래스별 AP(mAP50-95 기준)
-        class_maps = np.asarray(metrics.box.maps, dtype=float)
-        class_names = self.best_model.names
+        writer.writerow([
+            "all",
+            "all",
+            metrics.box.mp,
+            metrics.box.mr,
+            overall_f1,
+            metrics.box.map50,
+            metrics.box.map
+        ])
 
-        print("\n[Validation 전체 성능]")
-        print(f"Precision       : {precision:.4f} ({precision * 100:.2f}%)")
-        print(f"Recall          : {recall:.4f} ({recall * 100:.2f}%)")
-        print(f"F1-Score        : {f1:.4f} ({f1 * 100:.2f}%)")
-        print(f"mAP@0.50        : {map50:.4f} ({map50 * 100:.2f}%)")
-        print(f"mAP@0.50:0.95   : {map50_95:.4f} ({map50_95 * 100:.2f}%)")
 
-        print("\n[클래스별 AP - mAP50:95 기준]")
-        for class_id, ap_value in enumerate(class_maps):
-            class_name = class_names.get(class_id, str(class_id))
-            print(
-                f"{class_name:<10} AP : "
-                f"{ap_value:.4f} ({ap_value * 100:.2f}%)"
-            )
+        # 클래스별
+        for class_id, class_name in enumerate(
+            CLASS_NAMES
+        ):
 
-        return {
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "map50": map50,
-            "map50_95": map50_95,
-            "class_maps": class_maps,
-            "class_names": class_names,
-        }
+            try:
 
-    # ============================================================
-    # 4. YOLO TXT 라벨을 실제 픽셀 좌표로 복원
-    # ============================================================
-    @staticmethod
-    def load_ground_truth(label_path, image_width, image_height):
-        """
-        YOLO 라벨
-            class x_center y_center width height
-        를
-            class x1 y1 x2 y2
-        픽셀 좌표로 바꿉니다.
-        """
-
-        boxes = []
-
-        if not label_path.exists():
-            return boxes
-
-        text = label_path.read_text(encoding="utf-8").strip()
-
-        # 정상 이미지는 빈 TXT이므로 여기서 빈 리스트 반환
-        if not text:
-            return boxes
-
-        for line in text.splitlines():
-            values = line.split()
-
-            if len(values) != 5:
-                continue
-
-            class_id = int(float(values[0]))
-            xc = float(values[1]) * image_width
-            yc = float(values[2]) * image_height
-            w = float(values[3]) * image_width
-            h = float(values[4]) * image_height
-
-            x1 = xc - w / 2
-            y1 = yc - h / 2
-            x2 = xc + w / 2
-            y2 = yc + h / 2
-
-            boxes.append(
-                {
-                    "class_id": class_id,
-                    "box": np.array([x1, y1, x2, y2], dtype=float),
-                }
-            )
-
-        return boxes
-
-    # ============================================================
-    # 5. IoU 계산
-    # ============================================================
-    @staticmethod
-    def calculate_iou(box_a, box_b):
-        """
-        IoU = 실제 박스와 예측 박스의 겹친 영역 / 합친 전체 영역
-
-        0~1 사이 값이며 1에 가까울수록 위치가 잘 맞습니다.
-        """
-
-        x1 = max(box_a[0], box_b[0])
-        y1 = max(box_a[1], box_b[1])
-        x2 = min(box_a[2], box_b[2])
-        y2 = min(box_a[3], box_b[3])
-
-        inter_w = max(0.0, x2 - x1)
-        inter_h = max(0.0, y2 - y1)
-        intersection = inter_w * inter_h
-
-        area_a = max(0.0, box_a[2] - box_a[0]) * max(
-            0.0, box_a[3] - box_a[1]
-        )
-        area_b = max(0.0, box_b[2] - box_b[0]) * max(
-            0.0, box_b[3] - box_b[1]
-        )
-
-        union = area_a + area_b - intersection
-
-        if union <= 0:
-            return 0.0
-
-        return intersection / union
-
-    # ============================================================
-    # 6. Test 데이터 IoU / Confidence 분석
-    # ============================================================
-    def evaluate_iou_and_confidence(self):
-        """
-        Test 이미지에서 실제 박스와 예측 박스를 직접 비교합니다.
-
-        같은 클래스끼리만 비교하고,
-        Confidence가 높은 예측부터 가장 IoU가 높은 GT 박스와 매칭합니다.
-
-        계산값
-        - Average IoU
-        - Median IoU
-        - Average Confidence
-        - Min / Max Confidence
-        """
-
-        print("\n" + "=" * 70)
-        print("4. Test IoU / Confidence Score 분석")
-        print("=" * 70)
-
-        test_image_dir = Path("./dataset/images/test")
-        test_label_dir = Path("./dataset/labels/test")
-
-        default_result = {
-            "ious": [],
-            "confidences": [],
-            "mean_iou": 0.0,
-            "median_iou": 0.0,
-            "mean_conf": 0.0,
-            "min_conf": 0.0,
-            "max_conf": 0.0,
-        }
-
-        if not test_image_dir.exists():
-            print("Test 이미지 폴더가 없어 추가 분석을 생략합니다.")
-            return default_result
-
-        image_files = []
-        for extension in ("*.jpg", "*.jpeg", "*.png", "*.bmp"):
-            image_files.extend(test_image_dir.glob(extension))
-
-        image_files = sorted(image_files)
-
-        if not image_files:
-            print("Test 이미지가 없어 추가 분석을 생략합니다.")
-            return default_result
-
-        # Test 폴더 전체 추론
-        prediction_results = self.best_model.predict(
-            source=str(test_image_dir),
-            imgsz=self.image_size,
-            conf=self.conf_threshold,
-            device=self.device,
-            save=True,
-            project=str(self.save_dir),
-            name="test_predictions",
-            verbose=False,
-        )
-
-        all_ious = []
-        all_confidences = []
-
-        for result in prediction_results:
-            image_path = Path(result.path)
-            label_path = test_label_dir / f"{image_path.stem}.txt"
-
-            original_height, original_width = result.orig_shape
-
-            gt_boxes = self.load_ground_truth(
-                label_path,
-                original_width,
-                original_height,
-            )
-
-            used_gt = set()
-            predictions = []
-
-            if result.boxes is None:
-                continue
-
-            # 모델 예측값 수집
-            for box in result.boxes:
-                pred_class = int(box.cls.item())
-                confidence = float(box.conf.item())
-                xyxy = box.xyxy[0].cpu().numpy().astype(float)
-
-                predictions.append(
-                    {
-                        "class_id": pred_class,
-                        "confidence": confidence,
-                        "box": xyxy,
-                    }
+                result = (
+                    metrics.box.class_result(
+                        class_id
+                    )
                 )
 
-                all_confidences.append(confidence)
-
-            # Confidence 높은 예측부터 GT와 매칭
-            predictions.sort(
-                key=lambda item: item["confidence"],
-                reverse=True,
-            )
-
-            for pred in predictions:
-                best_iou = 0.0
-                best_gt_index = None
-
-                for gt_index, gt in enumerate(gt_boxes):
-                    if gt_index in used_gt:
-                        continue
-
-                    # Fire는 Fire, Smoke는 Smoke끼리 비교
-                    if gt["class_id"] != pred["class_id"]:
-                        continue
-
-                    current_iou = self.calculate_iou(
-                        pred["box"],
-                        gt["box"],
-                    )
-
-                    if current_iou > best_iou:
-                        best_iou = current_iou
-                        best_gt_index = gt_index
-
-                if best_gt_index is not None:
-                    used_gt.add(best_gt_index)
-                    all_ious.append(best_iou)
-
-        mean_iou = float(np.mean(all_ious)) if all_ious else 0.0
-        median_iou = float(np.median(all_ious)) if all_ious else 0.0
-        mean_conf = float(np.mean(all_confidences)) if all_confidences else 0.0
-        min_conf = float(np.min(all_confidences)) if all_confidences else 0.0
-        max_conf = float(np.max(all_confidences)) if all_confidences else 0.0
-
-        print(f"Test 이미지 수       : {len(image_files)}")
-        print(f"예측 박스 수         : {len(all_confidences)}")
-        print(f"GT 매칭 박스 수      : {len(all_ious)}")
-        print(f"Average IoU          : {mean_iou:.4f} ({mean_iou * 100:.2f}%)")
-        print(f"Median IoU           : {median_iou:.4f} ({median_iou * 100:.2f}%)")
-        print(f"Average Confidence   : {mean_conf:.4f} ({mean_conf * 100:.2f}%)")
-        print(f"Minimum Confidence   : {min_conf:.4f} ({min_conf * 100:.2f}%)")
-        print(f"Maximum Confidence   : {max_conf:.4f} ({max_conf * 100:.2f}%)")
-
-        return {
-            "ious": all_ious,
-            "confidences": all_confidences,
-            "mean_iou": mean_iou,
-            "median_iou": median_iou,
-            "mean_conf": mean_conf,
-            "min_conf": min_conf,
-            "max_conf": max_conf,
-        }
-
-    # ============================================================
-    # 7. 발표용 추가 시각화
-    # ============================================================
-    def create_custom_visualizations(self, metrics, extra_metrics):
-        """
-        Ultralytics 기본 그래프 외에 아래 발표용 그래프를 추가 저장합니다.
-
-        - performance_summary.png
-        - class_ap.png
-        - iou_distribution.png
-        - confidence_distribution.png
-        """
-
-        print("\n" + "=" * 70)
-        print("5. 추가 데이터 시각화 생성")
-        print("=" * 70)
-
-        visual_dir = self.save_dir / "custom_visualization"
-        visual_dir.mkdir(parents=True, exist_ok=True)
-
-        # A. 주요 성능지표 막대그래프
-        metric_names = [
-            "Precision",
-            "Recall",
-            "F1",
-            "mAP50",
-            "mAP50-95",
-            "Avg IoU",
-            "Avg Conf",
-        ]
-
-        metric_values = [
-            metrics["precision"],
-            metrics["recall"],
-            metrics["f1"],
-            metrics["map50"],
-            metrics["map50_95"],
-            extra_metrics["mean_iou"],
-            extra_metrics["mean_conf"],
-        ]
-
-        plt.figure(figsize=(11, 6))
-        bars = plt.bar(metric_names, metric_values)
-        plt.ylim(0, 1.0)
-        plt.ylabel("Score")
-        plt.title("YOLOv10 Fire Detection Performance Summary")
-        plt.xticks(rotation=20)
-
-        for bar, value in zip(bars, metric_values):
-            plt.text(
-                bar.get_x() + bar.get_width() / 2,
-                min(value + 0.02, 0.98),
-                f"{value:.3f}",
-                ha="center",
-                fontsize=9,
-            )
-
-        plt.tight_layout()
-        plt.savefig(visual_dir / "performance_summary.png", dpi=200)
-        plt.close()
-
-        # B. 클래스별 AP 그래프
-        names = []
-        values = []
-
-        for class_id, ap_value in enumerate(metrics["class_maps"]):
-            names.append(metrics["class_names"].get(class_id, str(class_id)))
-            values.append(float(ap_value))
-
-        plt.figure(figsize=(7, 5))
-        bars = plt.bar(names, values)
-        plt.ylim(0, 1.0)
-        plt.ylabel("AP (mAP50-95)")
-        plt.title("AP by Class")
-
-        for bar, value in zip(bars, values):
-            plt.text(
-                bar.get_x() + bar.get_width() / 2,
-                min(value + 0.02, 0.98),
-                f"{value:.3f}",
-                ha="center",
-            )
-
-        plt.tight_layout()
-        plt.savefig(visual_dir / "class_ap.png", dpi=200)
-        plt.close()
-
-        # C. IoU 분포 그래프
-        if extra_metrics["ious"]:
-            plt.figure(figsize=(8, 5))
-            plt.hist(
-                extra_metrics["ious"],
-                bins=10,
-                range=(0, 1),
-                edgecolor="black",
-            )
-            plt.xlim(0, 1)
-            plt.xlabel("IoU")
-            plt.ylabel("Matched Box Count")
-            plt.title("IoU Distribution")
-            plt.tight_layout()
-            plt.savefig(visual_dir / "iou_distribution.png", dpi=200)
-            plt.close()
-
-        # D. Confidence Score 분포 그래프
-        if extra_metrics["confidences"]:
-            plt.figure(figsize=(8, 5))
-            plt.hist(
-                extra_metrics["confidences"],
-                bins=10,
-                range=(0, 1),
-                edgecolor="black",
-            )
-            plt.xlim(0, 1)
-            plt.xlabel("Confidence Score")
-            plt.ylabel("Prediction Count")
-            plt.title("Confidence Score Distribution")
-            plt.tight_layout()
-            plt.savefig(visual_dir / "confidence_distribution.png", dpi=200)
-            plt.close()
-
-        print(f"추가 시각화 저장 위치 : {visual_dir}")
-
-    # ============================================================
-    # 8. 최종 결과 CSV / TXT 저장
-    # ============================================================
-    def save_summary(self, metrics, extra_metrics, elapsed):
-        """주요 결과를 CSV와 TXT로 저장합니다."""
-
-        summary_csv = self.save_dir / "final_metrics.csv"
-        summary_txt = self.save_dir / "final_summary.txt"
-
-        rows = [
-            ["Model", self.model_name],
-            ["Epochs", self.epochs],
-            ["Image Size", self.image_size],
-            ["Precision", metrics["precision"]],
-            ["Recall", metrics["recall"]],
-            ["F1 Score", metrics["f1"]],
-            ["mAP50", metrics["map50"]],
-            ["mAP50-95", metrics["map50_95"]],
-            ["Average IoU", extra_metrics["mean_iou"]],
-            ["Median IoU", extra_metrics["median_iou"]],
-            ["Average Confidence", extra_metrics["mean_conf"]],
-            ["Minimum Confidence", extra_metrics["min_conf"]],
-            ["Maximum Confidence", extra_metrics["max_conf"]],
-            ["Training Time Minutes", elapsed / 60],
-        ]
-
-        with summary_csv.open("w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.writer(file)
-            writer.writerow(["Metric", "Value"])
-            writer.writerows(rows)
-
-        lines = [
-            "=" * 70,
-            "YOLOv10 Fire / Smoke Detection Final Result",
-            "=" * 70,
-            f"Model              : {self.model_name}",
-            f"Epochs             : {self.epochs}",
-            f"Image Size         : {self.image_size}",
-            f"Precision          : {metrics['precision']:.4f} ({metrics['precision']*100:.2f}%)",
-            f"Recall             : {metrics['recall']:.4f} ({metrics['recall']*100:.2f}%)",
-            f"F1 Score           : {metrics['f1']:.4f} ({metrics['f1']*100:.2f}%)",
-            f"mAP@0.50           : {metrics['map50']:.4f} ({metrics['map50']*100:.2f}%)",
-            f"mAP@0.50:0.95      : {metrics['map50_95']:.4f} ({metrics['map50_95']*100:.2f}%)",
-            f"Average IoU        : {extra_metrics['mean_iou']:.4f} ({extra_metrics['mean_iou']*100:.2f}%)",
-            f"Median IoU         : {extra_metrics['median_iou']:.4f} ({extra_metrics['median_iou']*100:.2f}%)",
-            f"Average Confidence : {extra_metrics['mean_conf']:.4f} ({extra_metrics['mean_conf']*100:.2f}%)",
-            f"Min Confidence     : {extra_metrics['min_conf']:.4f}",
-            f"Max Confidence     : {extra_metrics['max_conf']:.4f}",
-            f"Training Time      : {elapsed / 60:.2f} min",
-            "",
-            "[Class AP - mAP50:95]",
-        ]
-
-        for class_id, ap_value in enumerate(metrics["class_maps"]):
-            class_name = metrics["class_names"].get(class_id, str(class_id))
-            lines.append(
-                f"{class_name:<10} : {float(ap_value):.4f} "
-                f"({float(ap_value)*100:.2f}%)"
-            )
-
-        lines.extend(
-            [
-                "",
-                f"Result Directory   : {self.save_dir}",
-                "=" * 70,
-            ]
-        )
-
-        summary_txt.write_text("\n".join(lines), encoding="utf-8")
-
-        print(f"최종 CSV 저장 : {summary_csv}")
-        print(f"최종 TXT 저장 : {summary_txt}")
-
-    # ============================================================
-    # 9. 마지막 Print 결과 출력
-    # ============================================================
-    def print_final_result(self, metrics, extra_metrics, elapsed):
-        """터미널에서 최종 성능을 한 번에 확인할 수 있게 출력합니다."""
-
-        print("\n\n" + "=" * 75)
-        print("               YOLOv10 최종 모델 성능 결과")
-        print("=" * 75)
-        print(f"Model               : {self.model_name}")
-        print(f"Epoch                : {self.epochs}")
-        print(f"Image Size           : {self.image_size} x {self.image_size}")
-        print("Augmentation         : Brightness/Contrast 40%, Noise 20%, Blur 20%")
-        print("-" * 75)
-
-        print(
-            f"Precision            : {metrics['precision']:.4f} "
-            f"({metrics['precision'] * 100:.2f}%)"
-        )
-        print(
-            f"Recall               : {metrics['recall']:.4f} "
-            f"({metrics['recall'] * 100:.2f}%)"
-        )
-        print(
-            f"F1-Score             : {metrics['f1']:.4f} "
-            f"({metrics['f1'] * 100:.2f}%)"
-        )
-        print(
-            f"mAP@0.50             : {metrics['map50']:.4f} "
-            f"({metrics['map50'] * 100:.2f}%)"
-        )
-        print(
-            f"mAP@0.50:0.95        : {metrics['map50_95']:.4f} "
-            f"({metrics['map50_95'] * 100:.2f}%)"
-        )
-        print(
-            f"Average IoU          : {extra_metrics['mean_iou']:.4f} "
-            f"({extra_metrics['mean_iou'] * 100:.2f}%)"
-        )
-        print(
-            f"Average Confidence   : {extra_metrics['mean_conf']:.4f} "
-            f"({extra_metrics['mean_conf'] * 100:.2f}%)"
-        )
-
-        print("-" * 75)
-        print("클래스별 AP (mAP50:95)")
-
-        for class_id, ap_value in enumerate(metrics["class_maps"]):
-            class_name = metrics["class_names"].get(class_id, str(class_id))
-            print(
-                f"{class_name:<20}: {float(ap_value):.4f} "
-                f"({float(ap_value) * 100:.2f}%)"
-            )
-
-        print("-" * 75)
-        print(f"학습 시간            : {elapsed / 60:.2f}분")
-        print(f"결과 저장 위치       : {self.save_dir}")
-        print(f"Best 모델 위치       : {self.save_dir / 'weights' / 'best.pt'}")
-        print("=" * 75)
-
-        print("\n[자동/추가 생성 시각화]")
-        print("- results.png")
-        print("- confusion_matrix.png")
-        print("- confusion_matrix_normalized.png")
-        print("- PR_curve.png")
-        print("- P_curve.png")
-        print("- R_curve.png")
-        print("- F1_curve.png")
-        print("- custom_visualization/performance_summary.png")
-        print("- custom_visualization/class_ap.png")
-        print("- custom_visualization/iou_distribution.png")
-        print("- custom_visualization/confidence_distribution.png")
-
-    # ============================================================
-    # 전체 실행
-    # ============================================================
-    def run(self):
-        self.check_environment()
-        elapsed = self.train()
-        metrics = self.validate()
-        extra_metrics = self.evaluate_iou_and_confidence()
-        self.create_custom_visualizations(metrics, extra_metrics)
-        self.save_summary(metrics, extra_metrics, elapsed)
-        self.print_final_result(metrics, extra_metrics, elapsed)
+                class_precision = float(result[0])
+                class_recall = float(result[1])
+                class_f1 = (
+                    2 * class_precision * class_recall
+                    / (class_precision + class_recall)
+                    if class_precision + class_recall > 0
+                    else 0.0
+                )
 
 
-# ================================================================
-# 프로그램 실행
-# ================================================================
-if __name__ == "__main__":
+                writer.writerow([
+                    class_id,
+                    class_name,
+                    class_precision,
+                    class_recall,
+                    class_f1,
+                    float(result[2]),
+                    float(result[3])
+                ])
 
-    trainer = YOLOv10FireTrainer(
-        # 샘플 확인용 YOLOv10 Nano 모델
-        model_name="yolov10n.pt",
 
-        # 팀원 전처리 코드가 만든 data.yaml
-        yaml_path="../data/data.yaml",
+            except Exception:
 
-        # 전처리 Letterbox 크기와 동일
-        image_size=640,
+                pass
 
-        # 확인용 기본값. 전체 학습 때 늘려도 됩니다.
-        epochs=10,
 
-        # GPU 메모리 부족 또는 CPU 학습이면 4/2로 낮추세요.
-        batch=8,
-
-        # 일정 Epoch 동안 성능 개선이 없으면 Early Stopping
-        patience=10,
-
-        # Test Confidence 분석 기준
-        conf_threshold=0.25,
+    print()
+    print(
+        "[완료] Detection Metric CSV"
     )
 
-    trainer.run()
+    print(
+        output_file
+    )
+
+
+# ============================================================
+# 23. YOLO Confusion Matrix CSV
+# ============================================================
+
+def save_yolo_confusion_matrix(
+    metrics,
+    output_dir
+):
+
+
+    output_file = (
+
+        output_dir
+
+        / "yolo_confusion_matrix.csv"
+    )
+
+
+    try:
+
+        matrix = (
+            metrics
+            .confusion_matrix
+            .matrix
+        )
+
+
+        names = (
+            CLASS_NAMES
+            + ["background"]
+        )
+
+
+        with open(
+            output_file,
+            "w",
+            newline="",
+            encoding="utf-8-sig"
+        ) as file:
+
+            writer = csv.writer(
+                file
+            )
+
+
+            writer.writerow(
+                ["Predicted / Actual"]
+                + names
+            )
+
+
+            for index, row in enumerate(
+                matrix
+            ):
+
+                if index < len(names):
+
+                    row_name = names[index]
+
+                else:
+
+                    row_name = str(index)
+
+
+                writer.writerow(
+
+                    [row_name]
+
+                    + [
+                        float(value)
+
+                        for value in row
+                    ]
+                )
+
+
+        print()
+        print(
+            "[완료] YOLO Confusion Matrix CSV"
+        )
+
+        print(
+            output_file
+        )
+
+
+    except Exception as error:
+
+        print()
+        print(
+            "[WARNING] Confusion Matrix "
+            "CSV 저장 실패"
+        )
+
+        print(error)
+
+
+# ============================================================
+# 24. TEST Background 포함 이미지 단위 평가
+# ============================================================
+
+def evaluate_background_test(
+    best_model_path,
+    device,
+    paths,
+    output_dir
+):
+
+    print()
+    print("=" * 70)
+    print("TEST BACKGROUND 포함 평가")
+    print("=" * 70)
+
+
+    test_image_dir = (
+        paths["test_images"]
+    )
+
+    test_label_dir = (
+        paths["test_labels"]
+    )
+
+
+    model = YOLO(
+        str(best_model_path)
+    )
+
+
+    test_images = find_images(
+        test_image_dir
+    )
+
+
+    # ========================================================
+    # 카운터
+    # ========================================================
+
+    total_images = 0
+
+
+    # 실제 데이터
+    actual_background = 0
+
+    actual_object = 0
+
+    actual_fire = 0
+
+    actual_smoke = 0
+
+
+    # 정상 결과
+    background_correct = 0
+
+    background_false_positive = 0
+
+    background_fire_fp = 0
+
+    background_smoke_fp = 0
+
+
+    # 객체 결과
+    object_detected = 0
+
+    object_missed = 0
+
+
+    # 클래스 결과
+    fire_correct = 0
+
+    fire_missed = 0
+
+    smoke_correct = 0
+
+    smoke_missed = 0
+
+    fire_false_positive_images = 0
+
+    smoke_false_positive_images = 0
+
+
+    # CSV
+    detailed_rows = []
+
+
+    print()
+    print(
+        f"TEST 이미지 : "
+        f"{len(test_images)}"
+    )
+
+    print(
+        f"Confidence  : "
+        f"{CONF_THRESHOLD}"
+    )
+
+
+    # ========================================================
+    # TEST 이미지별 평가
+    # ========================================================
+
+    for index, image_path in enumerate(
+        test_images,
+        start=1
+    ):
+
+        total_images += 1
+
+
+        # ----------------------------------------------------
+        # 실제 라벨
+        # ----------------------------------------------------
+
+        label_path = find_label_path(
+
+            image_path,
+
+            test_image_dir,
+
+            test_label_dir
+        )
+
+
+        actual_boxes = read_label_boxes(label_path)
+
+        actual_classes = sorted(
+            set(int(box[0]) for box in actual_boxes)
+        )
+
+
+        # ----------------------------------------------------
+        # 예측
+        # ----------------------------------------------------
+
+        results = model.predict(
+
+            source=str(image_path),
+
+            conf=CONF_THRESHOLD,
+
+            iou=IOU_THRESHOLD,
+
+            imgsz=IMAGE_SIZE,
+
+            device=device,
+
+            verbose=False
+        )
+
+
+        predicted_classes = []
+
+        predicted_boxes = []
+
+
+        if len(results) > 0:
+
+            boxes = (
+                results[0].boxes
+            )
+
+
+            if (
+                boxes is not None
+                and
+                len(boxes) > 0
+            ):
+
+                predicted_classes = [
+
+                    int(value)
+
+                    for value
+                    in boxes.cls.cpu().tolist()
+
+                ]
+
+                normalized_boxes = boxes.xywhn.cpu().tolist()
+
+                predicted_boxes = [
+                    (int(class_id), *coordinates)
+                    for class_id, coordinates in zip(
+                        boxes.cls.cpu().tolist(),
+                        normalized_boxes
+                    )
+                ]
+
+
+        predicted_classes = sorted(
+            set(predicted_classes)
+        )
+
+        matches = match_predictions(
+            actual_boxes,
+            predicted_boxes
+        )
+
+        matched_class_pairs = [
+            (
+                int(actual_boxes[actual_index][0]),
+                int(predicted_boxes[predicted_index][0]),
+            )
+            for actual_index, predicted_index, _ in matches
+        ]
+
+        spatial_object_detected = len(matches) > 0
+
+        correct_matches = [
+            (actual_index, predicted_index, iou)
+            for actual_index, predicted_index, iou in matches
+            if int(actual_boxes[actual_index][0])
+            == int(predicted_boxes[predicted_index][0])
+        ]
+
+        correct_actual_indices = {
+            actual_index
+            for actual_index, _, _ in correct_matches
+        }
+
+        correct_predicted_indices = {
+            predicted_index
+            for _, predicted_index, _ in correct_matches
+        }
+
+        image_has_false_positive = (
+            len(correct_predicted_indices) < len(predicted_boxes)
+        )
+
+        image_has_miss = (
+            len(correct_actual_indices) < len(actual_boxes)
+        )
+
+        if 0 not in actual_classes and 0 in predicted_classes:
+
+            fire_false_positive_images += 1
+
+        if 1 not in actual_classes and 1 in predicted_classes:
+
+            smoke_false_positive_images += 1
+
+
+        # ====================================================
+        # Background
+        # ====================================================
+
+        actual_is_background = (
+            len(actual_classes) == 0
+        )
+
+
+        predicted_is_background = (
+            len(predicted_classes) == 0
+        )
+
+
+        # ====================================================
+        # 실제 정상
+        # ====================================================
+
+        if actual_is_background:
+
+            actual_background += 1
+
+
+            if predicted_is_background:
+
+                background_correct += 1
+
+                result_text = (
+                    "BACKGROUND -> BACKGROUND"
+                )
+
+
+            else:
+
+                background_false_positive += 1
+
+
+                if 0 in predicted_classes:
+
+                    background_fire_fp += 1
+
+
+                if 1 in predicted_classes:
+
+                    background_smoke_fp += 1
+
+
+                result_text = (
+                    "BACKGROUND -> FALSE POSITIVE"
+                )
+
+
+        # ====================================================
+        # 실제 Fire / Smoke
+        # ====================================================
+
+        else:
+
+            actual_object += 1
+
+
+            if 0 in actual_classes:
+
+                actual_fire += 1
+
+
+                if (0, 0) in matched_class_pairs:
+
+                    fire_correct += 1
+
+                else:
+
+                    fire_missed += 1
+
+
+            if 1 in actual_classes:
+
+                actual_smoke += 1
+
+
+                if (1, 1) in matched_class_pairs:
+
+                    smoke_correct += 1
+
+                else:
+
+                    smoke_missed += 1
+
+
+            if not spatial_object_detected:
+
+                object_missed += 1
+
+                result_text = (
+                    "OBJECT -> NO MATCH (MISS)"
+                )
+
+
+            else:
+
+                object_detected += 1
+
+                result_text = (
+                    "OBJECT -> OBJECT"
+                )
+
+
+        # ====================================================
+        # 문자열
+        # ====================================================
+
+        if actual_is_background:
+
+            actual_text = "background"
+
+        else:
+
+            actual_text = ",".join(
+
+                CLASS_NAMES[x]
+
+                for x in actual_classes
+            )
+
+
+        if predicted_is_background:
+
+            predicted_text = "background"
+
+        else:
+
+            predicted_text = ",".join(
+
+                CLASS_NAMES[x]
+
+                for x in predicted_classes
+
+                if (
+                    0
+                    <= x
+                    < len(CLASS_NAMES)
+                )
+            )
+
+
+        detailed_rows.append([
+
+            image_path.name,
+
+            actual_text,
+
+            predicted_text,
+
+            result_text,
+
+            int(image_has_false_positive),
+
+            int(image_has_miss),
+
+            len(actual_boxes),
+
+            len(predicted_boxes),
+
+            len(correct_matches)
+
+        ])
+
+
+        if (
+            index % 100 == 0
+            or
+            index == len(test_images)
+        ):
+
+            print(
+                f"평가 진행 : "
+                f"{index}"
+                f"/"
+                f"{len(test_images)}"
+            )
+
+
+    # ========================================================
+    # 비율 계산
+    # ========================================================
+
+    background_accuracy = (
+
+        background_correct
+        / actual_background
+
+        if actual_background > 0
+
+        else 0.0
+    )
+
+
+    background_fp_rate = (
+
+        background_false_positive
+        / actual_background
+
+        if actual_background > 0
+
+        else 0.0
+    )
+
+
+    object_detection_rate = (
+
+        object_detected
+        / actual_object
+
+        if actual_object > 0
+
+        else 0.0
+    )
+
+
+    object_miss_rate = (
+
+        object_missed
+        / actual_object
+
+        if actual_object > 0
+
+        else 0.0
+    )
+
+
+    fire_recall = (
+
+        fire_correct
+        / actual_fire
+
+        if actual_fire > 0
+
+        else 0.0
+    )
+
+
+    smoke_recall = (
+
+        smoke_correct
+        / actual_smoke
+
+        if actual_smoke > 0
+
+        else 0.0
+    )
+
+
+    binary_accuracy = (
+
+        (
+            background_correct
+            + object_detected
+        )
+        / total_images
+
+        if total_images > 0
+
+        else 0.0
+    )
+
+    binary_precision = (
+        object_detected
+        / (object_detected + background_false_positive)
+        if object_detected + background_false_positive > 0
+        else 0.0
+    )
+
+    binary_recall = object_detection_rate
+
+    binary_f1 = (
+        2 * binary_precision * binary_recall
+        / (binary_precision + binary_recall)
+        if binary_precision + binary_recall > 0
+        else 0.0
+    )
+
+    fire_precision = (
+        fire_correct
+        / (fire_correct + fire_false_positive_images)
+        if fire_correct + fire_false_positive_images > 0
+        else 0.0
+    )
+
+    fire_f1 = (
+        2 * fire_precision * fire_recall
+        / (fire_precision + fire_recall)
+        if fire_precision + fire_recall > 0
+        else 0.0
+    )
+
+    smoke_precision = (
+        smoke_correct
+        / (smoke_correct + smoke_false_positive_images)
+        if smoke_correct + smoke_false_positive_images > 0
+        else 0.0
+    )
+
+    smoke_f1 = (
+        2 * smoke_precision * smoke_recall
+        / (smoke_precision + smoke_recall)
+        if smoke_precision + smoke_recall > 0
+        else 0.0
+    )
+
+
+    # ========================================================
+    # 결과 출력
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print("TEST 최종 이미지 단위 결과")
+    print("=" * 70)
+
+
+    print()
+    print("[실제 데이터]")
+
+    print(
+        f"전체 이미지                 : "
+        f"{total_images}"
+    )
+
+    print(
+        f"Background                  : "
+        f"{actual_background}"
+    )
+
+    print(
+        f"Fire 포함                   : "
+        f"{actual_fire}"
+    )
+
+    print(
+        f"Smoke 포함                  : "
+        f"{actual_smoke}"
+    )
+
+    print(
+        f"Fire/Smoke 객체 이미지      : "
+        f"{actual_object}"
+    )
+
+
+    print()
+    print("[Background]")
+
+    print(
+        f"정상 → 정상                 : "
+        f"{background_correct}"
+    )
+
+    print(
+        f"정상 → 객체 오탐            : "
+        f"{background_false_positive}"
+    )
+
+    print(
+        f"  Fire 오탐                 : "
+        f"{background_fire_fp}"
+    )
+
+    print(
+        f"  Smoke 오탐                : "
+        f"{background_smoke_fp}"
+    )
+
+    print(
+        f"정상 정확도                 : "
+        f"{background_accuracy * 100:.2f}%"
+    )
+
+    print(
+        f"정상 오탐률                 : "
+        f"{background_fp_rate * 100:.2f}%"
+    )
+
+
+    print()
+    print("[Fire / Smoke]")
+
+    print(
+        f"객체 → 객체 탐지            : "
+        f"{object_detected}"
+    )
+
+    print(
+        f"객체 → Background 미탐      : "
+        f"{object_missed}"
+    )
+
+    print(
+        f"객체 이미지 탐지율          : "
+        f"{object_detection_rate * 100:.2f}%"
+    )
+
+    print(
+        f"객체 이미지 미탐률          : "
+        f"{object_miss_rate * 100:.2f}%"
+    )
+
+
+    print()
+    print("[클래스별 이미지 탐지율]")
+
+    print(
+        f"Fire                        : "
+        f"{fire_correct}/{actual_fire} "
+        f"({fire_recall * 100:.2f}%)"
+    )
+
+    print(
+        f"Smoke                       : "
+        f"{smoke_correct}/{actual_smoke} "
+        f"({smoke_recall * 100:.2f}%)"
+    )
+
+
+    print()
+    print("[정상 VS 화재/연기]")
+
+    print(
+        f"전체 이미지 판정 정확도    : "
+        f"{binary_accuracy * 100:.2f}%"
+    )
+
+    print(
+        f"Precision                   : "
+        f"{binary_precision * 100:.2f}%"
+    )
+
+    print(
+        f"Recall                      : "
+        f"{binary_recall * 100:.2f}%"
+    )
+
+    print(
+        f"F1 Score                    : "
+        f"{binary_f1 * 100:.2f}%"
+    )
+
+
+    # ========================================================
+    # CSV 저장
+    # ========================================================
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+
+    # --------------------------------------------------------
+    # 상세 결과
+    # --------------------------------------------------------
+
+    detailed_csv = (
+
+        output_dir
+
+        / "background_image_results.csv"
+    )
+
+
+    with open(
+        detailed_csv,
+        "w",
+        newline="",
+        encoding="utf-8-sig"
+    ) as file:
+
+        writer = csv.writer(
+            file
+        )
+
+
+        writer.writerow([
+            "image",
+            "actual",
+            "predicted",
+            "result",
+            "has_false_positive",
+            "has_miss",
+            "actual_box_count",
+            "predicted_box_count",
+            "correct_match_count"
+        ])
+
+
+        writer.writerows(
+            detailed_rows
+        )
+
+
+    # --------------------------------------------------------
+    # 요약
+    # --------------------------------------------------------
+
+    summary_csv = (
+
+        output_dir
+
+        / "background_summary.csv"
+    )
+
+
+    with open(
+        summary_csv,
+        "w",
+        newline="",
+        encoding="utf-8-sig"
+    ) as file:
+
+        writer = csv.writer(
+            file
+        )
+
+
+        writer.writerow([
+            "metric",
+            "count",
+            "rate"
+        ])
+
+
+        writer.writerow([
+            "total_test_images",
+            total_images,
+            ""
+        ])
+
+
+        writer.writerow([
+            "actual_background",
+            actual_background,
+            ""
+        ])
+
+
+        writer.writerow([
+            "actual_fire",
+            actual_fire,
+            ""
+        ])
+
+
+        writer.writerow([
+            "actual_smoke",
+            actual_smoke,
+            ""
+        ])
+
+
+        writer.writerow([
+            "actual_object",
+            actual_object,
+            ""
+        ])
+
+
+        writer.writerow([
+            "background_correct",
+            background_correct,
+            background_accuracy
+        ])
+
+
+        writer.writerow([
+            "background_false_positive",
+            background_false_positive,
+            background_fp_rate
+        ])
+
+
+        writer.writerow([
+            "background_fire_false_positive",
+            background_fire_fp,
+            ""
+        ])
+
+
+        writer.writerow([
+            "background_smoke_false_positive",
+            background_smoke_fp,
+            ""
+        ])
+
+
+        writer.writerow([
+            "object_detected",
+            object_detected,
+            object_detection_rate
+        ])
+
+
+        writer.writerow([
+            "object_missed",
+            object_missed,
+            object_miss_rate
+        ])
+
+
+        writer.writerow([
+            "fire_correct",
+            fire_correct,
+            fire_recall
+        ])
+
+
+        writer.writerow([
+            "fire_missed",
+            fire_missed,
+            ""
+        ])
+
+
+        writer.writerow([
+            "smoke_correct",
+            smoke_correct,
+            smoke_recall
+        ])
+
+
+        writer.writerow([
+            "smoke_missed",
+            smoke_missed,
+            ""
+        ])
+
+
+        writer.writerow([
+            "binary_image_accuracy",
+            "",
+            binary_accuracy
+        ])
+
+        writer.writerow(["binary_precision", "", binary_precision])
+        writer.writerow(["binary_recall", "", binary_recall])
+        writer.writerow(["binary_f1_score", "", binary_f1])
+
+
+    # --------------------------------------------------------
+    # 이미지 단위 Precision / Recall / F1 / 오탐률
+    # --------------------------------------------------------
+
+    image_metrics_csv = (
+        output_dir
+        / "image_level_metrics.csv"
+    )
+
+    fire_true_negative = (
+        total_images - actual_fire - fire_false_positive_images
+    )
+    smoke_true_negative = (
+        total_images - actual_smoke - smoke_false_positive_images
+    )
+
+    fire_accuracy = (
+        (fire_correct + fire_true_negative) / total_images
+        if total_images > 0 else 0.0
+    )
+    smoke_accuracy = (
+        (smoke_correct + smoke_true_negative) / total_images
+        if total_images > 0 else 0.0
+    )
+    fire_false_positive_rate = (
+        fire_false_positive_images
+        / (fire_false_positive_images + fire_true_negative)
+        if fire_false_positive_images + fire_true_negative > 0 else 0.0
+    )
+    smoke_false_positive_rate = (
+        smoke_false_positive_images
+        / (smoke_false_positive_images + smoke_true_negative)
+        if smoke_false_positive_images + smoke_true_negative > 0 else 0.0
+    )
+
+    with open(
+        image_metrics_csv,
+        "w",
+        newline="",
+        encoding="utf-8-sig"
+    ) as file:
+
+        writer = csv.writer(file)
+        writer.writerow([
+            "scope",
+            "true_positive",
+            "false_positive",
+            "false_negative",
+            "true_negative",
+            "precision",
+            "recall",
+            "f1_score",
+            "accuracy",
+            "false_positive_rate"
+        ])
+        writer.writerow([
+            "fire_or_smoke",
+            object_detected,
+            background_false_positive,
+            object_missed,
+            background_correct,
+            binary_precision,
+            binary_recall,
+            binary_f1,
+            binary_accuracy,
+            background_fp_rate
+        ])
+        writer.writerow([
+            "fire",
+            fire_correct,
+            fire_false_positive_images,
+            fire_missed,
+            fire_true_negative,
+            fire_precision,
+            fire_recall,
+            fire_f1,
+            fire_accuracy,
+            fire_false_positive_rate
+        ])
+        writer.writerow([
+            "smoke",
+            smoke_correct,
+            smoke_false_positive_images,
+            smoke_missed,
+            smoke_true_negative,
+            smoke_precision,
+            smoke_recall,
+            smoke_f1,
+            smoke_accuracy,
+            smoke_false_positive_rate
+        ])
+
+
+    # --------------------------------------------------------
+    # Background VS Object Confusion Matrix
+    # --------------------------------------------------------
+
+    confusion_csv = (
+
+        output_dir
+
+        / "background_confusion_matrix.csv"
+    )
+
+
+    with open(
+        confusion_csv,
+        "w",
+        newline="",
+        encoding="utf-8-sig"
+    ) as file:
+
+        writer = csv.writer(
+            file
+        )
+
+
+        writer.writerow([
+            "Actual / Predicted",
+            "Background",
+            "Fire_or_Smoke"
+        ])
+
+
+        writer.writerow([
+            "Background",
+            background_correct,
+            background_false_positive
+        ])
+
+
+        writer.writerow([
+            "Fire_or_Smoke",
+            object_missed,
+            object_detected
+        ])
+
+
+    print()
+    print("=" * 70)
+    print("TEST Background 결과 저장")
+    print("=" * 70)
+
+    print(
+        detailed_csv
+    )
+
+    print(
+        summary_csv
+    )
+
+    print(
+        image_metrics_csv
+    )
+
+    print(
+        confusion_csv
+    )
+
+
+# ============================================================
+# 25. 결과 파일 출력
+# ============================================================
+
+def print_result_paths(
+    best_model_path,
+    test_dir
+):
+
+    train_dir = best_model_path.parent.parent
+
+
+    print()
+    print("=" * 70)
+    print("YOLOv10n 실험 완료")
+    print("=" * 70)
+
+
+    print()
+    print("[BEST MODEL]")
+
+    print(
+        best_model_path
+    )
+
+
+    print()
+    print("[TRAIN 결과]")
+
+    print(
+        train_dir
+    )
+
+
+    print()
+    print("[TEST 결과]")
+
+    print(
+        test_dir
+    )
+
+
+    print()
+    print("[주요 결과 파일]")
+
+
+    files = [
+
+        best_model_path,
+
+        train_dir
+        / "results.csv",
+
+        train_dir
+        / "results.png",
+
+        test_dir
+        / "confusion_matrix.png",
+
+        test_dir
+        / "confusion_matrix_normalized.png",
+
+        test_dir
+        / "PR_curve.png",
+
+        test_dir
+        / "F1_curve.png",
+
+        test_dir
+        / "P_curve.png",
+
+        test_dir
+        / "R_curve.png",
+
+        test_dir
+        / "metrics_summary.csv",
+
+        test_dir
+        / "yolo_confusion_matrix.csv",
+
+        test_dir
+        / "background_summary.csv",
+
+        test_dir
+        / "image_level_metrics.csv",
+
+        test_dir
+        / "background_image_results.csv",
+
+        test_dir
+        / "background_confusion_matrix.csv",
+    ]
+
+
+    for file in files:
+
+        mark = (
+            "O"
+            if file.exists()
+            else "X"
+        )
+
+
+        print(
+            f"[{mark}] "
+            f"{file}"
+        )
+
+
+# ============================================================
+# 26. MAIN
+# ============================================================
+
+def main():
+
+    print()
+    print("=" * 70)
+    print("YOLOv10n 화재 / 연기 / Background 비교 실험")
+    print("=" * 70)
+
+
+    # --------------------------------------------------------
+    # YAML 확인
+    # --------------------------------------------------------
+
+    check_yaml()
+
+
+    # --------------------------------------------------------
+    # Dataset 확인
+    # --------------------------------------------------------
+
+    paths = check_dataset()
+
+
+    # --------------------------------------------------------
+    # Dataset 통계
+    # --------------------------------------------------------
+
+    print_all_dataset_statistics(
+        paths
+    )
+
+
+    # --------------------------------------------------------
+    # 실험 설정
+    # --------------------------------------------------------
+
+    print_experiment_settings()
+
+
+    # --------------------------------------------------------
+    # GPU / CPU
+    # --------------------------------------------------------
+
+    device = get_device()
+
+
+    # --------------------------------------------------------
+    # YOLOv10n 학습
+    #
+    # train → 학습
+    # val   → 학습 중 검증
+    # --------------------------------------------------------
+
+    best_model_path = train_model(
+        device
+    )
+
+
+    # --------------------------------------------------------
+    # BEST 모델
+    #
+    # 최종 평가는 TEST만 사용
+    # --------------------------------------------------------
+
+    metrics, test_output_dir = (
+        evaluate_test(
+            best_model_path,
+            device
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # Detection 성능
+    # --------------------------------------------------------
+
+    print_detection_metrics(
+        metrics
+    )
+
+
+    # --------------------------------------------------------
+    # Detection Metric CSV
+    # --------------------------------------------------------
+
+    save_detection_metrics(
+        metrics,
+        test_output_dir
+    )
+
+
+    # --------------------------------------------------------
+    # YOLO Confusion Matrix CSV
+    # --------------------------------------------------------
+
+    save_yolo_confusion_matrix(
+        metrics,
+        test_output_dir
+    )
+
+
+    # --------------------------------------------------------
+    # Background 포함 TEST 평가
+    # --------------------------------------------------------
+
+    evaluate_background_test(
+
+        best_model_path,
+
+        device,
+
+        paths,
+
+        test_output_dir
+    )
+
+
+    # --------------------------------------------------------
+    # 결과 위치
+    # --------------------------------------------------------
+
+    print_result_paths(
+        best_model_path,
+        test_output_dir
+    )
+
+
+# ============================================================
+# 프로그램 시작
+# ============================================================
+
+if __name__ == "__main__":
+
+    main()
