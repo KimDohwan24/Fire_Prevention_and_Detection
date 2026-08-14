@@ -127,9 +127,17 @@ export const authApi = {
     });
   },
 
-  logout: () => {
-    setAccessToken(null);
-    setCurrentUserToStorage(null);
+  logout: async () => {
+    try {
+      if (getAccessToken()) {
+        await request('/auth/logout', { method: 'POST' });
+      }
+    } catch (error) {
+      console.warn('로그아웃 활동 이력을 서버에 저장하지 못했습니다.', error);
+    } finally {
+      setAccessToken(null);
+      setCurrentUserToStorage(null);
+    }
   },
 };
 
@@ -152,6 +160,11 @@ export const userApi = {
       method: 'PUT',
       body: JSON.stringify(userData),
     });
+  },
+
+  activities: async (user_no, params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return await request(`/users/${user_no}/activities${query ? `?${query}` : ''}`);
   },
 };
 
@@ -216,8 +229,15 @@ export const eventApi = {
 
 // 5. 알림 API
 export const alertApi = {
-  list: async (status = '') => {
-    const query = status ? `?alert_status=${encodeURIComponent(status)}` : '';
+  list: async (filters = '') => {
+    // 기존 list('SENT') 호출과 페이지/크기 옵션을 모두 지원한다.
+    const params = typeof filters === 'string'
+      ? (filters ? { alert_status: filters } : {})
+      : filters;
+    const queryString = new URLSearchParams(
+      Object.entries(params).filter(([, value]) => value !== '' && value != null)
+    ).toString();
+    const query = queryString ? `?${queryString}` : '';
     return await request(`/alerts${query}`);
   },
 
