@@ -27,6 +27,7 @@ const Signup = () => {
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isEmailVerificationRequested, setIsEmailVerificationRequested] = useState(false);
+  const [isEmailVerificationConfirmed, setIsEmailVerificationConfirmed] = useState(false);
   const [emailVerificationTimeLeft, setEmailVerificationTimeLeft] = useState(EMAIL_VERIFICATION_DURATION);
   const [emailVerificationCode, setEmailVerificationCode] = useState('');
 
@@ -59,8 +60,24 @@ const Signup = () => {
   const handleRequestEmailVerification = () => {
     setErrorMsg('');
     setIsEmailVerificationRequested(true);
+    setIsEmailVerificationConfirmed(false);
     setEmailVerificationTimeLeft(EMAIL_VERIFICATION_DURATION);
     setEmailVerificationCode('');
+  };
+
+  const handleConfirmEmailVerification = () => {
+    if (emailVerificationTimeLeft <= 0) {
+      setErrorMsg('인증 시간이 만료되었습니다. 인증번호를 다시 요청해주세요.');
+      return;
+    }
+
+    if (emailVerificationCode.length !== 6) {
+      setErrorMsg('인증번호 6자리를 입력해주세요.');
+      return;
+    }
+
+    setErrorMsg('');
+    setIsEmailVerificationConfirmed(true);
   };
 
   const formattedEmailVerificationTime = `${String(Math.floor(emailVerificationTimeLeft / 60)).padStart(2, '0')}:${String(emailVerificationTimeLeft % 60).padStart(2, '0')}`;
@@ -300,7 +317,10 @@ const Signup = () => {
                   <input
                     type="text"
                     value={emailVerificationCode}
-                    onChange={(e) => setEmailVerificationCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                    onChange={(e) => {
+                      setEmailVerificationCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6));
+                      setIsEmailVerificationConfirmed(false);
+                    }}
                     className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
                     placeholder="이메일 인증번호 6자리"
                     inputMode="numeric"
@@ -315,6 +335,19 @@ const Signup = () => {
                     재전송
                   </button>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={handleConfirmEmailVerification}
+                  disabled={emailVerificationCode.length !== 6 || emailVerificationTimeLeft === 0}
+                  className={`w-full h-[40px] rounded-full text-button-md transition-all ${
+                    isEmailVerificationConfirmed
+                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-600'
+                      : 'bg-primary text-on-primary hover:bg-ink-deep active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50'
+                  }`}
+                >
+                  {isEmailVerificationConfirmed ? '인증 완료' : '인증번호 확인'}
+                </button>
               </div>
             )}
           </div>
