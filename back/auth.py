@@ -27,23 +27,43 @@ def issue_token(user: dict) -> str:
         "user_no": user["user_no"],
         "user_id": user["user_id"],
         "user_role": user["user_role"],
+        "user_status": user.get("user_status", "ACTIVE"),  # 계정 상태(user_status) 추가
         "exp": datetime.now(timezone.utc) + timedelta(hours=config.JWT_EXPIRES_HOURS),
     }
     return jwt.encode(payload, config.JWT_SECRET, algorithm="HS256")
 
 
+# def _decode_token() -> dict:
+#     header = request.headers.get("Authorization", "")
+#     if not header.startswith("Bearer "):
+#         raise ApiError(401, "UNAUTHORIZED", "인증 토큰이 필요합니다.")
+#     token = header.removeprefix("Bearer ")
+#     try:
+#         return jwt.decode(token, config.JWT_SECRET, algorithms=["HS256"])
+#     except jwt.ExpiredSignatureError as e:
+#         print(f"토큰 만료 에러: {e}")
+#         raise ApiError(401, "TOKEN_EXPIRED", "토큰이 만료되었습니다. 다시 로그인해주세요.")
+#     except jwt.InvalidTokenError:
+#         raise ApiError(401, "INVALID_TOKEN", "유효하지 않은 토큰입니다.")
+
+import base64
 def _decode_token() -> dict:
     header = request.headers.get("Authorization", "")
-    if not header.startswith("Bearer "):
-        raise ApiError(401, "UNAUTHORIZED", "인증 토큰이 필요합니다.")
-    token = header.removeprefix("Bearer ")
+    token = header.replace("Bearer ", "").strip().strip('"').strip("'")
+    
+    # [핵심] JWT의 Base64 패딩 복구 로직
+    # 토큰 길이를 4의 배수로 맞추기 위해 '='을 붙여주는 작업
+    missing_padding = len(token) % 4
+    if missing_padding:
+        token += '=' * (4 - missing_padding)
+
     try:
         return jwt.decode(token, config.JWT_SECRET, algorithms=["HS256"])
     except jwt.ExpiredSignatureError:
-        raise ApiError(401, "TOKEN_EXPIRED", "토큰이 만료되었습니다. 다시 로그인해주세요.")
-    except jwt.InvalidTokenError:
+        raise ApiError(401, "TOKEN_EXPIRED", "토큰이 만료되었습니다.")
+    except Exception as e:
+        print(f"디코딩 실패 원인: {e}") # 여기서 상세 에러 확인
         raise ApiError(401, "INVALID_TOKEN", "유효하지 않은 토큰입니다.")
-
 
 def login_required(f):
     """토큰 검증 후 g.user 에 payload 를 넣는다."""

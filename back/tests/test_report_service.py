@@ -213,6 +213,40 @@ def test_payload_falls_back_to_raw_image_when_not_parseable(monkeypatch, tmp_pat
     assert base64.b64decode(payload["image_base64"]) == b"\xff\xd8fake-jpeg-bytes"
 
 
+def test_frame_ingested_from_the_model_carries_image(client, monkeypatch, tmp_path):
+    """AI 모델이 보내는 경로 형태로 수집된 이벤트도 신고에 이미지가 실린다.
+
+    다른 테스트들은 make_media 로 "/media/..." 를 직접 심어서, 실제 모델이
+    보내는 값(MEDIA_ROOT 기준 상대경로)으로는 통과 여부가 검증된 적이 없었다.
+    수집 시점에 정규화하지 않으면 _primary_frame 이 "/media/" 접두어를 못 찾고
+    (None, None) 을 돌려줘서, 가장 확실하게 탐지한 프레임이 신고에서 통째로 빠진다.
+    """
+    from PIL import Image
+
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    calls = patch_post(monkeypatch,
+                       lambda ep, pl, n: FakeResponse(200, {"external_id": "R-REL"}))
+
+    img = tmp_path / "events" / "2026-08-13" / "1_143005_123456.jpg"
+    img.parent.mkdir(parents=True)
+    Image.new("RGB", (100, 100), (0, 0, 0)).save(img, "JPEG")
+
+    flame = {"cls": "flame", "conf": 0.91, "box": [0.238, 0.259, 0.047, 0.113]}
+    event_no = client.post(
+        "/api/internal/detections",
+        json={"cctv_no": 1, "captured_at": "2026-08-13T14:30:05",
+              "media_url": "events/2026-08-13/1_143005_123456.jpg",   # 모델이 보내는 형태
+              "detections": [flame]},
+        headers={"X-Internal-Key": config.INTERNAL_API_KEY},
+    ).get_json()["event_no"]
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert payload["image_base64"] is not None, "대표 프레임이 신고에 실리지 않았다"
+    assert payload["image_detections"] == [flame]
+
+
 def test_report_goes_out_without_image_file(monkeypatch, tmp_path):
     """대표 프레임 파일이 디스크에 없어도 신고는 나간다 — 이미지가 신고를 막으면 안 된다."""
     monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))

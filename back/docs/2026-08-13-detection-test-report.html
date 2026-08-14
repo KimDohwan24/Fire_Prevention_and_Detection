@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>파이어가드 화재 판정로직 테스트 결과</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Pretendard", "Malgun Gothic", -apple-system, sans-serif;
+    color: #1a202c; background: #f7fafc; line-height: 1.7; font-size: 15px;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 40px 24px 120px; }
+  header { border-bottom: 3px solid #e53e3e; padding-bottom: 20px; margin-bottom: 32px; }
+  header h1 { font-size: 28px; }
+  header .meta { color: #718096; margin-top: 6px; font-size: 14px; }
+  h2 {
+    font-size: 22px; margin: 48px 0 16px; padding: 8px 12px;
+    background: #2d3748; color: #fff; border-radius: 6px;
+  }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  p { margin: 8px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; background: #fff; font-size: 14px; }
+  th, td { border: 1px solid #cbd5e0; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #edf2f7; font-weight: 600; white-space: nowrap; }
+  td code, p code, li code, th code {
+    background: #edf2f7; padding: 1px 6px; border-radius: 4px;
+    font-family: Consolas, "Courier New", monospace; font-size: 13px; color: #c53030;
+  }
+  pre {
+    background: #1a202c; color: #e2e8f0; padding: 16px; border-radius: 8px;
+    overflow-x: auto; margin: 12px 0; font-size: 13px;
+    font-family: Consolas, "Courier New", monospace; line-height: 1.6;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .card {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+    padding: 20px 24px; margin: 20px 0;
+  }
+  .card h3 { margin-top: 0; }
+  .note { background: #fefcbf; border-left: 4px solid #d69e2e; padding: 10px 14px;
+          border-radius: 4px; margin: 12px 0; font-size: 14px; }
+  .warn { background: #fed7d7; border-left: 4px solid #c53030; padding: 10px 14px;
+          border-radius: 4px; margin: 12px 0; font-size: 14px; }
+  .good { background: #c6f6d5; border-left: 4px solid #2f855a; padding: 10px 14px;
+          border-radius: 4px; margin: 12px 0; font-size: 14px; }
+  ul, ol { margin: 8px 0 8px 24px; }
+  li { margin: 4px 0; }
+  .toc { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 20px 24px; }
+  .toc a { color: #2b6cb0; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .tag { display: inline-block; padding: 2px 9px; border-radius: 5px;
+         font-weight: 700; font-size: 12px; color: #fff; }
+  .t-ok { background: #2f855a; }
+  .t-dismiss { background: #a0aec0; }
+  .t-pend { background: #d69e2e; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  figure { margin: 16px 0; }
+  figure img { max-width: 100%; border: 1px solid #cbd5e0; border-radius: 8px; }
+  figcaption { color: #718096; font-size: 13px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>🔥 파이어가드 화재 판정로직 테스트 결과</h1>
+  <div class="meta">2026-08-13 · 동영상 3종 실측 · 브랜치 <code>dev-Wang</code> · 개발 DB <code>fireguard</code></div>
+</header>
+
+<div class="toc">
+  <strong>목차</strong>
+  <ul>
+    <li><a href="#summary">1. 한 줄 결론</a></li>
+    <li><a href="#setup">2. 테스트 구성</a></li>
+    <li><a href="#s1">3. 시나리오 A — 기준미달 종료 (관측 창 고정)</a></li>
+    <li><a href="#s2">4. 시나리오 B — 화재 확정</a></li>
+    <li><a href="#s3">5. 시나리오 C — 정상영상 오탐 검사</a></li>
+    <li><a href="#db">6. DB 적재 검증</a></li>
+    <li><a href="#timeline">7. 확정 이후 전 구간 타임라인</a></li>
+    <li><a href="#finding">8. 발견된 결함 — <code>localhost</code> 2초</a></li>
+    <li><a href="#demo">9. 시연 권장 설정</a></li>
+    <li><a href="#limit">10. 한계와 남은 것</a></li>
+    <li><a href="#repro">11. 재현 방법</a></li>
+  </ul>
+</div>
+
+<h2 id="summary">1. 한 줄 결론</h2>
+
+<div class="good">
+  <strong>판정로직은 설계(발표 슬라이드 10 “고정 관측 창”)대로 동작한다.</strong>
+  누적·창 고정·기준미달 종료·확정 네 가지 동작을 모두 실제 영상으로 확인했고,
+  정상영상에서는 오탐이 한 건도 없었다. 확정 이후 알림 → 무응답 → 119 신고 → 기관 승계까지
+  <strong>최초 감지에서 접수까지 52.2초</strong>로 완주했다.
+</div>
+
+<div class="warn">
+  <strong>다만 판정로직 밖에서 결함 1건을 찾았다.</strong> 검출 전송 주소가 <code>localhost</code>일 때
+  프레임마다 약 2초를 버린다(<a href="#finding">8장</a>). 원인은 IPv6 폴백이며 주소를
+  <code>127.0.0.1</code>로 바꾸면 사라진다. 이걸 모르면 시연에서 실시간 재생이 불가능하다.
+</div>
+
+<h2 id="setup">2. 테스트 구성</h2>
+
+<table>
+  <tr><th>구성</th><th>내용</th></tr>
+  <tr><td>검출</td><td><code>ai-model/run_video.py</code> + <code>best.pt</code> (conf 0.25, imgsz 640, <strong>CPU</strong> — torch 2.13.0+cpu, CUDA 없음)</td></tr>
+  <tr><td>샘플링</td><td><code>--fps 3</code> (초당 3프레임 추론)</td></tr>
+  <tr><td>전송</td><td><code>POST /api/internal/detections</code> (<code>X-Internal-Key</code>)</td></tr>
+  <tr><td>판정</td><td><code>back/services/event_service.py</code> · <code>process_detection</code> / <code>sweep_stale_pending</code></td></tr>
+  <tr><td>후속</td><td>APScheduler 5초 주기 → 알림 → 119 신고 → <code>mock-119</code>(포트 6000)</td></tr>
+  <tr><td>기본 판정 기준</td><td><code>EVENT_THRESHOLD_FRAMES=30</code> · <code>EVENT_WINDOW_SEC=60</code> · <code>ALERT_DEADLINE_SEC=30</code></td></tr>
+</table>
+
+<h3>사용한 영상 3종</h3>
+
+<table>
+  <tr><th>영상</th><th>성격</th><th>추론 속도<br>(전송 없이)</th><th>검출률</th></tr>
+  <tr>
+    <td><code>samples/house_fire.webm</code></td>
+    <td>실내 화재, 고해상도(110MB)</td>
+    <td class="num">0.6 f/s</td>
+    <td class="num">57% (60프레임 중 34)</td>
+  </tr>
+  <tr>
+    <td><code>samples/taipo_apartment_fire.webm</code></td>
+    <td>아파트 외벽 화재, 30초(17MB)</td>
+    <td class="num">7.9 f/s</td>
+    <td class="num">12% (92프레임 중 11)</td>
+  </tr>
+  <tr>
+    <td><code>samples/normal_cctv.mp4</code></td>
+    <td><strong>정상영상</strong> — 국가교통정보센터(ITS) 개방 CCTV<br>[수도권제1순환선] 판교분기점, 720×480, 60초</td>
+    <td class="num">8.0 f/s</td>
+    <td class="num"><strong>0%</strong> (205프레임 중 0)</td>
+  </tr>
+</table>
+
+<div class="note">
+  정상영상은 저장소에 없어서 프로젝트가 이미 쓰는 ITS 개방 API(<code>CCTV_API_KEY</code>)로 실제
+  고속도로 CCTV 60초를 받아 썼다. 실제 CCTV 화각·화질이라 오탐 검사로는 합성 영상보다 낫다.
+  <code>ai-model/samples/</code>는 <code>.gitignore</code> 대상이라 이 파일은 커밋되지 않는다.
+</div>
+
+<h2 id="s1">3. 시나리오 A — 기준미달 종료 (관측 창 고정)</h2>
+
+<p>
+  기본 설정(30프레임 / 60초)에서 <code>house_fire</code>를 흘려보냈다. 검출이 <strong>계속 들어오는 중에도</strong>
+  창이 60초에 닫히고 이벤트가 차례로 폐기됐다.
+</p>
+
+<table>
+  <tr><th>event</th><th>누적</th><th>최초 감지<br>(창 시작)</th><th>마지막 누적 프레임</th><th>창 유지</th><th>결과</th></tr>
+  <tr><td>5</td><td class="num">16 / 30</td><td>09:37:30.866</td><td>09:38:26.035</td><td class="num">55.2초</td><td><span class="tag t-dismiss">DISMISSED</span></td></tr>
+  <tr><td>6</td><td class="num">11 / 30</td><td>09:38:37.229</td><td>09:39:34.255</td><td class="num">57.0초</td><td><span class="tag t-dismiss">DISMISSED</span></td></tr>
+  <tr><td>7</td><td class="num">7 / 30</td><td>09:39:39.613</td><td>09:40:10.629</td><td class="num">31.0초</td><td><span class="tag t-dismiss">DISMISSED</span></td></tr>
+</table>
+
+<p><code>taipo</code>에서도 같은 결과가 나왔다 — event 4 (11/30), event 10 (11/30) 모두 <span class="tag t-dismiss">DISMISSED</span>.</p>
+
+<div class="card">
+  <h3>이게 왜 중요한가</h3>
+  <p>
+    창의 기준점은 <code>event_first_detected_at</code>이고 이후 프레임이 아무리 들어와도 움직이지 않는다.
+    만약 <strong>마지막 검출</strong> 기준으로 창을 쟀다면 event 5·6·7은 하나로 이어졌을 것이고
+    (16+11+7 = 34프레임 &gt; 30), 시간만 충분하면 결국 확정됐을 것이다.
+    창 간격보다 조금씩 빠르게 튀는 신호 — 이 로직이 걸러내려던 바로 그 신호가 정확히 걸러졌다.
+  </p>
+  <p>
+    창이 닫힌 뒤 들어온 첫 검출은 쿨다운 없이 곧바로 새 이벤트를 열었다(5 → 6 사이 11초, 6 → 7 사이 5초).
+    이것도 설계대로다.
+  </p>
+</div>
+
+<h2 id="s2">4. 시나리오 B — 화재 확정</h2>
+
+<p>기본 설정으로는 이 PC에서 두 영상 모두 확정에 이르지 못했다. 원인이 서로 다르므로 조건을 나눠 확인했다.</p>
+
+<table>
+  <tr><th>event</th><th>영상</th><th>바꾼 조건</th><th>결과</th><th>확정까지</th></tr>
+  <tr>
+    <td>8</td><td>house_fire</td>
+    <td><code>EVENT_WINDOW_SEC=300</code></td>
+    <td><span class="tag t-ok">CONFIRMED</span> 30/30<br>30번째 검출 프레임에서 확정</td>
+    <td class="num">149.9초</td>
+  </tr>
+  <tr>
+    <td>11</td><td>taipo</td>
+    <td><code>EVENT_THRESHOLD_FRAMES=10</code><br><code>--realtime</code> (원본 속도 재생)</td>
+    <td><span class="tag t-ok">CONFIRMED</span> 10/10<br>10번째 검출 프레임에서 확정</td>
+    <td class="num">11.4초</td>
+  </tr>
+</table>
+
+<p>두 경우 모두 임계값에 도달한 <strong>바로 그 프레임</strong>에서 확정됐고, <code>event_detected_at</code>이 기록됐으며,
+확정 훅이 즉시 알림 발송으로 이어졌다. 확정 직후 들어온 검출은 CONFIRMED 이벤트에 누적되지 않고
+새 이벤트(9, 12)를 열었다 — 이것도 설계대로다.</p>
+
+<figure>
+  <img src="../../media/events/2026-08-13/1_094159_850236.jpg" alt="event 8 대표 프레임">
+  <figcaption>event 8 대표 이미지 — 신뢰도 0.8938 (<code>media_is_primary = true</code>). 박스와 클래스·신뢰도는 검출 시점에 그려 저장된다.</figcaption>
+</figure>
+
+<div class="note">
+  <strong>이미지 경로 주의.</strong> <code>media/</code>는 <code>.gitignore</code> 대상이라 위 이미지는 이 PC에만 있다.
+  발표 자료에 넣을 때는 파일을 따로 복사해 쓸 것.
+</div>
+
+<h3>event 11이 기본 임계값(30)으로는 확정될 수 없는 이유</h3>
+<p>
+  속도 문제가 아니다. <code>taipo</code>는 30초짜리 클립이고 <code>--fps 3</code>으로 뽑으면 전체가 92프레임인데,
+  그중 검출이 잡히는 프레임이 <strong>11장뿐</strong>이다. 영상을 끝까지 다 돌려도 11을 넘을 수 없으므로
+  임계값 30에는 물리적으로 도달하지 못한다. 시연에 이 영상을 쓴다면 임계값을 낮춰야 한다.
+</p>
+
+<h2 id="s3">5. 시나리오 C — 정상영상 오탐 검사</h2>
+
+<table>
+  <tr><th>항목</th><th>결과</th></tr>
+  <tr><td>처리 프레임</td><td class="num">205 (60초 클립 전체)</td></tr>
+  <tr><td>검출된 프레임</td><td class="num"><strong>0 (0.0%)</strong></td></tr>
+  <tr><td>백엔드 전송</td><td>60프레임을 <code>--send-empty</code>로 강제 전송 (성공 60 / 실패 0)</td></tr>
+  <tr><td><code>fire_event</code></td><td>9행 → <strong>9행</strong> (변화 없음)</td></tr>
+  <tr><td><code>event_media</code></td><td>144행 → <strong>144행</strong> (변화 없음)</td></tr>
+  <tr><td><code>alert</code></td><td>6건 → <strong>6건</strong> (변화 없음)</td></tr>
+</table>
+
+<p>
+  비화재 프레임은 이벤트도, 미디어 행도, 알림도 만들지 않는다. 검출이 0건이라 프레임 JPG도
+  한 장 저장되지 않았다 — <strong>오탐 없음의 증거가 “파일 없음”</strong>이라 발표 자료에는
+  실행 화면 캡처를 따로 준비해야 한다.
+</p>
+
+<h2 id="db">6. DB 적재 검증</h2>
+
+<p>확정된 event 8을 기준으로 각 테이블이 의도대로 쌓였는지 확인했다.</p>
+
+<table>
+  <tr><th>확인 항목</th><th>기대</th><th>실제</th></tr>
+  <tr><td><code>event_media</code> 행 수</td><td>누적 프레임 수와 일치</td><td>30행 = <code>event_detected_frames</code> 30 ✅</td></tr>
+  <tr><td><code>media_is_primary</code></td><td>이벤트당 정확히 1행, 최고 신뢰도</td><td>1행, 0.8938 = 구간 최고값 ✅</td></tr>
+  <tr><td><code>event_class</code></td><td>flame + smoke 병합</td><td><code>FLAME_SMOKE</code> ✅</td></tr>
+  <tr><td><code>event_confidence</code></td><td>누적 중 최고값 유지</td><td>0.8938 ✅</td></tr>
+  <tr><td><code>event_detected_at</code></td><td>확정 시각 기록</td><td>09:43:40.596 ✅</td></tr>
+  <tr><td>대표 이미지 교체</td><td>더 높은 신뢰도 프레임이 오면 교체</td><td>교체 후 이전 행 <code>false</code> 처리 ✅</td></tr>
+</table>
+
+<p>이번 테스트로 개발 DB에 남은 데이터: <code>fire_event</code> event 4~12(9건), <code>event_media</code> 101행,
+프레임 JPG는 <code>media/events/2026-08-13/</code>에 저장됐다.</p>
+
+<h2 id="timeline">7. 확정 이후 전 구간 타임라인</h2>
+
+<p>event 11 (실시간 재생, 임계값 10). 발표 슬라이드 11 타임라인에 대응하는 실측값이다.</p>
+
+<table>
+  <tr><th>시각</th><th>경과</th><th>사건</th></tr>
+  <tr><td>10:08:25.253</td><td class="num">0.0초</td><td>최초 감지 — 관측 창 시작</td></tr>
+  <tr><td>10:08:36.690</td><td class="num">+11.4초</td><td><strong>CONFIRMED</strong> (10/10 프레임)</td></tr>
+  <tr><td>10:08:36.695</td><td class="num">+11.4초</td><td>관리자 알림 2건 발송 (PUSH · SMS) — 응답 마감 10:09:06</td></tr>
+  <tr><td>10:09:06.695</td><td class="num">+41.4초</td><td>유예 30초 경과, 무응답 확정</td></tr>
+  <tr><td>10:09:07.047</td><td class="num">+41.8초</td><td>119 신고 개시 — 종로소방서 (마감 +0.35초, 가장 가까운 기관)</td></tr>
+  <tr><td>~10:09:15</td><td class="num">+50초</td><td>4회 시도 전부 실패 → <code>NO_RESPONSE</code></td></tr>
+  <tr><td>10:09:15.387</td><td class="num">+50.1초</td><td><strong>승계</strong> — 중부소방서로 전환</td></tr>
+  <tr><td>10:09:17.446</td><td class="num">+52.2초</td><td><strong>ACCEPTED</strong> · 접수번호 <code>R-000002</code></td></tr>
+</table>
+
+<div class="good">
+  최초 감지에서 119 접수까지 <strong>52.2초</strong>. 유예 30초를 빼면 시스템이 실제로 쓴 시간은 22.2초다.
+  에스컬레이션 스윕 주기가 5초인데 마감 후 0.35초 만에 신고가 시작된 것은 운이 좋았던 것이며,
+  최악의 경우 최대 5초까지 늦어질 수 있다.
+</div>
+
+<h2 id="finding">8. 발견된 결함 — <code>localhost</code> 2초</h2>
+
+<p>전송 모드에서 추론 속도가 8.0 f/s → 0.5 f/s로 16배 떨어졌다. 왕복 시간을 직접 재서 원인을 좁혔다.</p>
+
+<table>
+  <tr><th>요청</th><th>중앙값</th></tr>
+  <tr><td><code>GET /api/health</code> @ <code>localhost</code></td><td class="num">2051.7 ms</td></tr>
+  <tr><td><code>GET /api/health</code> @ <code>127.0.0.1</code></td><td class="num">15.3 ms</td></tr>
+  <tr><td><code>POST /api/internal/detections</code> @ <code>localhost</code></td><td class="num">2054.6 ms</td></tr>
+  <tr><td><code>POST /api/internal/detections</code> @ <code>127.0.0.1</code></td><td class="num">15.1 ms</td></tr>
+</table>
+
+<p>
+  <strong>원인.</strong> 백엔드는 <code>0.0.0.0</code>(IPv4)만 바인딩하는데 Windows에서 <code>localhost</code>는
+  <code>::1</code>(IPv6)로 먼저 해석된다. IPv6 연결이 실패하고 IPv4로 재시도하기까지 약 2초가 걸린다.
+  엔드포인트 종류와 무관하게 일정하게 2초가 붙는 것이 그 증거다.
+</p>
+
+<p>
+  <strong>영향.</strong> 프레임마다 2초를 버린다. <code>taipo</code> 전체 처리가 33.8초 → 11.7초(2.9배)로 줄었고,
+  초당 3프레임 실시간 재생이 가능해졌다. 이 문제가 있는 상태에서는 실시간 시연 자체가 불가능하다.
+</p>
+
+<p><strong>조치.</strong> 실행 시 <code>--api http://127.0.0.1:5000</code>을 넘긴다. 근본적으로는
+  <code>run_video.py</code>의 기본값(<code>FIREGUARD_API</code>)을 <code>127.0.0.1</code>로 바꾸는 것을 검토할 만하다.</p>
+
+<div class="note">
+  <strong>기각된 가설.</strong> 처음에는 <code>run_video.py</code>가 <code>requests.Session</code>을 쓰지 않아
+  매 프레임 새 커넥션을 여는 것이 원인이라고 봤다. 측정 결과 Session 재사용 시에도 2054 ms로 동일해
+  무관한 것으로 확인됐다. (Session 재사용 자체는 별개로 여전히 개선 여지가 있다.)
+</div>
+
+<h2 id="demo">9. 시연 권장 설정</h2>
+
+<div class="card">
+  <h3>시연용 실행 (검증된 조합 — event 11이 이 설정으로 나왔다)</h3>
+  <pre><code># 백엔드 — 임계값을 10으로 낮춰 기동
+cd back
+EVENT_THRESHOLD_FRAMES=10 .venv/Scripts/python app.py
+
+# 가상 119 서버
+cd mock-119 &amp;&amp; python app.py
+
+# 검출 — 주소는 반드시 127.0.0.1
+cd ai-model
+.venv/Scripts/python run_video.py --video samples/taipo_apartment_fire.webm \
+    --send --cctv-no 1 --api http://127.0.0.1:5000 --realtime</code></pre>
+</div>
+
+<table>
+  <tr><th>설정</th><th>값</th><th>이유</th></tr>
+  <tr><td><code>--api</code></td><td><code>http://127.0.0.1:5000</code></td><td><strong>필수.</strong> 없으면 프레임당 2초 손실(8장)</td></tr>
+  <tr><td><code>--realtime</code></td><td>켬</td><td>영상이 2배속으로 지나가지 않게</td></tr>
+  <tr><td><code>EVENT_THRESHOLD_FRAMES</code></td><td>10</td><td>taipo에는 검출 프레임이 11장뿐이라 기본 30은 도달 불가</td></tr>
+  <tr><td><code>ALERT_DEADLINE_SEC</code></td><td>30 (기본)</td><td>감지 → 접수 약 52초. 더 줄이려면 <code>ESCALATION_INTERVAL_SEC</code>도 같이 줄일 것</td></tr>
+  <tr><td>승계 시연</td><td>1·2번 기관 <code>?mode=fail</code>,<br>3번 <code>?mode=ok</code></td><td>실패 → 승계 → 접수를 화면에서 보여줄 수 있다</td></tr>
+</table>
+
+<h2 id="limit">10. 한계와 남은 것</h2>
+
+<ul>
+  <li><strong>house_fire는 시연에 부적합하다.</strong> 고해상도라 CPU 디코딩만으로 프레임당 약 1.6초가 들어
+      0.6 f/s밖에 안 나온다. 실시간 재생이 불가능하므로 쓰려면 저해상도로 변환해야 한다.</li>
+  <li><strong>GPU가 없다.</strong> 이번 측정은 전부 CPU 기준이다. GPU에서는 추론 시간이 줄어 여유가 생긴다.</li>
+  <li><strong>알림은 아직 모의다.</strong> SMS는 로그만 남기고(<code>services/sms.py</code>), PUSH는 DB 행일 뿐
+      실제로 밀어내는 것이 없다.</li>
+  <li><strong>이번 테스트 데이터가 개발 DB에 그대로 남아 있다.</strong> event 4~12
+      (<code>event_media</code> 101행). 발표 전에 정리할지 판단 필요.</li>
+  <li><strong>열린 채로 남은 이벤트는 없다.</strong> 마지막 실행의 잔여 이벤트 12(1/10)도
+      창이 닫히면서 스위퍼가 <span class="tag t-dismiss">DISMISSED</span> 처리했다.</li>
+</ul>
+
+<h2 id="repro">11. 재현 방법</h2>
+
+<h3>판정 결과 다시 조회하기</h3>
+<pre><code>cd back
+.venv/Scripts/python -c "import db; ..."   # 또는 psql
+
+SELECT event_no, event_status, event_class,
+       event_detected_frames, event_threshold_frames,
+       event_first_detected_at, event_detected_at
+FROM fire_event WHERE event_no BETWEEN 4 AND 12 ORDER BY event_no;</code></pre>
+
+<h3>정상영상 오탐 검사 (백엔드 없이)</h3>
+<pre><code>cd ai-model
+.venv/Scripts/python run_video.py --video samples/normal_cctv.mp4</code></pre>
+
+<h3>정상영상 새로 받기 (ITS 개방 CCTV)</h3>
+<p>스트림 주소에 시간 제한 토큰이 박혀 있어 받자마자 바로 열어야 한다.
+   조회는 <code>ITS_API_URL</code> + <code>CCTV_API_KEY</code>(루트 <code>.env</code>), 저장은 OpenCV로 한다.</p>
+
+<div class="note">
+  이 문서의 모든 수치는 <code>fireguard</code> DB와 실행 로그에서 뽑은 실측값이다. 추정치나 계산값이 아니다.
+</div>
+
+</div>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { adminUpgradeApi } from '../api';
 import {
   User, ShieldCheck, Mail, Phone, Building, Calendar,
   Lock, Bell, Shield, Key, CheckCircle, Clock,
@@ -26,7 +27,8 @@ export default function MyPage() {
       id: 'admin',
       name: '최고 관리자',
       email: 'admin@fireguard.or.kr',
-      role: 'admin',
+      role: 'ADMIN',
+      user_status: 'ACTIVE',
       dept: '관제총괄팀',
       phone: '010-1234-5678',
       position: '총괄 관제 책임자',
@@ -35,7 +37,7 @@ export default function MyPage() {
       assignedZone: '전체 관제 구역'
     };
   });
-  
+  console.log("현재 currentUser 상태:", currentUser);
   // 내 관리 CCTV 모달 및 로딩 상태
   const [myCctvs, setMyCctvs] = useState([]);
   const [isCctvsLoading, setIsCctvsLoading] = useState(true);
@@ -84,43 +86,45 @@ export default function MyPage() {
       return;
     }
 
-    // 1. 세션 복원 또는 localStorage 정보 활용
-    authApi.me().then(res => {
-      if (res) {
+    // JWT의 사용자 정보가 확인된 뒤에만 CCTV를 불러온다.
+    // 일반 사용자는 자신의 user_no와 일치하는 CCTV만 볼 수 있다.
+    const loadCurrentUserAndCctvs = async () => {
+      try {
+        const sessionResponse = await authApi.me();
+        const sessionUser = sessionResponse?.user || sessionResponse;
+        if (sessionUser?.user_no == null || !sessionUser?.user_id) {
+          throw new Error('현재 로그인 사용자 정보를 확인할 수 없습니다.');
+        }
+
         const user = {
-          id: res.user_id,
-          user_no: res.user_no,
-          name: res.user_name || res.user_id,
-          email: res.user_email || `${res.user_id}@fireguard.or.kr`,
-          phone: res.user_phone || '',
-          role: res.user_role === 'ADMIN' ? 'admin' : 'user',
-          dept: res.user_role === 'ADMIN' ? '관제총괄팀' : '관제팀',
-          position: res.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원',
+          id: sessionUser.user_id,
+          user_no: sessionUser.user_no,
+          name: sessionUser.user_name || sessionUser.user_id,
+          user_status: sessionUser.user_status,
+          email: sessionUser.user_email || `${sessionUser.user_id}@fireguard.or.kr`,
+          phone: sessionUser.user_phone || '',
+          role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
+          dept: sessionUser.user_role === 'ADMIN' ? '관제총괄팀' : '관제팀',
+          position: sessionUser.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원',
           joinedAt: '2026-01-01',
           lastLogin: '최근 접속 중',
           assignedZone: 'A동 및 외곽 관제 구역'
         };
         setCurrentUser(user);
         localStorage.setItem('currentUser', JSON.stringify(user));
-      }
-    }).catch(() => {
-      const storedUser = localStorage.getItem('currentUser');
-      if (storedUser) {
-        try {
-          const parsed = JSON.parse(storedUser);
-          if (parsed.name) parsed.name = parsed.name.replace(/\s*님$/, '');
-          setCurrentUser(prev => ({ ...prev, ...parsed }));
-        } catch (e) {
-          console.error('사용자 정보 로드 실패:', e);
-        }
-      }
-    });
 
-    // 2. CCTV 목록 수신
-    cctvApi.list().then(res => {
-      const items = res?.items || res || [];
-      if (Array.isArray(items)) {
-        const mapped = items.map(item => ({
+        const isSessionAdmin = user.role === 'admin';
+        const cctvResponse = await cctvApi.list(
+          isSessionAdmin ? {} : { user_no: user.user_no }
+        );
+        const items = cctvResponse?.items || cctvResponse || [];
+        const accessibleItems = Array.isArray(items)
+          ? isSessionAdmin
+            ? items
+            : items.filter((item) => String(item.user_no) === String(user.user_no))
+          : [];
+
+        const mapped = accessibleItems.map(item => ({
           id: `CCTV-${String(item.cctv_no).padStart(2, '0')}`,
           name: item.cctv_name,
           status: item.cctv_status === 'ACTIVE' ? 'normal' : 'offline',
@@ -132,9 +136,16 @@ export default function MyPage() {
           history: []
         }));
         setMyCctvs(mapped);
+      } catch (error) {
+        // 세션 또는 소유자 정보를 확인할 수 없는 경우 CCTV를 노출하지 않는다.
+        setMyCctvs([]);
+        console.warn('MyPage CCTV 권한 확인 오류:', error.message);
+      } finally {
+        setIsCctvsLoading(false);
       }
-    }).catch(err => console.warn('MyPage CCTV 로드 오류:', err))
-      .finally(() => setIsCctvsLoading(false));
+    };
+
+    loadCurrentUserAndCctvs();
 
     // 3. 최근 활동 이력 수신 (백엔드 API + localStorage 조치 내역 통합)
     setIsActivitiesLoading(true);
@@ -238,9 +249,27 @@ export default function MyPage() {
     setIsEditProfileOpen(true);
   };
 
+
   // 관리자 승격 승인 요청 보내기
-  const handleRequestAdmin = () => {
-    showToast('관리자 승격 요청 API가 아직 연동되지 않아 요청은 제출되지 않았습니다.');
+  const handleRequestUpgrade = async () => {
+    try {
+      await adminUpgradeApi.requestUpgrade();
+      
+      // 로컬스토리지의 currentUser에 요청 상태 반영 후 새로고침
+      const stored = localStorage.getItem('currentUser');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          parsed.adminRequested = true;
+          parsed.adminRequestStatus = 'PENDING';
+          localStorage.setItem('currentUser', JSON.stringify(parsed));
+        } catch (e) {}
+      }
+
+      window.location.reload(); 
+    } catch (err) {
+      console.error('승급 요청 실패:', err);
+    }
   };
 
   // 프로필 수정 저장
@@ -272,26 +301,54 @@ export default function MyPage() {
     }
   };
 
-  // 비밀번호 변경 저장
-  const handleSavePassword = (e) => {
-    e.preventDefault();
-    if (!pwForm.currentPassword) {
-      alert('현재 비밀번호를 입력해주세요.');
-      return;
-    }
-    if (pwForm.newPassword.length < 4) {
-      alert('새 비밀번호는 최소 4자리 이상이어야 합니다.');
-      return;
-    }
-    if (pwForm.newPassword !== pwForm.confirmPassword) {
-      alert('새 비밀번호와 비밀번호 확인이 일치하지 않습니다.');
+ // 비밀번호 변경 저장
+const handleSavePassword = async (e) => {
+  e.preventDefault();
+  if (!pwForm.currentPassword) {
+    alert('현재 비밀번호를 입력해주세요.');
+    return;
+  }
+  if (pwForm.newPassword.length < 4) {
+    alert('새 비밀번호는 최소 4자리 이상이어야 합니다.');
+    return;
+  }
+  if (pwForm.newPassword !== pwForm.confirmPassword) {
+    alert('새 비밀번호와 비밀번호 확인이 일치하지 않습니다.');
+    return;
+  }
+
+  // 스토리지에 저장된 'access_token' 가져오기
+  const token = localStorage.getItem('access_token');
+
+  try {
+    const response = await fetch('/api/users/password', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}` // 토큰 포함
+      },
+      body: JSON.stringify({
+        current_password: pwForm.currentPassword,
+        new_password: pwForm.newPassword
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      alert(data.message || '비밀번호 변경에 실패했습니다.');
       return;
     }
 
     setIsChangePasswordOpen(false);
     setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
     setIsPasswordChangeNoticeOpen(true);
-  };
+
+  } catch (error) {
+    console.error('Password change error:', error);
+    alert('서버 통신 중 오류가 발생했습니다.');
+  }
+};
 
   // 설정을 변경할 때의 핸들러
   const toggleSetting = (key) => {
@@ -450,22 +507,23 @@ export default function MyPage() {
 
               {/* 관리자 승인 요청 상태 배지 및 버튼 */}
               <div className="pt-2 flex items-center gap-3">
-                {!isAdmin && (
-                  currentUser?.adminRequested || currentUser?.adminRequestStatus === 'PENDING' ? (
+                {currentUser?.role !== 'ADMIN' && currentUser?.user_role !== 'ADMIN' ? (
+                currentUser?.status === 'PENDING' || currentUser?.user_status === 'PENDING' ? (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-600 bg-amber-500/10 border border-amber-500/30 px-3.5 py-1.5 rounded-full">
                       <span>⏳</span>
                       <span>관리자 승격 승인 요청 대기 중</span>
                     </span>
                   ) : (
                     <button
-                      onClick={handleRequestAdmin}
+                      // onClick={handleRequestAdmin}
+                      onClick={handleRequestUpgrade}
                       className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-600 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3.5 py-1.5 rounded-full transition-all cursor-pointer shadow-xs"
                     >
                       <span>👑</span>
                       <span>관리자 승인 요청 보내기</span>
                     </button>
                   )
-                )}
+                ) : null}
               </div>
 
               <div className="pt-2 flex flex-wrap gap-y-2 gap-x-6 text-body-sm text-mute">
@@ -486,6 +544,7 @@ export default function MyPage() {
           </div>
 
           {/* 내가 설치/등록한 카메라 자산 현황 박스 */}
+          {false && (
           <div className="mt-6 pt-6 border-t border-hairline flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-surface-soft p-4 rounded-xl">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-canvas rounded-lg border border-hairline text-ink">
@@ -498,7 +557,7 @@ export default function MyPage() {
                     총 {myCctvs.length}대 등록됨 (클릭 시 실시간 비디오)
                   </span>
                   <div className="flex flex-wrap gap-1">
-                    {myCctvs.map(c => (
+                    {myCctvs.slice(0, 3).map(c => (
                       <button
                         key={c.id}
                         onClick={() => setSelectedMyCctv(c)}
@@ -509,6 +568,9 @@ export default function MyPage() {
                         <span>{c.name}</span>
                       </button>
                     ))}
+                    {myCctvs.length > 3 && (
+                      <span className="text-xs font-semibold text-mute px-2 py-0.5">+{myCctvs.length - 3}대</span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -518,6 +580,7 @@ export default function MyPage() {
               <span>최근 접속: {currentUser?.lastLogin || '2026-08-10 10:25:12'}</span>
             </div>
           </div>
+          )}
         </section>
 
         {/* 3. 내가 등록 및 관리하는 CCTV 목록 & 이력 카드 */}
@@ -526,9 +589,9 @@ export default function MyPage() {
             <div>
               <h3 className="text-heading-md font-bold text-ink flex items-center gap-2">
                 <Video className="w-5 h-5 text-ink" />
-                <span>내 등록/담당 CCTV 목록 ({isCctvsLoading ? '조회중...' : `${myCctvs.length}대`})</span>
+                <span>최근 등록 CCTV ({isCctvsLoading ? '조회중...' : `${Math.min(myCctvs.length, 3)} / ${myCctvs.length}대`})</span>
               </h3>
-              <p className="text-body-sm text-mute mt-0.5">내가 직접 등록했거나 전담 관제 중인 CCTV 카메라 및 상태 변동 이력입니다.</p>
+              <p className="text-body-sm text-mute mt-0.5">최근 등록한 CCTV 3대의 상태를 확인합니다. 전체 모니터링은 대시보드에서 진행하세요.</p>
             </div>
             <button
               onClick={() => navigate('/dashboard')}
@@ -551,7 +614,7 @@ export default function MyPage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {myCctvs.map((cctv) => (
+              {myCctvs.slice(0, 3).map((cctv) => (
                 <div
                   key={cctv.id}
                   onClick={() => setSelectedMyCctv(cctv)}
@@ -585,9 +648,9 @@ export default function MyPage() {
                   </div>
 
                   <div className="pt-2 border-t border-hairline/60 flex items-center justify-between text-caption-sm text-mute">
-                    <span>감지 이력 {cctv.history?.length || 0}건</span>
+                    <span>상태 요약</span>
                     <span className="text-ink font-semibold group-hover:underline flex items-center gap-1">
-                      이력 보기 &rarr;
+                      모니터링 &rarr;
                     </span>
                   </div>
                 </div>
@@ -1200,10 +1263,10 @@ export default function MyPage() {
               <AlertTriangle className="h-6 w-6" />
             </div>
             <h3 id="password-change-notice-title" className="text-heading-md font-bold text-ink">
-              비밀번호 변경 기능 준비 중
+              비밀번호가 정상적으로 변경되었습니다.
             </h3>
             <p className="mt-3 text-body-sm leading-6 text-body">
-              비밀번호 변경 API가 아직 연동되지 않아 입력하신 내용은 저장되지 않았습니다.
+
             </p>
             <button
               type="button"

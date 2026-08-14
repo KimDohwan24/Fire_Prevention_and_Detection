@@ -157,8 +157,15 @@ export const userApi = {
 
 // 3. CCTV API
 export const cctvApi = {
-  list: async (status = '') => {
-    const query = status ? `?cctv_status=${encodeURIComponent(status)}` : '';
+  list: async (filters = {}) => {
+    // 기존 list('ACTIVE') 호출도 유지하면서 user_no 등 신규 필터를 함께 지원한다.
+    const params = typeof filters === 'string'
+      ? { cctv_status: filters }
+      : filters;
+    const queryString = new URLSearchParams(
+      Object.entries(params).filter(([, value]) => value !== '' && value != null)
+    ).toString();
+    const query = queryString ? `?${queryString}` : '';
     return await request(`/cctvs${query}`);
   },
 
@@ -248,5 +255,24 @@ export const reportApi = {
   list: async (params = {}) => {
     const query = new URLSearchParams(params).toString();
     return await request(`/reports${query ? `?${query}` : ''}`);
+  },
+};
+
+
+// 8. 관리자 승급 및 권한 관리 API (추가)
+export const adminUpgradeApi = {
+  // 일반 회원이 관리자 승인 요청
+  requestUpgrade: async () => {
+    return await request('/admin/request-upgrade', {
+      method: 'POST',
+    });
+  },
+
+  // 관리자가 유저의 승인 요청을 승인(approve) 또는 거절(reject)
+  handleRequest: async (targetUserNo, action) => {
+    return await request(`/admin/handle-request/${targetUserNo}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ action }), // "approve" 또는 "reject"
+    });
   },
 };

@@ -4,7 +4,7 @@ import {
   LogOut, Search, Bell, AlertTriangle, CheckCircle,
   Video, MapPin, Search as SearchIcon, VideoOff, X, ArrowLeft,
   ShieldCheck, Users, PlusCircle, Settings, ShieldAlert, UserCheck, Loader2,
-  Flame, Siren, PhoneCall, CheckCircle2, XCircle, Clock, ExternalLink, FileText
+  Flame, Siren, PhoneCall, CheckCircle2, XCircle, Clock, ExternalLink, FileText, RefreshCw
 } from 'lucide-react';
 import { authApi, cctvApi, agencyApi, eventApi, alertApi, reportApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
@@ -46,6 +46,8 @@ function Dashboard() {
   // 관할 소방서 및 이벤트 로그 목록 State (실시간 DB 연동)
   const [agencyList, setAgencyList] = useState(DEFAULT_AGENCIES);
   const [fireStation, setFireStation] = useState(null);
+  const [isAgencyLoading, setIsAgencyLoading] = useState(false);
+  const [agencyLoadError, setAgencyLoadError] = useState('');
   const [eventLogs, setEventLogs] = useState([]);
 
   // 지도 오버레이 및 탭 조작 UI State
@@ -62,6 +64,7 @@ function Dashboard() {
   const [selectedEventDetail, setSelectedEventDetail] = useState(null);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
+  const [actionNotice, setActionNotice] = useState(null);
 
   // 관리자 전용 모달 상태
   const [activeAdminTab, setActiveAdminTab] = useState(null);
@@ -74,6 +77,41 @@ function Dashboard() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  const handleLoadAgencies = async () => {
+    setIsAgencyLoading(true);
+    setAgencyLoadError('');
+    try {
+      const agencyRes = await agencyApi.list();
+      const rawAgencies = agencyRes?.items || (Array.isArray(agencyRes) ? agencyRes : []);
+      const mappedAgencies = rawAgencies.map((ag, idx) => ({
+        agency_no: ag.agency_no || idx + 1,
+        name: ag.agency_name,
+        agency_name: ag.agency_name,
+        agency_lat: parseFloat(ag.agency_lat) || 37.5730,
+        agency_lng: parseFloat(ag.agency_lng) || 126.9790,
+        lat: parseFloat(ag.agency_lat) || 37.5730,
+        lng: parseFloat(ag.agency_lng) || 126.9790,
+        agency_endpoint: ag.agency_endpoint || 'http://127.0.0.1:6000/api/119/report',
+        agency_is_active: ag.agency_is_active !== false,
+        x: 50 + (idx * 22),
+        y: 35 + (idx * 15),
+        address: ag.agency_address || '관할 구역 긴급 센터',
+        phone: ag.agency_phone || '119 (비상 통합 상황실)',
+      }));
+
+      setAgencyList(mappedAgencies);
+      setFireStation((selected) => mappedAgencies.find((agency) => agency.agency_no === selected?.agency_no) || mappedAgencies[0] || null);
+      showToast(mappedAgencies.length ? `${mappedAgencies.length}개 소방서를 불러왔습니다.` : '등록된 소방서가 없습니다.');
+    } catch (err) {
+      const message = err.message || '소방서 목록을 불러오지 못했습니다.';
+      setAgencyLoadError(message);
+      showToast(message);
+      console.warn('소방서 DB 조회 실패:', message);
+    } finally {
+      setIsAgencyLoading(false);
+    }
+  };
+
   useEffect(() => {
     // 로딩 안전 이중 가드: 2.5초 후 무조건 로딩 해제
     const safetyTimer = setTimeout(() => {
@@ -81,6 +119,7 @@ function Dashboard() {
     }, 2500);
 
     // 1. localStorage에서 현재 로그인 유저 정보 가져오기
+    let loggedInUser = null;
     const storedUser = localStorage.getItem('currentUser');
     if (storedUser) {
       try {
@@ -88,11 +127,44 @@ function Dashboard() {
         if (user.name) {
           user.name = user.name.replace(/\s*님$/, '');
         }
+        loggedInUser = user;
         setCurrentUser(user);
       } catch (e) {
         console.error(e);
       }
     }
+
+    // localStorage는 이전 로그인 정보가 남아 있을 수 있으므로, CCTV 권한 판단은
+    // 현재 JWT의 사용자 정보로 다시 확인한다.
+    const refreshCurrentUserFromSession = async () => {
+      try {
+        const sessionResponse = await authApi.me();
+        const sessionUser = sessionResponse?.user || sessionResponse;
+
+        if (sessionUser?.user_no == null || !sessionUser?.user_id) {
+          throw new Error('현재 로그인 사용자 정보를 확인할 수 없습니다.');
+        }
+
+        const verifiedUser = {
+          id: sessionUser.user_id,
+          user_no: sessionUser.user_no,
+          name: sessionUser.user_name || loggedInUser?.name || sessionUser.user_id,
+          role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
+          rawRole: sessionUser.user_role,
+        };
+
+        loggedInUser = verifiedUser;
+        localStorage.setItem('currentUser', JSON.stringify(verifiedUser));
+        setCurrentUser(verifiedUser);
+      } catch (error) {
+        // 서버에서 세션을 확인하지 못한 사용자는 CCTV 목록을 볼 수 없다.
+        loggedInUser = null;
+        setCurrentUser(null);
+        setCctvList([]);
+        setSelectedCCTV(null);
+        console.warn('현재 사용자 세션 확인 오류:', error.message);
+      }
+    };
 
     // 2. 초기 데이터 수신 (소방서 DB 및 CCTV 목록 - 최초 1회만 호출)
     const fetchInitialData = async () => {
@@ -141,17 +213,31 @@ function Dashboard() {
 
         // 2-2. CCTV 목록 수신
         try {
-          const cctvRes = await cctvApi.list();
+          // 관리자는 전체, 일반 사용자는 본인이 등록한 CCTV만 요청한다.
+          // 로그인 사용자 정보가 없으면 전체 목록을 요청하지 않는다.
+          const isLoggedInAdmin = loggedInUser?.role === 'admin';
+          if (!isLoggedInAdmin && !loggedInUser?.user_no) {
+            setCctvList([]);
+            setSelectedCCTV(null);
+            return;
+          }
+
+          const cctvRes = await cctvApi.list(
+            isLoggedInAdmin ? {} : { user_no: loggedInUser.user_no }
+          );
           const rawItems = cctvRes?.items || cctvRes || [];
           if (Array.isArray(rawItems) && rawItems.length > 0) {
-            const mappedCctvs = rawItems.map(item => ({
+            // API가 필터를 적용하지 않은 경우에도 화면에서 한 번 더 차단한다.
+            const accessibleItems = isLoggedInAdmin
+              ? rawItems
+              : rawItems.filter((item) => String(item.user_no) === String(loggedInUser.user_no));
+            const mappedCctvs = accessibleItems.map(item => ({
               id: `CCTV-${String(item.cctv_no).padStart(2, '0')}`,
               cctv_no: item.cctv_no,
               name: item.cctv_name,
               status: item.cctv_status === 'ACTIVE' ? 'normal' : item.cctv_status === 'INACTIVE' ? 'offline' : 'fire',
               location: item.cctv_location,
-              ownerId: 'user01',
-              ownerName: '홍길동',
+              ownerUserNo: item.user_no,
               lat: parseFloat(item.cctv_lat) || 37.5665,
               lng: parseFloat(item.cctv_lng) || 126.9780,
               stream_url: item.cctv_stream_url,
@@ -159,7 +245,10 @@ function Dashboard() {
               history: []
             }));
             setCctvList(mappedCctvs);
-            setSelectedCCTV(mappedCctvs[0]);
+            setSelectedCCTV(mappedCctvs[0] || null);
+          } else {
+            setCctvList([]);
+            setSelectedCCTV(null);
           }
         } catch (err) {
           console.warn('CCTV 목록 로드 오류:', err.message);
@@ -255,7 +344,7 @@ function Dashboard() {
     };
 
     // 최초 마운트 시 1회 호출
-    fetchInitialData();
+    refreshCurrentUserFromSession().finally(fetchInitialData);
 
     // 알림 및 이벤트 데이터는 즉시 1회 호출 후 4초 간격 폴링
     fetchPollingData();
@@ -268,7 +357,8 @@ function Dashboard() {
   // 일반 사용자인 경우 본인이 소유/담당하는 CCTV만 필터링
   const accessibleCCTVs = cctvList.filter(cctv => {
     if (isAdmin) return true;
-    return cctv.ownerId === currentUser?.id || cctv.ownerId === 'user01';
+    return currentUser?.user_no != null
+      && String(cctv.ownerUserNo) === String(currentUser.user_no);
   });
 
   const filteredCCTVs = accessibleCCTVs.filter(cctv =>
@@ -377,7 +467,8 @@ function Dashboard() {
     const now = new Date();
     
     const testData = {
-      alert_no: Date.now(),
+      // 테스트 배너는 DB 알림이 아니므로 서버 alert_no를 갖지 않는다.
+      alert_no: null,
       event_no: Date.now(),
       cctv_no: targetCctv.cctv_no || 1,
       cctv_name: targetCctv.name || 'A동 1층 로비 메인',
@@ -391,6 +482,7 @@ function Dashboard() {
     // 해당 CCTV를 현재 선택 상태로 전환하고 지도 뷰 및 비상 배너 갱신
     setSelectedCCTV(targetCctv);
     setIsBannerDismissed(false);
+    setActionNotice(null);
     setActiveAlertBanner(testData);
 
     // 실시간 AI 감지 로그 패널에도 해당 테스트 감지건 추가
@@ -408,22 +500,31 @@ function Dashboard() {
     showToast(`🚨 [비상 테스트] (${testData.cctv_name}) 화재 비상 배너가 동작되었습니다.`);
   };
 
-  // 알림 응답 (화재 확인 / 소방서 출동 승인 / 오탐 취소)
+  // 알림 응답 (화재 확인 / 오탐 취소)
   const handleRespondAlert = async (action) => {
-    const alertNo = activeAlertBanner?.alert_no || Date.now();
-    const targetEventNo = activeAlertBanner?.event_no || Date.now();
+    const alertNo = activeAlertBanner?.alert_no;
+    const targetEventNo = activeAlertBanner?.event_no;
     const cctvName = activeAlertBanner?.cctv_name || 'A동 1층 로비 메인';
     const cctvLoc = activeAlertBanner?.location || '관제 구역';
     const confidence = activeAlertBanner?.confidence || 98;
     const dateStr = new Date().toISOString().substring(0, 16).replace('T', ' ');
 
+    if (activeAlertBanner?.isTest || !alertNo) {
+      setActionNotice('테스트 알림은 서버 조치 대상이 아닙니다. 실제 발송 알림에서만 처리할 수 있습니다.');
+      return;
+    }
+
     try {
-      await alertApi.respond(alertNo, action).catch(() => null);
+      setActionNotice(null);
+      const response = await alertApi.respond(alertNo, action);
       
-      const isConfirm = action === 'READ'; // 화재 확인 / 소방서 승인
-      showToast(isConfirm 
-        ? '🔥 화재가 확인되었으며 119 비상 출동 절차가 승인되었습니다!' 
-        : '✅ 오탐지 취소 처리되었습니다.'
+      const isConfirm = action === 'READ';
+      showToast(
+        isConfirm
+          ? response.alert_status === 'NO_RESPONSE'
+            ? '화재 확인은 저장되었습니다. 이미 무응답 신고 절차가 진행된 알림입니다.'
+            : '🔥 화재 확인이 저장되었고 119 신고 절차가 시작되었습니다.'
+          : '✅ 오탐지 취소 처리되었습니다.'
       );
 
       setSelectedEventDetail(null);
@@ -433,20 +534,20 @@ function Dashboard() {
       // 1. 대시보드 실시간 AI 화재 감지 로그(eventLogs)에서 조치 완료된 항목 제거 (안 보이게 처리)
       setEventLogs(prev => prev.filter(l => l.event_no !== targetEventNo && l.id !== targetEventNo && l.id !== alertNo));
 
-      // 2. 조치 완료된 항목을 resolvedEvents 스토리지에 보존하여 4초 폴링 시에도 감지 로그에서 제외
+      // 2. 조치 완료된 항목을 화면에서 즉시 제외한다. DB 상태는 백엔드 응답으로 확정된다.
       const resolvedList = JSON.parse(localStorage.getItem('resolvedEvents') || '[]');
       if (targetEventNo && !resolvedList.includes(targetEventNo)) resolvedList.push(targetEventNo);
       if (alertNo && !resolvedList.includes(alertNo)) resolvedList.push(alertNo);
       localStorage.setItem('resolvedEvents', JSON.stringify(resolvedList));
 
-      // 3. 마이페이지용 영구 활동 기록(userActivityLogs)에 조치 결과 보존
+      // 3. 마이페이지 표시용 로컬 활동 기록을 추가한다.
       const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
       const newActivity = {
         id: targetEventNo,
         time: dateStr,
         type: isConfirm ? 'fire' : 'false_alarm',
-        title: isConfirm ? '🔥 소방서 119 비상 출동 승인 완료' : '✅ 화재 알림 오탐지 취소 처리',
-        detail: `${cctvName} (${cctvLoc}) - ${isConfirm ? `신뢰도 ${confidence}% 긴급 출동 요청` : '관제 요원 오탐 취소 완료'}`
+        title: isConfirm ? '🔥 화재 확인 및 119 신고 절차 시작' : '✅ 화재 알림 오탐지 취소 처리',
+        detail: `${cctvName} (${cctvLoc}) - ${isConfirm ? `신뢰도 ${confidence}% 신고 처리 요청` : '관제 요원 오탐 취소 완료'}`
       };
       userLogs.unshift(newActivity);
       localStorage.setItem('userActivityLogs', JSON.stringify(userLogs.slice(0, 30)));
@@ -611,14 +712,32 @@ function Dashboard() {
                   <span className="text-xs font-bold text-ink flex items-center gap-1.5">
                     🚒 소방서 목록
                   </span>
-                  <button
-                    onClick={() => setIsAgencyTabOpen(false)}
-                    className="text-mute hover:text-ink cursor-pointer p-1"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={handleLoadAgencies}
+                      disabled={isAgencyLoading}
+                      className="h-7 px-2 rounded-lg border border-hairline bg-surface-soft hover:border-red-400 hover:text-red-600 disabled:cursor-wait disabled:opacity-60 text-[10px] font-bold text-body flex items-center gap-1 cursor-pointer transition-colors"
+                      title="백엔드 API에서 소방서 목록 새로 불러오기"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isAgencyLoading ? 'animate-spin' : ''}`} />
+                      {isAgencyLoading ? '불러오는 중' : '소방서 불러오기'}
+                    </button>
+                    <button
+                      onClick={() => setIsAgencyTabOpen(false)}
+                      className="text-mute hover:text-ink cursor-pointer p-1"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
                 <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+                  {agencyLoadError && (
+                    <p className="px-2 py-1.5 text-[11px] text-red-600 bg-red-50 rounded-lg">{agencyLoadError}</p>
+                  )}
+                  {!isAgencyLoading && !agencyLoadError && agencyList.length === 0 && (
+                    <p className="px-2 py-3 text-center text-[11px] text-mute">불러오기 버튼을 눌러 소방서 목록을 조회하세요.</p>
+                  )}
                   {agencyList.map((ag) => (
                     <div
                       key={ag.agency_no}
@@ -871,6 +990,8 @@ function Dashboard() {
         <ItsCctvModal
           isOpen={isItsModalOpen}
           onClose={() => setIsItsModalOpen(false)}
+          canRegister={Boolean(currentUser?.user_no)}
+          canPreview={isAdmin}
           onSelectCctv={async (itsCctv) => {
             // ITS CCTV는 DB 등록이 완료된 경우에만 대시보드에 추가한다.
             try {
@@ -905,8 +1026,7 @@ function Dashboard() {
                 lat: parseFloat(itsCctv.cctv_lat) || 37.5665,
                 lng: parseFloat(itsCctv.cctv_lng) || 126.9780,
                 stream_url: itsCctv.cctv_stream_url || '',
-                ownerId: currentUser?.id || 'user01',
-                ownerName: currentUser?.name || '사용자',
+                ownerUserNo: currentUser?.user_no,
                 installedAt: new Date().toISOString().substring(0, 10),
                 history: []
               };
@@ -965,11 +1085,36 @@ function Dashboard() {
               <button
                 onClick={() => handleRespondAlert('READ')}
                 className="h-8 px-3 bg-black hover:bg-neutral-900 text-white font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer"
-                title="소방서 119 비상 출동 승인"
+                title="화재 확인 및 119 신고 시작"
               >
-                119 승인
+                화재 확인
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsBannerDismissed(true);
+                  setActionNotice(null);
+                }}
+                className="h-8 w-8 rounded-full text-white hover:bg-red-700 transition-colors focus:outline-none focus-visible:outline-none cursor-pointer inline-flex items-center justify-center"
+                aria-label="화재 긴급 감지 배너 닫기"
+                title="배너 닫기"
+              >
+                <X className="w-4 h-4" />
               </button>
             </div>
+            {actionNotice && (
+              <div role="status" className="order-last flex w-full items-center gap-2 rounded-lg bg-white/15 px-3 py-2 text-xs font-semibold text-white">
+                <span className="flex-1 text-center">{actionNotice}</span>
+                <button
+                  type="button"
+                  onClick={() => setActionNotice(null)}
+                  className="rounded-full p-1 text-white hover:bg-white/20 focus:outline-none focus-visible:outline-none cursor-pointer"
+                  aria-label="안내 닫기"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1108,7 +1253,7 @@ function Dashboard() {
                   className="h-11 px-5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-md flex items-center gap-1.5"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>화재 확정 및 119 비상 출동 승인</span>
+                  <span>화재 확인 및 119 신고 시작</span>
                 </button>
                 <button
                   onClick={() => handleRespondAlert('CANCEL')}
@@ -1126,6 +1271,19 @@ function Dashboard() {
                 닫기
               </button>
             </div>
+            {actionNotice && (
+              <div role="status" className="mx-4 mb-4 flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs font-semibold text-amber-700">
+                <span className="flex-1 text-center">{actionNotice}</span>
+                <button
+                  type="button"
+                  onClick={() => setActionNotice(null)}
+                  className="rounded-full p-1 text-amber-700 hover:bg-amber-500/15 focus:outline-none focus-visible:outline-none cursor-pointer"
+                  aria-label="안내 닫기"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1228,7 +1386,7 @@ function Dashboard() {
                 </div>
                 <div>
                   <h3 className="font-display text-body-lg-strong font-bold text-ink">관제 조치 및 활동 이력</h3>
-                  <p className="text-caption-sm text-mute">오탐지 취소 처리 및 119 비상 출동 승인 완료 내역입니다.</p>
+                  <p className="text-caption-sm text-mute">오탐지 취소 처리 및 화재 확인·119 신고 요청 내역입니다.</p>
                 </div>
               </div>
               <button

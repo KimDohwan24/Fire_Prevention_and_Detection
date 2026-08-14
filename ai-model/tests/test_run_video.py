@@ -4,6 +4,8 @@
 - INTERNAL_API_KEY : 다르면 401
 - MEDIA_ROOT       : 다르면 프레임 JPG 를 저장해도 GET /media/<path> 가 404
 """
+from datetime import datetime
+
 import pytest
 
 import run_video
@@ -89,6 +91,37 @@ def test_media_root_defaults_to_project_media(monkeypatch, tmp_path):
     monkeypatch.setattr(run_video, "PROJECT_ROOT", tmp_path)
 
     assert run_video.load_media_root("") == tmp_path / "media"
+
+
+# ---------------------------------------------------------------- 프레임 저장
+
+
+def _blank_frame():
+    import numpy as np
+
+    return np.zeros((8, 8, 3), dtype=np.uint8)
+
+
+WHEN = datetime(2026, 8, 13, 14, 30, 5, 123456)
+
+
+def test_save_frame_jpg_writes_under_media_root(tmp_path):
+    """파일은 MEDIA_ROOT 아래 events/<날짜>/<카메라>_<시각>.jpg 로 떨어진다."""
+    run_video.save_frame_jpg(_blank_frame(), tmp_path, cctv_no=7, when=WHEN)
+
+    assert (tmp_path / "events" / "2026-08-13" / "7_143005_123456.jpg").exists()
+
+
+def test_save_frame_jpg_returns_url_the_backend_serves(tmp_path):
+    """반환값은 백엔드 서빙 형태 "/media/<상대경로>" 여야 한다.
+
+    이 값이 event_media.media_url 에 저장되고 그대로 프론트의 <img src> 가 된다.
+    접두어 없는 상대경로를 돌려주면 브라우저가 현재 페이지 기준으로 해석해 404 가
+    나고, 119 신고 쪽은 대표 프레임을 못 찾아 이미지 없이 나간다.
+    """
+    url = run_video.save_frame_jpg(_blank_frame(), tmp_path, cctv_no=7, when=WHEN)
+
+    assert url == "/media/events/2026-08-13/7_143005_123456.jpg"
 
 
 # ---------------------------------------------------------------- 인자 검증
