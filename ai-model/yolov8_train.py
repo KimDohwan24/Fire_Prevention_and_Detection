@@ -5,6 +5,9 @@ import torch
 import albumentations as A
 from ultralytics import YOLO
 from ultralytics.models.yolo.detect.train import DetectionTrainer
+from yolo11_test import (
+    evaluate_background_test as evaluate_background_test_common,
+)
 
 # ============================================================
 # 1. 기본 설정 (런팟 및 모델 충돌 방지 독립 경로 지정)
@@ -190,7 +193,8 @@ def evaluate_test(best_model_path, device):
         batch=BATCH_SIZE,
         device=device,
         workers=WORKERS,
-        conf=CONF_THRESHOLD,
+        # PR/F1/mAP 곡선은 낮은 임계값의 예측까지 포함해 계산합니다.
+        conf=0.001,
         iou=IOU_THRESHOLD,
         plots=True,
         project=OUTPUT_PROJECT_DIR,
@@ -284,67 +288,14 @@ def save_yolo_confusion_matrix(metrics, output_dir):
 # 24. TEST Background 포함 이미지 단위 전수조사 + 오탐 분석 파이차트
 # ============================================================
 def evaluate_background_test(best_model_path, device, paths, output_dir):
-    print("\n" + "=" * 70)
-    print("🎓 [EVALUATION] TEST BACKGROUND 이미지 단위 상세 분석 루틴 가동")
-    print("=" * 70)
-    model = YOLO(str(best_model_path))
-    test_images = find_images(paths["test_images"])
-    
-    actual_background, actual_object = 0, 0
-    background_correct, background_false_positive = 0, 0
-    object_detected, object_missed = 0, 0
-    
-    for image_path in test_images:
-        label_path = find_label_path(image_path, paths["test_images"], paths["test_labels"])
-        label_boxes = read_label_boxes(label_path)
-        actual_is_bg = (len(label_boxes) == 0)
-        
-        results = model.predict(source=str(image_path), conf=CONF_THRESHOLD, iou=IOU_THRESHOLD, imgsz=IMAGE_SIZE, device=device, verbose=False)
-        pred_is_bg = True
-        if len(results) > 0 and results.boxes is not None and len(results.boxes) > 0:
-            pred_is_bg = False
-            
-        if actual_is_bg:
-            actual_background += 1
-            if pred_is_bg: background_correct += 1
-            else: background_false_positive += 1
-        else:
-            actual_object += 1
-            if pred_is_bg: object_missed += 1
-            else: object_detected += 1
-
-    bg_acc = (background_correct / actual_background) if actual_background > 0 else 0.0
-    bg_fpr = (background_false_positive / actual_background) if actual_background > 0 else 0.0
-    obj_det = (object_detected / actual_object) if actual_object > 0 else 0.0
-    obj_mis = (object_missed / actual_object) if actual_object > 0 else 0.0
-    
-    print(f"🎯 총 평가 이미지 수 : {len(test_images)}")
-    print(f"✔️ 정상 이미지 오탐 차단 정밀도(TN Rate) : {bg_acc:.4f}")
-    print(f"✔️ 정상 이미지 오탐 초래 확률(FP Rate) : {bg_fpr:.4f}")
-    print(f"✔️ 화재 도메인 실제 검출 확률(TP Rate) : {obj_det:.4f}")
-    print(f"✔️ 화재 도메인 미탐 실책 확률(FN Rate) : {obj_mis:.4f}")
-    print("=" * 70)
-
-    # 📊 [발표용 커스텀 시각화 2] 정상 이미지 대상 관제 정확도 파이 차트 생성
-    if actual_background > 0:
-        try:
-            plt.figure(figsize=(6, 6))
-            pie_labels = [f"Clean Normal\n({background_correct} imgs)", f"False Alarms (FP)\n({background_false_positive} imgs)"]
-            pie_sizes = [background_correct, background_false_positive]
-            pie_colors = ['#A1C9F4', '#FF9F9B'] # 깔끔한 파스텔톤
-            
-            plt.pie(pie_sizes, labels=pie_labels, autopct='%1.1f%%', startangle=90, 
-                    colors=pie_colors, textprops={'fontsize': 11, 'weight': 'bold'},
-                    wedgeprops={'edgecolor': 'black', 'linewidth': 1, 'antialiased': True})
-            
-            plt.title("CCTV Background Image Analysis\n(False Positive Monitoring)", fontsize=13, fontweight='bold', pad=20)
-            
-            pie_path = output_dir / "presentation_background_pie_chart.png"
-            plt.savefig(pie_path, bbox_inches='tight', dpi=300)
-            plt.close()
-            print(f"📊 발표용 백그라운드 파이차트 저장 완료: {pie_path}")
-        except Exception as e:
-            print(f"[WARNING] 파이차트 생성 실패: {e}")
+    # 세 모델이 동일한 IoU 매칭, TP/FP/FN/TN 정의와 CSV 형식을
+    # 사용하도록 YOLO11과 같은 평가 구현을 공유합니다.
+    return evaluate_background_test_common(
+        best_model_path,
+        device,
+        paths,
+        output_dir,
+    )
 
 # ============================================================
 # Main 실행 컨트롤러 (전체 실험 파이프라인 제어)

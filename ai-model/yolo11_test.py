@@ -1286,7 +1286,8 @@ def evaluate_test(
 
         workers=WORKERS,
 
-        conf=CONF_THRESHOLD,
+        # PR/F1/mAP 곡선은 낮은 임계값의 예측까지 포함해 계산합니다.
+        conf=0.001,
 
         iou=IOU_THRESHOLD,
 
