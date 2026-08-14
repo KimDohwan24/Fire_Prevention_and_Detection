@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useDaumPostcodePopup } from 'react-daum-postcode';
 
 import { userApi } from '../api';
+
+const EMAIL_VERIFICATION_DURATION = 5 * 60;
 
 const Signup = () => {
   const navigate = useNavigate();
@@ -24,6 +26,9 @@ const Signup = () => {
   });
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isEmailVerificationRequested, setIsEmailVerificationRequested] = useState(false);
+  const [emailVerificationTimeLeft, setEmailVerificationTimeLeft] = useState(EMAIL_VERIFICATION_DURATION);
+  const [emailVerificationCode, setEmailVerificationCode] = useState('');
 
   const openPostcode = useDaumPostcodePopup();
 
@@ -31,6 +36,34 @@ const Signup = () => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
+
+  const handlePhoneChange = (e) => {
+    setFormData(prev => ({
+      ...prev,
+      phone: e.target.value.replace(/[^0-9]/g, '').slice(0, 11),
+    }));
+  };
+
+  useEffect(() => {
+    if (!isEmailVerificationRequested || emailVerificationTimeLeft <= 0) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setEmailVerificationTimeLeft(prevTime => Math.max(prevTime - 1, 0));
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [isEmailVerificationRequested, emailVerificationTimeLeft]);
+
+  const handleRequestEmailVerification = () => {
+    setErrorMsg('');
+    setIsEmailVerificationRequested(true);
+    setEmailVerificationTimeLeft(EMAIL_VERIFICATION_DURATION);
+    setEmailVerificationCode('');
+  };
+
+  const formattedEmailVerificationTime = `${String(Math.floor(emailVerificationTimeLeft / 60)).padStart(2, '0')}:${String(emailVerificationTimeLeft % 60).padStart(2, '0')}`;
 
   const handleCompletePostcode = (data) => {
     let fullAddress = data.address;
@@ -167,27 +200,27 @@ const Signup = () => {
           </div>
 
           {/* 이메일 */}
-          <div className="flex flex-col space-y-1.5 pt-1">
+          <div className="flex flex-col space-y-1.5">
             <label className="text-body-sm-strong text-ink px-2">이메일</label>
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center gap-2">
               <input
                 type="text"
                 name="emailId"
                 value={formData.emailId}
                 onChange={handleChange}
-                className="flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all w-0"
+                className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
                 placeholder="이메일"
                 required
               />
               <span className="text-body-md text-ink flex-shrink-0">@</span>
               {formData.emailDomain === '직접입력' ? (
-                <div className="flex items-center space-x-1.5 flex-1">
+                <div className="min-w-0 flex flex-1 items-center gap-1.5">
                   <input
                     type="text"
                     name="customDomain"
                     value={formData.customDomain}
                     onChange={handleChange}
-                    className="flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all w-0"
+                    className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
                     placeholder="도메인 (예: kakao.com)"
                     required
                     autoFocus
@@ -209,30 +242,32 @@ const Signup = () => {
                           customDomain: val === '직접입력' ? prev.customDomain : ''
                         }));
                       }}
-                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                      className="absolute inset-0 w-full h-full cursor-pointer bg-canvas text-ink opacity-0"
+                      style={{ color: '#000000', backgroundColor: '#ffffff', colorScheme: 'light' }}
                       title="도메인 선택"
                     >
-                      <option value="직접입력">직접입력</option>
-                      <option value="naver.com">naver.com</option>
-                      <option value="gmail.com">gmail.com</option>
-                      <option value="daum.net">daum.net</option>
+                      <option className="bg-canvas text-ink" value="직접입력">직접입력</option>
+                      <option className="bg-canvas text-ink" value="naver.com">naver.com</option>
+                      <option className="bg-canvas text-ink" value="gmail.com">gmail.com</option>
+                      <option className="bg-canvas text-ink" value="daum.net">daum.net</option>
                     </select>
                   </div>
                 </div>
               ) : (
-                <div className="relative flex-1">
+                <div className="relative min-w-0 flex-1">
                   <select
                     name="emailDomain"
                     value={formData.emailDomain}
                     onChange={handleChange}
                     className="w-full h-[40px] pl-4 pr-8 bg-canvas border border-hairline rounded-full text-body-md text-ink focus:outline-none focus:border-ink transition-all appearance-none cursor-pointer"
+                    style={{ color: '#000000', backgroundColor: '#ffffff', colorScheme: 'light' }}
                     required
                   >
-                    <option value="" disabled>선택해주세요</option>
-                    <option value="naver.com">naver.com</option>
-                    <option value="gmail.com">gmail.com</option>
-                    <option value="daum.net">daum.net</option>
-                    <option value="직접입력">직접입력</option>
+                    <option className="bg-canvas text-ink" value="" disabled>선택해주세요</option>
+                    <option className="bg-canvas text-ink" value="naver.com">naver.com</option>
+                    <option className="bg-canvas text-ink" value="gmail.com">gmail.com</option>
+                    <option className="bg-canvas text-ink" value="daum.net">daum.net</option>
+                    <option className="bg-canvas text-ink" value="직접입력">직접입력</option>
                   </select>
                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-mute">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
@@ -240,28 +275,64 @@ const Signup = () => {
                 </div>
               )}
             </div>
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <p className="text-caption-sm text-body">입력한 이메일로 인증번호를 보내요.</p>
+              <button
+                type="button"
+                onClick={handleRequestEmailVerification}
+                className="h-[40px] flex-shrink-0 px-5 bg-surface-soft border border-hairline text-ink rounded-full text-button-md whitespace-nowrap hover:bg-hairline active:scale-[0.98] transition-all"
+              >
+                인증요청
+              </button>
+            </div>
+
+            {isEmailVerificationRequested && (
+              <div className="mt-1 space-y-2 rounded-2xl border border-hairline bg-surface-soft p-3 animate-fadeIn">
+                <div className="flex items-center justify-between px-1 text-caption-sm">
+                  <span className="text-body">인증번호가 이메일로 발송되었습니다.</span>
+                  <span className={`font-mono font-semibold ${emailVerificationTimeLeft === 0 ? 'text-mute' : 'text-red-500'}`} aria-live="polite">
+                    {formattedEmailVerificationTime}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={emailVerificationCode}
+                    onChange={(e) => setEmailVerificationCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                    className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
+                    placeholder="이메일 인증번호 6자리"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleRequestEmailVerification}
+                    className="h-[40px] px-5 bg-surface-soft border border-hairline text-ink rounded-full text-button-md whitespace-nowrap hover:bg-hairline active:scale-[0.98] transition-all flex-shrink-0"
+                  >
+                    재전송
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 휴대폰 */}
           <div className="flex flex-col space-y-1.5">
             <label className="text-body-sm-strong text-ink px-2">휴대폰</label>
-            <div className="flex items-center space-x-2">
-              <input
-                type="text"
-                name="phone"
-                value={formData.phone}
-                onChange={handleChange}
-                className="flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all w-0"
-                placeholder="숫자만입력해주세요"
-                required
-              />
-              <button
-                type="button"
-                className="h-[40px] px-5 bg-surface-soft border border-hairline text-ink rounded-full text-button-md whitespace-nowrap hover:bg-hairline active:scale-[0.98] transition-all flex-shrink-0"
-              >
-                인증요청
-              </button>
-            </div>
+            <input
+              type="text"
+              name="phone"
+              value={formData.phone}
+              onChange={handlePhoneChange}
+              className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-sm text-ink placeholder:text-xs placeholder:text-mute focus:outline-none focus:border-ink transition-all"
+              placeholder="- 없이 숫자만 입력해주세요"
+              inputMode="numeric"
+              maxLength={11}
+              required
+            />
           </div>
 
           {/* 주소 */}
