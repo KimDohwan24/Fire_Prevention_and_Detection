@@ -4,7 +4,8 @@ GET  /api/users                        목록 (ADMIN)
 POST /api/users                        등록 (ADMIN)
 PUT  /api/users/<user_no>              수정 · 정지 · 탈퇴 (ADMIN 전체 / 일반 사용자는 본인만)
 PUT  /api/users/password               본인 비밀번호 변경 (로그인 필요)
-GET  /api/users/<user_no>/activities   접속·로그아웃 이력 (ADMIN 전체 / 일반 사용자는 본인만)
+GET  /api/users/<user_no>/activities   활동이력 (ADMIN 전체 / 일반 사용자는 본인만)
+                                       본인 것만 필요하면 GET /api/me/activities 를 쓴다
 """
 import bcrypt
 from flask import Blueprint, g, jsonify, request
@@ -12,6 +13,7 @@ from flask import Blueprint, g, jsonify, request
 import db
 from auth import admin_required, login_required
 from errors import ApiError
+from services import activity_service
 from utils.pagination import get_page_params, paged_response
 from utils.validation import validate_password, validate_phone, validate_user_id
 
@@ -108,9 +110,17 @@ def update_user(user_no: int):
 
     if "user_pw" in body:
         # 비밀번호 작성규칙 — 대상 사용자의 아이디 포함 여부는 DB 조회로 확인한다
-        target = db.query_one("SELECT user_id FROM users WHERE user_no = %s", (user_no,))
+        target = db.query_one(
+            "SELECT user_id, user_provider FROM users WHERE user_no = %s", (user_no,)
+        )
         if not target:
             raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+        # 소셜 계정에 비밀번호를 심으면 CK_USERS_LOCAL_PW 는 통과하지만 정작 로그인은
+        # SOCIAL_ACCOUNT 로 계속 막힌다 — 아무 효과 없는 값만 남으므로 미리 거절한다
+        if target["user_provider"] != "LOCAL":
+            raise ApiError(400, "SOCIAL_ACCOUNT",
+                           "소셜 로그인 계정에는 비밀번호를 설정할 수 없습니다.",
+                           field="user_pw")
         validate_password(body["user_pw"], user_id=target["user_id"])
         sets.append("user_pw = %s")
         params.append(bcrypt.hashpw(body["user_pw"].encode(), bcrypt.gensalt()).decode())
@@ -118,6 +128,11 @@ def update_user(user_no: int):
     # 탈퇴 처리: WITHDRAWN 이 들어오면 탈퇴 일시를 함께 기록한다 (명세서 3번)
     if body.get("user_status") == "WITHDRAWN":
         sets.append("user_withdrawal_at = now()")
+
+    # 정지·탈퇴는 즉시 효력을 가져야 한다. 이 줄이 없으면 관리자가 계정을 정지해도
+    # 이미 로그인해 있던 사람은 토큰 만료(기본 12시간)까지 그대로 쓴다.
+    if body.get("user_status") in ("SUSPENDED", "WITHDRAWN"):
+        sets.append("user_token_valid_from = now()")
 
     if not sets:
         raise ApiError(400, "BAD_REQUEST", "수정할 필드가 없습니다.")
@@ -129,6 +144,16 @@ def update_user(user_no: int):
     )
     if affected == 0:
         raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+
+    # 이력은 '누가 무엇을 바꿨나'로 남긴다 — 대상은 수정당한 계정(user_no),
+    # 주체는 요청한 사람(g.user)이다. 관리자가 남의 계정을 고친 경우 둘이 다르다.
+    changed = [col for col in UPDATABLE if col in body]
+    if changed:
+        activity_service.record(g.user["user_no"], activity_service.PROFILE_UPDATED,
+                                target_no=user_no, detail=", ".join(changed))
+    if "user_pw" in body:
+        activity_service.record(g.user["user_no"], activity_service.PASSWORD_CHANGED,
+                                target_no=user_no, detail="관리자 변경")
     return jsonify({"user_no": user_no})
 
 
@@ -174,10 +199,13 @@ def change_password():
 @bp.get("/<int:user_no>/activities")
 @login_required
 def list_user_activities(user_no: int):
-    """접속(LOGIN)·로그아웃(LOGOUT) 이력을 최신순으로 돌려준다.
+    """지정한 사용자의 활동이력을 최신순으로 돌려준다.
 
     권한은 PUT 과 같은 규칙이다 — ADMIN 은 전체, 일반 사용자는 본인 것만.
-    접속 이력은 감사 자료라 아무나 남의 것을 들여다볼 수 있으면 안 된다.
+    활동 이력은 감사 자료라 아무나 남의 것을 들여다볼 수 있으면 안 된다.
+
+    본인 이력만 필요하면 GET /api/me/activities 를 쓰는 편이 낫다 — 아래 두 검사가
+    통째로 필요 없어진다. 이 경로는 관리자가 남의 이력을 볼 때를 위해 남겨 둔 것이다.
     """
     if g.user.get("user_role") != "ADMIN" and g.user.get("user_no") != user_no:
         raise ApiError(403, "FORBIDDEN", "본인 계정의 활동이력만 조회할 수 있습니다.")
@@ -188,17 +216,4 @@ def list_user_activities(user_no: int):
         raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
 
     page, size = get_page_params()
-    total = db.query_one(
-        "SELECT count(*) AS cnt FROM user_activity WHERE user_no = %s", (user_no,)
-    )["cnt"]
-    rows = db.query(
-        """
-        SELECT activity_no, user_no, activity_type, activity_at
-        FROM user_activity
-        WHERE user_no = %s
-        ORDER BY activity_at DESC, activity_no DESC
-        LIMIT %s OFFSET %s
-        """,
-        (user_no, size, (page - 1) * size),
-    )
-    return jsonify(paged_response(rows, page, size, total))
+    return jsonify(activity_service.list_for_user(user_no, page, size))

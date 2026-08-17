@@ -1,7 +1,7 @@
 """인증 API.
 
 POST /api/auth/login                    로그인, JWT 발급
-POST /api/auth/logout                   로그아웃 (활동이력에 LOGOUT 을 남기려고 있다)
+POST /api/auth/logout                   로그아웃 (토큰 폐기 + 활동이력 LOGOUT)
 GET  /api/auth/me                       내 정보 (세션 복원용)
 POST /api/auth/find-id                  아이디 찾기 (이름 + 이메일)
 POST /api/auth/password-reset/request   재설정 인증코드 발급 → SMS
@@ -18,7 +18,7 @@ from flask import Blueprint, g, jsonify, request
 import db
 from auth import issue_token, login_required
 from errors import ApiError
-from services import account_recovery, sms
+from services import account_recovery, activity_service, sms
 from utils.validation import require_str, validate_password
 
 bp = Blueprint("auth", __name__)
@@ -29,18 +29,6 @@ _RESET_ACCEPTED = {
     "message": "정보가 일치하면 등록된 연락처로 인증코드를 보냈습니다.",
     "expires_in_sec": account_recovery.BUCKET_SEC * account_recovery.VALID_BUCKETS,
 }
-
-
-def _record_activity(user_no: int, activity_type: str) -> None:
-    """활동이력 1행을 남긴다 (LOGIN / LOGOUT).
-
-    실패한 로그인은 부르지 않는다 — 침입 시도는 접속 이력과 다른 것이고,
-    한 표에 섞이면 '이 사람이 언제 들어왔나'를 읽을 수 없게 된다.
-    """
-    db.execute(
-        "INSERT INTO user_activity (user_no, activity_type) VALUES (%s, %s)",
-        (user_no, activity_type),
-    )
 
 
 @bp.post("/login")
@@ -56,19 +44,28 @@ def login():
     # 필요한 컬럼만 읽는다 (SELECT * 면 주소·연락처 등 로그인에 불필요한 값까지 딸려온다)
     user = db.query_one(
         """
-        SELECT user_no, user_id, user_pw, user_name, user_role, user_status
+        SELECT user_no, user_id, user_pw, user_name, user_role, user_status, user_provider
         FROM users WHERE user_id = %s
         """,
         (user_id,),
     )
-    if not user or not bcrypt.checkpw(user_pw.encode(), user["user_pw"].encode()):
+    # 소셜 계정은 비밀번호가 없어서 어떤 값을 넣어도 통과할 수 없다. 균일하게
+    # INVALID_CREDENTIALS 로 뭉개면 소셜 사용자가 영문도 모르고 갇히므로 따로 안내한다.
+    # 대신 '그 아이디가 존재하고 소셜 계정'이라는 사실은 노출된다 — 닫힌 관제 시스템의
+    # 지정된 운영자 계정이라 감수했다. 공개 가입형이 되면 재검토할 것.
+    if user and user["user_provider"] != "LOCAL":
+        raise ApiError(400, "SOCIAL_ACCOUNT",
+                       "소셜 로그인으로 가입한 계정입니다. 해당 서비스로 로그인해주세요.")
+    # user_pw 가 NULL 이면 .encode() 에서 터지므로 checkpw 앞에서 걸러낸다
+    if not user or not user["user_pw"] \
+            or not bcrypt.checkpw(user_pw.encode(), user["user_pw"].encode()):
         raise ApiError(401, "INVALID_CREDENTIALS", "아이디 또는 비밀번호가 일치하지 않습니다.")
     if user["user_status"] == "SUSPENDED":
         raise ApiError(403, "ACCOUNT_SUSPENDED", "정지된 계정입니다.")
     if user["user_status"] == "WITHDRAWN":
         raise ApiError(403, "ACCOUNT_WITHDRAWN", "탈퇴한 계정입니다.")
 
-    _record_activity(user["user_no"], "LOGIN")
+    activity_service.record(user["user_no"], activity_service.LOGIN)
 
     return jsonify({
         "access_token": issue_token(user),
@@ -84,16 +81,25 @@ def login():
 @bp.post("/logout")
 @login_required
 def logout():
-    """활동이력에 LOGOUT 을 남긴다. 토큰 자체는 무효화하지 않는다.
+    """토큰을 폐기하고 활동이력에 LOGOUT 을 남긴다. 두 가지를 다 한다.
 
-    JWT 는 무상태라 서버가 이미 발급한 토큰을 되돌릴 수 없다. 실제 로그아웃은
-    프론트가 토큰을 지우는 것으로 끝나고(api.js 의 authApi.logout), 이 엔드포인트는
-    "나갔다"는 사실을 서버가 알 수 있는 유일한 통로다. 프론트가 이걸 안 부르면
-    LOGOUT 행은 영영 쌓이지 않는다.
+    JWT 는 무상태라 이미 발급한 토큰을 회수할 수 없다. 그래서 폐기 목록을 두는
+    대신 사용자마다 "이 시각 이전 발급분은 안 받는다"는 기준선을 세운다
+    (users.user_token_valid_from, 검사는 auth._assert_not_revoked).
 
-    토큰을 진짜로 죽이려면 폐기 목록(blocklist)이 따로 필요한데, 지금 범위가 아니다.
+    **사용자 단위라서 그 사람의 다른 기기도 함께 끊긴다.** 토큰 하나만 죽이려면
+    jti 별 폐기 목록이 필요한데, 매 요청 DB 조회가 드는 건 똑같으면서 표가 하나
+    더 늘고 만료행 청소까지 따라온다. 관제 계정 규모에서는 기준선 하나가 낫다고 봤다.
+
+    폐기와 기록은 별개다 — 토큰은 죽어도 "언제 나갔나"는 이력에 남아야 한다.
+    다만 이 엔드포인트를 프론트가 불러줘야만 둘 다 일어난다. 브라우저를 그냥
+    닫으면 토큰은 만료까지 살아있고 LOGOUT 행도 남지 않는다.
     """
-    _record_activity(g.user["user_no"], "LOGOUT")
+    db.execute(
+        "UPDATE users SET user_token_valid_from = now() WHERE user_no = %s",
+        (g.user["user_no"],),
+    )
+    activity_service.record(g.user["user_no"], activity_service.LOGOUT)
     return jsonify({"message": "로그아웃되었습니다."})
 
 
@@ -137,11 +143,15 @@ def password_reset_request():
     user_name = require_str(body, "user_name")
     user_email = require_str(body, "user_email")
 
+    # user_pw IS NOT NULL 로 소셜 계정을 걸러낸다. 인증코드가 현재 비밀번호 해시를
+    # HMAC 입력으로 쓰기 때문에(services/account_recovery.py) NULL 이면 코드 생성
+    # 자체가 성립하지 않는다. 걸러진 계정은 '일치하는 계정 없음' 분기로 흘러가므로
+    # 응답은 달라지지 않는다 — 계정 존재 여부를 숨기는 이 함수의 방침 그대로다.
     user = db.query_one(
         """
         SELECT user_no, user_pw, user_phone FROM users
         WHERE user_id = %s AND user_name = %s AND user_email = %s
-          AND user_status = 'ACTIVE'
+          AND user_status = 'ACTIVE' AND user_pw IS NOT NULL
         """,
         (user_id, user_name, user_email),
     )
@@ -173,8 +183,12 @@ def password_reset_confirm():
     # 사용자에게는 '코드가 틀렸다'가 아니라 '비밀번호가 규칙에 안 맞다'가 맞는 안내다
     new_pw = validate_password(body.get("user_pw"), user_id)
 
+    # request 와 같은 이유로 소셜 계정을 제외한다 (비밀번호 해시가 인증코드의 입력이다)
     user = db.query_one(
-        "SELECT user_no, user_pw FROM users WHERE user_id = %s AND user_status = 'ACTIVE'",
+        """
+        SELECT user_no, user_pw FROM users
+        WHERE user_id = %s AND user_status = 'ACTIVE' AND user_pw IS NOT NULL
+        """,
         (user_id,),
     )
     # 계정이 없어도 코드가 틀린 것과 같은 응답을 준다 (아이디 존재 여부 은닉)
@@ -187,6 +201,8 @@ def password_reset_confirm():
         "UPDATE users SET user_pw = %s, user_updated_at = now() WHERE user_no = %s",
         (pw_hash, user["user_no"]),
     )
+    activity_service.record(user["user_no"], activity_service.PASSWORD_CHANGED,
+                            detail="비밀번호 재설정")
     # 해시가 바뀌었으므로 방금 쓴 코드는 이 순간 자동으로 죽는다 (재사용 불가)
     logger.info("비밀번호 재설정 완료 (user_no=%s)", user["user_no"])
     return jsonify({"message": "비밀번호가 변경되었습니다. 새 비밀번호로 로그인해주세요."})

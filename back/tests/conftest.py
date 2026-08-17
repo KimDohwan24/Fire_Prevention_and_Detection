@@ -191,6 +191,28 @@ def viewer_headers():
     return _headers(2, "viewer01", "VIEWER")
 
 
+# ---------- 데이터 헬퍼 ----------
+
+def make_social_user(user_id="google_1001", provider="GOOGLE", provider_id="1001",
+                     name="소셜사용자", role="VIEWER", status="ACTIVE"):
+    """비밀번호가 NULL 인 소셜 계정 1명을 만든다.
+
+    기준 데이터에 넣지 않고 헬퍼로 둔 이유: 사용자 수를 세는 기존 테스트
+    (test_users.py 의 total_count == 4)가 전부 깨지기 때문이다. 소셜 계정이
+    필요한 테스트만 부르면 된다.
+    """
+    row = db.execute_returning(
+        """
+        INSERT INTO users (user_id, user_pw, user_name, user_role, user_status,
+                           user_provider, user_provider_id)
+        VALUES (%s, NULL, %s, %s, %s, %s, %s)
+        RETURNING user_no
+        """,
+        (user_id, name, role, status, provider, provider_id),
+    )
+    return row["user_no"]
+
+
 # ---------- 데이터 헬퍼 (이벤트 계열 테스트에서 사용) ----------
 
 def make_event(cctv_no=1, status="CONFIRMED", event_class="FLAME",
