@@ -6,12 +6,18 @@
 실행 방법 (별도 requirements 없음 — back/.venv 를 그대로 재사용한다):
 
     cd mock-119
-    ../back/.venv/Scripts/python app.py            # 기본 포트 6000
+    ../back/.venv/Scripts/python app.py            # 기본 포트 8119
 
 환경변수:
-    MOCK119_PORT          리스닝 포트 (기본 6000)
+    MOCK119_PORT          리스닝 포트 (기본 8119)
     MOCK119_DEFAULT_MODE  mode 쿼리 파라미터가 없을 때의 기본 동작 (기본 "ok")
     MOCK119_SLEEP_SEC     mode=timeout 일 때 잠드는 초 (기본 10)
+
+    ⚠️ 포트를 6000 으로 되돌리지 말 것. 2026-08-18 시연 리허설에서 걸렸다.
+       크롬 계열 브라우저는 6000 번(X11 예약)을 안전하지 않은 포트로 보고 접속
+       자체를 거부한다(ERR_UNSAFE_PORT). 서버는 멀쩡히 떠 있고 curl 도 되는데
+       주소창에서만 안 열려서 원인을 찾기 어렵다. 접수 콘솔을 브라우저로 여는 것이
+       이 서버의 용도이므로 차단 목록에 없는 포트를 쓴다.
 
 중복 접수 방지:
     백엔드는 신고마다 `report_uid`(화재 하나에 하나)를 실어 보낸다. 재전송이든
@@ -52,10 +58,10 @@ API:
     GET  /health               {"status": "ok"}
 
 두 기관 승계(승계 시연) 데모:
-    1. 이 서버를 한 개 띄운다 (포트 6000).
+    1. 이 서버를 한 개 띄운다 (포트 8119).
     2. DB agency 테이블에서 기관 1 endpoint 를
-       'http://localhost:6000/report?mode=timeout&station=1' (또는 mode=fail),
-       기관 2 endpoint 를 'http://localhost:6000/report?mode=ok&station=2' 로 설정한다.
+       'http://localhost:8119/report?mode=timeout&station=1' (또는 mode=fail),
+       기관 2 endpoint 를 'http://localhost:8119/report?mode=ok&station=2' 로 설정한다.
     3. 백엔드에서 신고를 트리거하면: 기관 1은 4회 시도 모두 실패(NO_RESPONSE)
        → 기관 2로 승계되어 접수(ACCEPTED). 이 서버 콘솔에서 수신 로그로 확인한다.
        mode=timeout 이면 기관 1도 실제로는 접수하므로, GET /reports 에서
@@ -234,6 +240,15 @@ function text(v) {
   return (v === null || v === undefined || v === "") ? "-" : String(v);
 }
 
+// 출동 시각은 **로컬 시각**으로 보낸다. toISOString() 은 UTC 라 KST 에서 9시간
+// 이른 값이 되는데, 백엔드의 timestamp 컬럼은 타임존이 없는 로컬 시각이라
+// 그대로 저장된다. 그러면 화면에 "접수 18:11 → 출동 09:12" 처럼 출동이 접수보다
+// 먼저 일어난 것으로 찍힌다 (2026-08-18 시연 리허설에서 실제로 나온 증상).
+function localIso() {
+  var now = new Date();
+  return new Date(now - now.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+}
+
 function cell(tr, value) {
   var td = document.createElement("td");
   td.textContent = value;
@@ -252,7 +267,7 @@ function dispatch(row) {
     vehicles: 3,
     crew: 12,
     eta_sec: 240,
-    dispatched_at: new Date().toISOString().slice(0, 19),
+    dispatched_at: localIso(),
     note: "펌프차 2 · 구급차 1 출동"
   };
   out.textContent = "전송 중...";
@@ -367,7 +382,7 @@ def health():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("MOCK119_PORT", "6000"))
+    port = int(os.environ.get("MOCK119_PORT", "8119"))
     print(f"[mock-119] 소방청 모의 서버 기동 — http://localhost:{port} "
           f"(기본 mode={os.environ.get('MOCK119_DEFAULT_MODE', 'ok')})", flush=True)
     # 리로더 없이 단일 프로세스로 실행 (테스트가 subprocess.terminate 로 종료한다)
