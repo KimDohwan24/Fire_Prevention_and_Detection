@@ -127,6 +127,7 @@ export const authApi = {
     });
   },
 
+<<<<<<< Updated upstream
   logout: async () => {
     try {
       if (getAccessToken()) {
@@ -138,6 +139,27 @@ export const authApi = {
       setAccessToken(null);
       setCurrentUserToStorage(null);
     }
+=======
+// ▼ [추가] 이메일 인증번호 발송 요청 API (주석 해제)
+  requestEmailVerify: async (email) => {
+    return await request('/auth/email/verify-request', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  // ▼ [추가] 이메일 인증번호 확인 API (주석 해제)
+  confirmEmailVerify: async (email, code) => {
+    return await request('/auth/email/verify-confirm', {
+      method: 'POST',
+      body: JSON.stringify({ email, code }),
+    });
+  },
+  
+  logout: () => {
+    setAccessToken(null);
+    setCurrentUserToStorage(null);
+>>>>>>> Stashed changes
   },
 };
 
@@ -296,3 +318,71 @@ export const adminUpgradeApi = {
     });
   },
 };
+
+
+// 1. 인증 API
+// export const authApi = {
+//   login: async (user_id, user_pw) => {
+//     const res = await request('/auth/login', {
+//       method: 'POST',
+//       body: JSON.stringify({ user_id, user_pw }),
+//     });
+//     if (res?.access_token) {
+//       setAccessToken(res.access_token);
+//       setCurrentUserToStorage({
+//         id: res.user.user_id,
+//         user_no: res.user.user_no,
+//         name: res.user.user_name,
+//         role: res.user.user_role === 'ADMIN' ? 'admin' : 'user',
+//         rawRole: res.user.user_role,
+//       });
+//     }
+//     return res;
+//   },
+
+//   me: async () => {
+//     return await request('/auth/me');
+//   },
+
+//   findId: async (user_name, user_email) => {
+//     return await request('/auth/find-id', {
+//       method: 'POST',
+//       body: JSON.stringify({ user_name, user_email }),
+//     });
+//   },
+
+//   requestPasswordReset: async (user_id, user_name, user_email) => {
+//     return await request('/auth/password-reset/request', {
+//       method: 'POST',
+//       body: JSON.stringify({ user_id, user_name, user_email }),
+//     });
+//   },
+
+//   confirmPasswordReset: async (user_id, code, user_pw) => {
+//     return await request('/auth/password-reset/confirm', {
+//       method: 'POST',
+//       body: JSON.stringify({ user_id, code, user_pw }),
+//     });
+//   },
+
+//   // ▼ [추가] 이메일 인증번호 발송 요청 API
+//   requestEmailVerify: async (email) => {
+//     return await request('/auth/email/verify-request', {
+//       method: 'POST',
+//       body: JSON.stringify({ email }),
+//     });
+//   },
+
+//   // ▼ [추가] 이메일 인증번호 확인 API
+//   confirmEmailVerify: async (email, code) => {
+//     return await request('/auth/email/verify-confirm', {
+//       method: 'POST',
+//       body: JSON.stringify({ email, code }),
+//     });
+//   },
+
+//   logout: () => {
+//     setAccessToken(null);
+//     setCurrentUserToStorage(null);
+//   },
+// };

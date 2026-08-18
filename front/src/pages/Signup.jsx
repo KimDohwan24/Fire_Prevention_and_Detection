@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useDaumPostcodePopup } from 'react-daum-postcode';
 
-import { userApi } from '../api';
+import { userApi, authApi } from '../api';
 
 const EMAIL_VERIFICATION_DURATION = 5 * 60;
 
@@ -57,13 +57,36 @@ const Signup = () => {
     return () => window.clearInterval(timerId);
   }, [isEmailVerificationRequested, emailVerificationTimeLeft]);
 
-  const handleRequestEmailVerification = () => {
-    setErrorMsg('');
+  // const handleRequestEmailVerification = () => {
+  //   setErrorMsg('');
+  //   setIsEmailVerificationRequested(true);
+  //   setEmailVerificationTimeLeft(EMAIL_VERIFICATION_DURATION);
+  //   setEmailVerificationCode('');
+  // };
+const handleRequestEmailVerification = async () => {
+  setErrorMsg('');
+
+  const emailDomainStr = formData.emailDomain === '직접입력' ? formData.customDomain : formData.emailDomain;
+  const fullEmail = formData.emailId && emailDomainStr ? `${formData.emailId}@${emailDomainStr}` : null;
+
+  if (!fullEmail) {
+    setErrorMsg('이메일을 올바르게 입력해주세요.');
+    return;
+  }
+
+  try {
+    await authApi.requestEmailVerify(fullEmail);
+
     setIsEmailVerificationRequested(true);
     setIsEmailVerificationConfirmed(false);
     setEmailVerificationTimeLeft(EMAIL_VERIFICATION_DURATION);
     setEmailVerificationCode('');
-  };
+    alert('인증번호가 발송되었습니다.');
+  } catch (err) {
+    console.error('이메일 전송 실패:', err);
+    setErrorMsg(err.message || '이메일 전송에 실패했습니다.');
+  }
+};
 
   const handleConfirmEmailVerification = () => {
     if (emailVerificationTimeLeft <= 0) {

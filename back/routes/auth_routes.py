@@ -1,9 +1,15 @@
 """인증 API.
 
+<<<<<<< Updated upstream
 POST /api/auth/login                    로그인, JWT 발급
 POST /api/auth/logout                   로그아웃 (토큰 폐기 + 활동이력 LOGOUT)
 GET  /api/auth/me                       내 정보 (세션 복원용)
 POST /api/auth/find-id                  아이디 찾기 (이름 + 이메일)
+=======
+POST /api/auth/login                  로그인, JWT 발급
+GET  /api/auth/me                     내 정보 (세션 복원용)
+POST /api/auth/find-id                아이디 찾기 (이름 + 이메일)
+>>>>>>> Stashed changes
 POST /api/auth/password-reset/request   재설정 인증코드 발급 → SMS
 POST /api/auth/password-reset/confirm   인증코드 확인 후 비밀번호 변경
 
@@ -20,6 +26,35 @@ from auth import issue_token, login_required
 from errors import ApiError
 from services import account_recovery, activity_service, sms
 from utils.validation import require_str, validate_password
+import random
+import smtplib
+from email.mime.text import MIMEText
+
+# 임시 저장소 (메모리 기반)
+email_storage = {}      # {email: verification_code}
+verified_emails = set()   # 인증 완료된 이메일 목록
+
+# SMTP 설정
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SENDER_EMAIL = "songjonghan96@gmail.com"
+SENDER_PASSWORD = "geaexurrnrdegrnm"  # 구글 앱 비밀번호
+
+def send_email_smtp(to_email: str, code: str):
+    msg = MIMEText(f"[FireGuard] 회원가입 인증번호는 [{code}] 입니다. 5분 안에 입력해주세요.")
+    msg["Subject"] = "[FireGuard] 회원가입 이메일 인증번호"
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = to_email
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, to_email, msg.as_string())
+    except Exception as e:
+        print(f"이메일 전송 실패: {e}")
+        print(f"🚨 [상세 에러 발생]: {repr(e)}")
+        raise ApiError(500, "EMAIL_SEND_FAILED", "이메일 전송에 실패했습니다.")
 
 bp = Blueprint("auth", __name__)
 logger = logging.getLogger("fireguard.auth")
@@ -222,3 +257,34 @@ def me():
     if not user:
         raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
     return jsonify(user)
+
+
+@bp.post("/email/verify-request")
+def email_verify_request():
+    body = request.get_json(silent=True) or {}
+    email = require_str(body, "email")
+    
+    code = str(random.randint(100000, 999999))  # 6자리 랜덤 숫자
+    email_storage[email] = code
+    
+    print(f"[DEBUG] 이메일: {email}, 인증번호: {code}")
+    send_email_smtp(email, code)
+    
+    return jsonify({"message": "인증번호가 발송되었습니다."})
+
+
+@bp.post("/email/verify-confirm")
+def email_verify_confirm():
+    body = request.get_json(silent=True) or {}
+    email = require_str(body, "email")
+    code = require_str(body, "code")
+    
+    stored_code = email_storage.get(email)
+    
+    if not stored_code or stored_code != code:
+        raise ApiError(400, "INVALID_VERIFY_CODE", "인증번호가 일치하지 않거나 만료되었습니다.")
+    
+    verified_emails.add(email)
+    del email_storage[email]  # 사용된 인증번호 제거
+    
+    return jsonify({"message": "이메일 인증이 완료되었습니다.", "verified": True})
