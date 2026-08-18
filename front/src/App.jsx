@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import Monitoring from './pages/Monitoring';
 import AdminPage from './pages/AdminPage';
 import MyPage from './pages/MyPage';
+import OAuthCallback from './pages/OAuthCallback';
 import DarkModeToggle from './components/DarkModeToggle';
 
 function App() {
@@ -19,6 +20,8 @@ function App() {
         <Route path="/forgot-password" element={<FindAccount />} />
         <Route path="/find-account" element={<FindAccount />} />
         <Route path="/find-id-pw" element={<FindAccount />} />
+        {/* 백엔드가 프로바이더에 넘기는 redirect URI 가 이 경로다 — 바꾸면 OAUTH_REDIRECT_BASE 도 같이 바꿔야 한다. */}
+        <Route path="/oauth/callback/:provider" element={<OAuthCallback />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/monitoring" element={<Monitoring />} />
         <Route path="/admin" element={<AdminPage />} />

@@ -171,9 +171,21 @@ def change_password():
     user_no = g.user.get("user_no")
 
     # DB에서 현재 사용자의 아이디와 저장된 비밀번호 해시 조회
-    user = db.query_one("SELECT user_id, user_pw FROM users WHERE user_no = %s", (user_no,))
+    user = db.query_one(
+        "SELECT user_id, user_pw, user_provider FROM users WHERE user_no = %s",
+        (user_no,),
+    )
     if not user:
         raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+
+    # 소셜 계정은 user_pw 가 NULL 이라 아래 .encode() 에서 그대로 터진다(500).
+    # OAuth 로그인이 붙기 전에는 토큰을 못 얻어 도달 불가능한 경로였지만 이제는
+    # 아니다. 바꿀 비밀번호가 애초에 없다는 사실을 400 으로 알려준다 —
+    # PUT /api/users/{user_no} 의 user_pw 가드와 같은 code·field 를 쓴다.
+    if user["user_provider"] != "LOCAL":
+        raise ApiError(400, "SOCIAL_ACCOUNT",
+                       "소셜 로그인 계정은 비밀번호를 변경할 수 없습니다.",
+                       field="user_pw")
 
     # 1. 현재 비밀번호 검증 (bcrypt.checkpw 사용)
     if not bcrypt.checkpw(current_password.encode(), user["user_pw"].encode()):

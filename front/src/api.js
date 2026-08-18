@@ -35,6 +35,22 @@ export function setCurrentUserToStorage(user) {
   }
 }
 
+// 로그인 응답(access_token + user)을 스토리지에 반영한다.
+// 일반 로그인과 소셜 로그인의 응답 형식이 같으므로, 저장 경로가 갈라지면
+// 로그인 이후 화면들이 서로 다른 모양의 currentUser 를 읽게 된다 — 한 곳으로 모은다.
+function persistLoginResult(res) {
+  if (!res?.access_token) return res;
+  setAccessToken(res.access_token);
+  setCurrentUserToStorage({
+    id: res.user.user_id,
+    user_no: res.user.user_no,
+    name: res.user.user_name,
+    role: res.user.user_role === 'ADMIN' ? 'admin' : 'user',
+    rawRole: res.user.user_role,
+  });
+  return res;
+}
+
 async function request(endpoint, options = {}) {
   const token = getAccessToken();
   const headers = {
@@ -89,17 +105,7 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ user_id, user_pw }),
     });
-    if (res?.access_token) {
-      setAccessToken(res.access_token);
-      setCurrentUserToStorage({
-        id: res.user.user_id,
-        user_no: res.user.user_no,
-        name: res.user.user_name,
-        role: res.user.user_role === 'ADMIN' ? 'admin' : 'user',
-        rawRole: res.user.user_role,
-      });
-    }
-    return res;
+    return persistLoginResult(res);
   },
 
   me: async () => {
@@ -138,6 +144,46 @@ export const authApi = {
       setAccessToken(null);
       setCurrentUserToStorage(null);
     }
+  },
+};
+
+// 1-1. 소셜 로그인(OAuth) API
+// 백엔드가 받는 provider 값(소문자)과 사람에게 보여줄 이름.
+export const SOCIAL_PROVIDERS = [
+  { id: 'google', name: 'Google' },
+  { id: 'kakao', name: '카카오' },
+  { id: 'naver', name: '네이버' },
+];
+
+// state 는 CSRF 방어용이라 브라우저 탭 안에서만 살아있으면 된다 —
+// 탭을 닫으면 사라지도록 localStorage 가 아니라 sessionStorage 를 쓴다.
+const oauthStateKey = (provider) => `oauth_state_${provider}`;
+
+export const oauthApi = {
+  // 프로바이더 동의 화면 URL 과 state 를 받아온다. (비로그인 공개 엔드포인트)
+  getAuthorizeUrl: async (provider) => {
+    return await request(`/auth/oauth/${provider}/authorize`);
+  },
+
+  saveState: (provider, state) => {
+    sessionStorage.setItem(oauthStateKey(provider), state ?? '');
+  },
+
+  // 콜백에서 한 번만 쓰고 버린다 — 남겨두면 다음 로그인 시도에 재사용될 수 있다.
+  takeState: (provider) => {
+    const key = oauthStateKey(provider);
+    const saved = sessionStorage.getItem(key);
+    sessionStorage.removeItem(key);
+    return saved;
+  },
+
+  // 인가 코드를 토큰으로 교환한다. 응답 형식이 /auth/login 과 같으므로 저장 경로도 같다.
+  login: async (provider, code, state) => {
+    const res = await request(`/auth/oauth/${provider}`, {
+      method: 'POST',
+      body: JSON.stringify({ code, state }),
+    });
+    return persistLoginResult(res);
   },
 };
 
