@@ -29,6 +29,10 @@ JWT_EXPIRES_HOURS = int(os.getenv("JWT_EXPIRES_HOURS", "12"))
 # AI 모델 → 백엔드 내부 API 인증 키 (X-Internal-Key 헤더로 비교)
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key")
 
+# 소방서(119) → 백엔드 출동 통지 인증 키 (X-Agency-Key 헤더로 비교)
+# INTERNAL_API_KEY 와 나눠 쓴다 — 하나가 새면 AI 검출 수집 경로까지 함께 열린다.
+AGENCY_CALLBACK_KEY = os.getenv("AGENCY_CALLBACK_KEY", "dev-agency-key")
+
 # 화재 확정 기준: 관측 창 안에서 이 프레임 수만큼 검출이 쌓이면 CONFIRMED
 #
 # 이 값은 EVENT_WINDOW_SEC 와 독립이 아니다 — **검출 프레임 레이트에 묶여 있다.**
@@ -65,6 +69,11 @@ ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "5"))
 MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
+
+# 역지오코딩(카카오 Local) HTTP 타임아웃(초).
+# CCTV 등록 요청 안에서 부르므로 사람이 기다리는 시간이다 — 짧게 둔다.
+# 실패해도 등록은 진행되고 주소만 NULL 로 남는다.
+GEOCODE_HTTP_TIMEOUT_SEC = float(os.getenv("GEOCODE_HTTP_TIMEOUT_SEC", "3"))
 
 # ----- 국가교통정보센터(ITS) CCTV 개방 데이터 -----
 # ITS 가 주는 스트림 주소에는 시간 제한 토큰이 박혀 있어 저장해 두면 만료된다.
@@ -115,6 +124,12 @@ OAUTH_CALLBACK_BASE = os.getenv("OAUTH_CALLBACK_BASE", "http://localhost:5000")
 # 짧게 둔다. 119 신고(REPORT_HTTP_TIMEOUT_SEC)와 값을 나눠 쓰지 않는 이유는
 # 저쪽이 사람이 기다리지 않는 백그라운드 전송이라 조정 기준이 다르기 때문이다.
 OAUTH_HTTP_TIMEOUT_SEC = float(os.getenv("OAUTH_HTTP_TIMEOUT_SEC", "5"))
+
+# 이 백엔드의 외부 공개 주소. 119 신고 페이로드의 callback_url 을 여기에 붙여 만든다 —
+#   {PUBLIC_BASE_URL}/api/reports/dispatch
+# 소방서가 출동 통지를 되쏘는 곳이라, 상대가 닿을 수 있는 주소여야 한다.
+# 시연은 같은 PC 라 localhost 로 충분하고, 다른 PC 에서 접속시키려면 LAN IP 를 넣는다.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:5000")
 
 APP_PORT = int(os.getenv("APP_PORT", "5000"))
 

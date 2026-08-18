@@ -76,6 +76,12 @@ CREATE TABLE fireguard.cctv (
     user_no         bigint         NOT NULL,
     cctv_name       varchar(100)   NULL,
     cctv_location   varchar(255)   NULL,
+    -- 좌표를 역지오코딩한 주소. 119 신고에 싣는 값이다.
+    -- cctv_location 은 사람이 붙인 설치 위치 설명('본관 정문 앞')이거나 ITS 카메라
+    -- 이름('[수도권제1순환선] 판교분기점')이라 소방 지령에 쓸 수 없다.
+    -- CCTV 등록 시점에 한 번 채운다 — 신고 순간에 외부 API 를 부르면 그 지연이
+    -- 그대로 119 전송 지연이 된다 (신고는 동기 경로다).
+    cctv_address    varchar(255)   NULL,
     cctv_lat        numeric(10,7)  NULL,
     cctv_lng        numeric(10,7)  NULL,
     cctv_stream_url varchar(500)   NULL,
@@ -187,7 +193,12 @@ CREATE TABLE fireguard.report_119 (
     report_distance_km    numeric(6,3)  NULL,
     report_attempt_count  integer       NULL  DEFAULT 0,
     reported_at           timestamp     NULL,
-    report_accepted_at    timestamp     NULL
+    report_accepted_at    timestamp     NULL,
+    -- 소방서가 출동 통지를 보내온 시각과 그 원문.
+    -- report_accepted_at(접수 확인)과 뜻이 다르다 — 접수는 '신고를 받았다',
+    -- 출동은 '소방차가 나갔다'이다. 기관마다 보내는 키가 달라 원문을 그대로 둔다.
+    report_dispatched_at  timestamp     NULL,
+    report_dispatch       jsonb         NULL
 );
 
 
@@ -324,8 +335,11 @@ CREATE INDEX IX_cctv_geog      ON fireguard.cctv   USING GIST (cctv_geog);
 
 -- 진행 중인 신고가 이벤트당 하나만 있도록 DB 에서 강제한다
 -- PostgreSQL 부분 인덱스 (MySQL 에는 없는 기능)
+-- ⚠️ 이 상태 집합은 services/report_service.py 의 ACTIVE_STATUSES 와 반드시 같아야
+--    한다. 어긋나면 출동 중인 화재에 신고가 한 번 더 나가거나(집합이 좁으면),
+--    INSERT 가 유니크 위반 23505 로 터진다(집합이 넓으면).
 CREATE UNIQUE INDEX UX_report_119_active ON fireguard.report_119 (event_no)
-    WHERE report_status IN ('SENDING', 'ACCEPTED');
+    WHERE report_status IN ('SENDING', 'ACCEPTED', 'DISPATCHED');
 
 -- 같은 소셜 계정이 두 번 들어오지 않게. 일반(LOCAL) 계정은 provider_id 가 NULL 이라
 -- 이 인덱스의 대상이 아니다 — 그래서 부분 인덱스여야 한다 (NULL 이 여럿이어도 무방).
@@ -371,6 +385,7 @@ COMMENT ON COLUMN fireguard.cctv.cctv_no         IS '카메라 번호';
 COMMENT ON COLUMN fireguard.cctv.user_no         IS '담당 사용자 번호';
 COMMENT ON COLUMN fireguard.cctv.cctv_name       IS '카메라 이름';
 COMMENT ON COLUMN fireguard.cctv.cctv_location   IS '설치 위치';
+COMMENT ON COLUMN fireguard.cctv.cctv_address    IS '좌표를 역지오코딩한 주소 (119 신고에 싣는 값)';
 COMMENT ON COLUMN fireguard.cctv.cctv_lat        IS '위도';
 COMMENT ON COLUMN fireguard.cctv.cctv_lng        IS '경도';
 COMMENT ON COLUMN fireguard.cctv.cctv_stream_url IS '스트림 주소';
@@ -428,6 +443,8 @@ COMMENT ON COLUMN fireguard.report_119.report_distance_km    IS '기관까지 �
 COMMENT ON COLUMN fireguard.report_119.report_attempt_count  IS '전송 시도 횟수';
 COMMENT ON COLUMN fireguard.report_119.reported_at           IS '전송 일시';
 COMMENT ON COLUMN fireguard.report_119.report_accepted_at    IS '119 접수 확인 일시 (출동 배차 확인이 아님)';
+COMMENT ON COLUMN fireguard.report_119.report_dispatched_at  IS '소방서 출동 통지 수신 일시';
+COMMENT ON COLUMN fireguard.report_119.report_dispatch       IS '소방서가 보낸 출동 정보 원문 (지령번호·차량·ETA)';
 
 COMMENT ON COLUMN fireguard.report_log.log_no          IS '로그 번호';
 COMMENT ON COLUMN fireguard.report_log.report_no       IS '신고 번호';
@@ -467,7 +484,15 @@ COMMENT ON COLUMN fireguard.user_activity.activity_at        IS '활동 일시';
 -- alert.alert_channel      : PUSH(앱알림) SMS(문자)
 -- alert.alert_status       : SENT(발송) READ(확인) CANCELED(취소) NO_RESPONSE(무응답)
 -- report_119.report_status : SENDING(전송중) ACCEPTED(접수확인)
+--                            DISPATCHED(출동 통지 수신)
 --                            NO_RESPONSE(무응답으로 승계) FAILED(전송실패)
+--                            진행 중으로 보는 것은 앞의 셋이고, 이벤트당 1건만
+--                            존재할 수 있다 (부분 유니크 인덱스 UX_report_119_active).
+--   ⚠️ DISPATCHED 는 폐기했던 이름이 **다른 뜻으로** 부활한 것이다.
+--      db/migrations/001 이 옛 DISPATCHED 를 ACCEPTED 로 개명했었다.
+--        001 의 DISPATCHED = '119 서버가 신고를 받았다'  → 지금의 ACCEPTED
+--        007 의 DISPATCHED = '소방차가 실제로 출동했다'  (119 가 콜백으로 알려준다)
+--      001 만 읽고 '지웠던 걸 왜 되살렸나' 로 헷갈리지 않도록 여기 남긴다.
 -- user_activity.activity_type : LOGIN(접속) LOGOUT(로그아웃)
 --                            PASSWORD_CHANGED(비밀번호 변경) PROFILE_UPDATED(프로필 수정)
 --                            FIRE_CONFIRMED(화재 확인) FIRE_DISMISSED(오탐 취소)

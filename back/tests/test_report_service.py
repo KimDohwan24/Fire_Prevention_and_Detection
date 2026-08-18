@@ -84,7 +84,7 @@ def test_start_report_success_first_try(monkeypatch):
     assert r["report_external_id"] == "R-2026-0001"
     assert r["report_trigger_reason"] == "USER_CONFIRMED"
     assert r["report_attempt_count"] == 1
-    assert r["report_address"] == "본관 정문 앞"  # cctv_location
+    assert r["report_address"] == "서울특별시 중구 세종대로 110"  # cctv_address
     assert float(r["report_distance_km"]) == pytest.approx(
         report_service.nearest_agencies(1)[0]["distance_km"], abs=0.002)
     assert r["reported_at"] is not None
@@ -99,7 +99,8 @@ def test_start_report_success_first_try(monkeypatch):
     assert len(calls) == 1
     _, payload = calls[0]
     assert payload["event_no"] == event_no
-    assert payload["address"] == "본관 정문 앞"
+    assert payload["address"] == "서울특별시 중구 세종대로 110"
+    assert payload["place"] == "본관 정문 앞"
     assert payload["lat"] == pytest.approx(CCTV1[0])
     assert payload["lng"] == pytest.approx(CCTV1[1])
     assert payload["event_class"] == "FLAME"
@@ -375,7 +376,7 @@ def test_success_is_logged_with_request_and_response(monkeypatch):
     assert log["log_result"] == "ACCEPTED"
     assert log["log_http_status"] == 200
     assert log["log_request"]["report_uid"] == f"FG-{event_no}"
-    assert log["log_request"]["address"] == "본관 정문 앞"
+    assert log["log_request"]["address"] == "서울특별시 중구 세종대로 110"
     assert log["log_response"] == {"external_id": "R-LOG-1"}
     assert log["log_error"] is None
     assert log["log_sent_at"] is not None
@@ -804,3 +805,102 @@ def test_report_failure_does_not_break_respond_api(client, admin_headers, monkey
                     json={"action": "READ"}, headers=admin_headers)
     assert r.status_code == 200
     assert r.get_json()["alert_status"] == "READ"  # 알림 갱신 자체는 성공
+
+
+# ---------- 페이로드 v2 (주소 · CCTV 정보 · 콜백) ----------
+
+def test_payload_uses_cctv_address_as_address(monkeypatch):
+    """address 는 역지오코딩한 주소다. 설치 위치 설명은 place 로 따로 간다.
+
+    소방서가 출동해야 하는 값과 사람이 붙인 위치 설명은 다른 것이다.
+    """
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-A"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert payload["address"] == "서울특별시 중구 세종대로 110"
+    assert payload["place"] == "본관 정문 앞"
+
+
+def test_payload_falls_back_to_coordinates_without_cctv_address(monkeypatch):
+    """주소가 없으면 좌표 문자열로 떨어진다 — 가짜 주소보다 안전하고 빈 칸보다 쓸모 있다.
+
+    시드 2번 카메라(후문)는 cctv_address 가 NULL 이다.
+    """
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-B"}))
+    event_no = make_event(cctv_no=2)
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert payload["address"] == "위도 37.567, 경도 126.979 (본관 후문)"
+    assert payload["place"] == "본관 후문"
+
+
+def test_payload_carries_cctv_block(monkeypatch):
+    """CCTV 각종 정보를 함께 보낸다 — 접수자가 카메라를 특정하고 화면을 띄울 수 있게."""
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-C"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert payload["cctv"] == {
+        "cctv_no": 1,
+        "name": "정문 카메라",
+        "location": "본관 정문 앞",
+        "address": "서울특별시 중구 세종대로 110",
+        "lat": pytest.approx(CCTV1[0]),
+        "lng": pytest.approx(CCTV1[1]),
+        "stream_url": "http://192.168.0.10:8080/live/cam1.m3u8",
+        "width": 1920,
+        "height": 1080,
+        "status": "ACTIVE",
+    }
+
+
+def test_payload_carries_callback_url(monkeypatch):
+    """소방서가 출동을 되쏠 주소를 페이로드에 실어 준다.
+
+    받는 쪽이 우리 주소를 미리 설정해 두지 않아도 되게 한다.
+    """
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-D"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert payload["callback_url"] == f"{config.PUBLIC_BASE_URL}/api/reports/dispatch"
+
+
+def test_payload_carries_detection_and_agency(monkeypatch):
+    """검출 근거(프레임 수)와 수신 기관을 함께 보낸다."""
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-E"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    _, payload = calls[0]
+    assert payload["detection"] == {"frames": 32, "threshold_frames": 30}
+    assert payload["agency"]["name"] == "종로소방서"
+    assert payload["agency"]["distance_km"] == pytest.approx(
+        report_service.nearest_agencies(1)[0]["distance_km"], abs=0.002)
+
+
+def test_report_path_never_calls_geocoding(monkeypatch):
+    """신고 경로에서 역지오코딩을 부르지 않는다.
+
+    119 신고는 동기다 — 여기서 외부 API 를 부르면 그 지연이 그대로 신고 지연이
+    되고, 카카오가 죽으면 신고가 늦어진다. 주소는 등록 시점에 이미 채워져 있다.
+    """
+    called = []
+    monkeypatch.setattr("services.geocode.reverse_geocode",
+                        lambda lat, lng: called.append((lat, lng)))
+    patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-F"}))
+    event_no = make_event()
+
+    report_service.start_report(event_no, "USER_CONFIRMED")
+
+    assert called == []

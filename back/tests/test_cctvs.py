@@ -9,7 +9,8 @@ import db
 # 명세서가 문서화한 카메라 응답 키 — 이 집합에서 늘거나 줄면 명세 위반이다.
 # (SELECT * 를 쓰면 나중에 컬럼이 추가될 때 조용히 응답에 섞여 들어간다)
 CCTV_KEYS = {
-    "cctv_no", "user_no", "cctv_name", "cctv_location", "cctv_lat", "cctv_lng",
+    "cctv_no", "user_no", "cctv_name", "cctv_location", "cctv_address",
+    "cctv_lat", "cctv_lng",
     "cctv_stream_url", "cctv_width", "cctv_height", "cctv_status", "cctv_created_at",
 }
 
@@ -222,6 +223,67 @@ def test_create_cctv_forbidden_for_viewer(client, viewer_headers):
     """VIEWER 권한으로 등록 시도 시 403."""
     r = client.post("/api/cctvs", json=NEW_CCTV, headers=viewer_headers)
     assert r.status_code == 403
+
+
+# ---------- 등록: 좌표 → 주소 역지오코딩 ----------
+#
+# 119 신고에 실을 주소는 등록 시점에 한 번 구해 저장한다 (신고는 동기 경로라
+# 그때 외부 API 를 부르면 지연이 그대로 전송 지연이 된다).
+# conftest 의 _no_real_geocode_http 가 기본값을 None 으로 막아 두므로,
+# 주소가 필요한 테스트는 자기 monkeypatch 로 덮어쓴다.
+
+def test_create_cctv_fills_address_from_coordinates(client, admin_headers, monkeypatch):
+    """등록하면 역지오코딩 결과가 cctv_address 에 저장된다."""
+    monkeypatch.setattr("services.geocode.reverse_geocode",
+                        lambda lat, lng: "서울특별시 중구 세종대로 110")
+
+    r = client.post("/api/cctvs", json=NEW_CCTV, headers=admin_headers)
+    assert r.status_code == 201
+    cctv_no = r.get_json()["cctv_no"]
+
+    row = db.query_one("SELECT cctv_address FROM cctv WHERE cctv_no = %s", (cctv_no,))
+    assert row["cctv_address"] == "서울특별시 중구 세종대로 110"
+
+
+def test_create_cctv_passes_lat_lng_in_right_order(client, admin_headers, monkeypatch):
+    """역지오코딩에 (위도, 경도) 순서로 넘긴다.
+
+    카카오는 x=경도 · y=위도라 뒤집혀도 에러 없이 엉뚱한 주소가 나온다 —
+    그래서 값이 아니라 인자 순서를 직접 본다.
+    """
+    seen = {}
+
+    def _spy(lat, lng):
+        seen["lat"], seen["lng"] = lat, lng
+        return "서울특별시 중구 세종대로 110"
+
+    monkeypatch.setattr("services.geocode.reverse_geocode", _spy)
+
+    r = client.post("/api/cctvs", json=NEW_CCTV, headers=admin_headers)
+    assert r.status_code == 201
+    assert seen["lat"] == pytest.approx(NEW_CCTV["cctv_lat"])
+    assert seen["lng"] == pytest.approx(NEW_CCTV["cctv_lng"])
+
+
+def test_create_cctv_succeeds_when_geocoding_fails(client, admin_headers):
+    """주소를 못 구해도(None) 등록은 성공한다 — 주소만 NULL 로 남는다.
+
+    conftest 기본 스텁이 None 이므로 여기서는 덮어쓰지 않는다.
+    """
+    r = client.post("/api/cctvs", json=NEW_CCTV, headers=admin_headers)
+    assert r.status_code == 201
+    cctv_no = r.get_json()["cctv_no"]
+
+    row = db.query_one("SELECT cctv_address FROM cctv WHERE cctv_no = %s", (cctv_no,))
+    assert row["cctv_address"] is None
+
+
+def test_cctv_list_exposes_address(client, admin_headers):
+    """목록 응답이 cctv_address 를 내려준다 (없는 카메라는 null)."""
+    items = client.get("/api/cctvs", headers=admin_headers).get_json()["items"]
+    by_no = {it["cctv_no"]: it for it in items}
+    assert by_no[1]["cctv_address"] == "서울특별시 중구 세종대로 110"
+    assert by_no[2]["cctv_address"] is None
 
 
 # ---------- 수정 ----------

@@ -13,7 +13,8 @@ from services import its_cctv
 
 # 응답에 내보내는 컬럼을 명시한다 — SELECT * 를 쓰면 나중에 컬럼이 추가될 때
 # 의도치 않은 값이 조용히 API 응답에 섞여 나간다 (명세서 4번 섹션 기준)
-COLUMNS = """cctv_no, user_no, cctv_name, cctv_location, cctv_lat, cctv_lng,
+COLUMNS = """cctv_no, user_no, cctv_name, cctv_location, cctv_address,
+             cctv_lat, cctv_lng,
              cctv_stream_url, cctv_width, cctv_height, cctv_status, cctv_created_at"""
 
 

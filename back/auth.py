@@ -144,3 +144,20 @@ def internal_key_required(f):
         return f(*args, **kwargs)
     wrapper._auth = "internal"
     return wrapper
+
+
+def agency_key_required(f):
+    """소방서(119) 전용 인증 — X-Agency-Key 헤더를 비교한다.
+
+    출동 통지를 되쏘는 상대는 사람이 아니라 기관 서버라 JWT 를 쓸 수 없다.
+    내부 키(X-Internal-Key)와 나눠 쓴다 — 하나가 새더라도 AI 검출 수집
+    경로까지 함께 열리지는 않게 한다.
+    """
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        key = request.headers.get("X-Agency-Key")
+        if key != config.AGENCY_CALLBACK_KEY:
+            raise ApiError(401, "AGENCY_UNAUTHORIZED", "기관 인증 키가 올바르지 않습니다.")
+        return f(*args, **kwargs)
+    wrapper._auth = "agency"
+    return wrapper
