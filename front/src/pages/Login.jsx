@@ -2,12 +2,37 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { authApi } from '../api';
 
+const OAUTH_PROVIDERS = [
+  {
+    id: 'kakao',
+    label: '카카오톡으로 로그인',
+    buttonClassName: 'bg-[#FEE500] text-[#191919] hover:bg-[#F3D900]',
+    markClassName: 'bg-[#191919] text-[#FEE500]',
+    mark: 'K',
+  },
+  {
+    id: 'google',
+    label: 'Google로 로그인',
+    buttonClassName: 'bg-surface-card text-[#202124] border border-hairline hover:border-ink dark:bg-[#2B2B2B] dark:text-white dark:border-[#5A5A5A] dark:hover:border-white',
+    markClassName: 'bg-white text-[#4285F4] border border-hairline dark:border-[#5A5A5A]',
+    mark: 'G',
+  },
+  {
+    id: 'naver',
+    label: '네이버로 로그인',
+    buttonClassName: 'bg-[#03C75A] text-white hover:bg-[#02B351]',
+    markClassName: 'bg-white text-[#03C75A]',
+    mark: 'N',
+  },
+];
+
 const Login = () => {
   const navigate = useNavigate();
   const [id, setId] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState('');
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -26,8 +51,21 @@ const Login = () => {
     }
   };
 
+  const handleOAuthLogin = (provider) => {
+    setErrorMsg('');
+    setOauthLoading(provider);
+
+    try {
+      authApi.oauthLogin(provider);
+    } catch (err) {
+      console.error('소셜 로그인 시작 실패:', err);
+      setOauthLoading('');
+      setErrorMsg(err.message || '소셜 로그인 페이지로 이동하지 못했습니다.');
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-canvas flex flex-col items-center pt-32 px-4 font-ui relative transition-colors duration-300">
+    <div className="min-h-screen bg-canvas flex flex-col items-center pt-32 pb-12 px-4 font-ui relative transition-colors duration-300">
 
       {/* Brand / Logo (Horizontal Layout) */}
       <div className="flex flex-row items-center space-x-5 mb-10">
@@ -86,6 +124,35 @@ const Login = () => {
             </button>
           </div>
         </form>
+
+        <div className="mt-7">
+          <div className="flex items-center gap-3 text-caption-sm text-mute">
+            <span className="h-px flex-1 bg-hairline" />
+            <span>또는</span>
+            <span className="h-px flex-1 bg-hairline" />
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {OAUTH_PROVIDERS.map((provider) => (
+              <button
+                key={provider.id}
+                type="button"
+                onClick={() => handleOAuthLogin(provider.id)}
+                disabled={isLoading || Boolean(oauthLoading)}
+                className={`relative flex h-11 w-full items-center justify-center rounded-full text-button-md transition-all duration-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${provider.buttonClassName}`}
+              >
+                <span className={`absolute left-3 grid h-6 w-6 place-items-center rounded-full text-xs font-black ${provider.markClassName}`} aria-hidden="true">
+                  {provider.mark}
+                </span>
+                {oauthLoading === provider.id ? '인증 페이지로 이동 중...' : provider.label}
+              </button>
+            ))}
+          </div>
+
+          <p className="mt-3 text-center text-caption-sm text-mute">
+            소셜 계정 인증 페이지로 이동합니다.
+          </p>
+        </div>
 
         <div className="mt-8 flex flex-col items-center space-y-4 text-body-sm">
           <Link to="/forgot-password" className="text-body hover:text-ink underline decoration-hairline hover:decoration-ink underline-offset-4 transition-colors">

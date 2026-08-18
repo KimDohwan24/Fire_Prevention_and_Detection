@@ -1,9 +1,35 @@
+import { appendLocalActivityLog } from './utils/activityLog';
+
 /**
  * FireGuard 백엔드 API 클라이언트
  * Base URL: /api (vite proxy -> http://localhost:5000/api)
  */
 
 export const API_BASE_URL = '/api';
+export const SUPER_ADMIN_USER_NO = 1;
+
+// OAuth2 로그인 시작 엔드포인트. 각 백엔드 엔드포인트는 OAuth 제공자 인증 화면으로 리다이렉트해야 합니다.
+export const OAUTH_PROVIDER_PATHS = Object.freeze({
+  kakao: `${API_BASE_URL}/auth/kakao`,
+  google: `${API_BASE_URL}/auth/google`,
+  naver: `${API_BASE_URL}/auth/naver`,
+});
+
+export function getOAuthLoginUrl(provider) {
+  const endpoint = OAUTH_PROVIDER_PATHS[provider];
+  if (!endpoint) {
+    throw new Error('지원하지 않는 소셜 로그인입니다.');
+  }
+  return endpoint;
+}
+
+export function startOAuthLogin(provider) {
+  window.location.assign(getOAuthLoginUrl(provider));
+}
+
+export function isSuperAdminUser(user) {
+  return Number(user?.user_no) === SUPER_ADMIN_USER_NO;
+}
 
 // 토큰 저장/조회/삭제 헬퍼
 export function getAccessToken() {
@@ -90,16 +116,30 @@ export const authApi = {
       body: JSON.stringify({ user_id, user_pw }),
     });
     if (res?.access_token) {
-      setAccessToken(res.access_token);
-      setCurrentUserToStorage({
+      const isSuperAdmin = isSuperAdminUser(res.user);
+      const signedInUser = {
         id: res.user.user_id,
         user_no: res.user.user_no,
         name: res.user.user_name,
-        role: res.user.user_role === 'ADMIN' ? 'admin' : 'user',
-        rawRole: res.user.user_role,
+        role: isSuperAdmin || res.user.user_role === 'ADMIN' ? 'admin' : 'user',
+        rawRole: isSuperAdmin ? 'ADMIN' : res.user.user_role,
+        isSuperAdmin,
+      };
+      setAccessToken(res.access_token);
+      setCurrentUserToStorage(signedInUser);
+      appendLocalActivityLog({
+        user_no: signedInUser.user_no,
+        activity_type: 'LOGIN',
+        type: 'login',
+        title: '로그인',
+        detail: 'FireGuard에 로그인했습니다.',
       });
     }
     return res;
+  },
+
+  oauthLogin: (provider) => {
+    startOAuthLogin(provider);
   },
 
   me: async () => {
@@ -144,6 +184,7 @@ export const authApi = {
   },
 
   logout: async () => {
+    const currentUser = getCurrentUserFromStorage();
     try {
       if (getAccessToken()) {
         await request('/auth/logout', { method: 'POST' });
@@ -151,6 +192,15 @@ export const authApi = {
     } catch (error) {
       console.warn('로그아웃 활동 이력을 서버에 저장하지 못했습니다.', error);
     } finally {
+      if (currentUser?.user_no != null) {
+        appendLocalActivityLog({
+          user_no: currentUser.user_no,
+          activity_type: 'LOGOUT',
+          type: 'logout',
+          title: '로그아웃',
+          detail: 'FireGuard에서 로그아웃했습니다.',
+        });
+      }
       setAccessToken(null);
       setCurrentUserToStorage(null);
     }
@@ -176,6 +226,16 @@ export const userApi = {
     return await request(`/users/${user_no}`, {
       method: 'PUT',
       body: JSON.stringify(userData),
+    });
+  },
+
+  updateRole: async (user_no, user_role, user_status) => {
+    const payload = { user_role };
+    if (user_status) payload.user_status = user_status;
+
+    return await request(`/users/${user_no}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
     });
   },
 
