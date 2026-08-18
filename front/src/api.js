@@ -127,7 +127,22 @@ export const authApi = {
     });
   },
 
-<<<<<<< Updated upstream
+// ▼ [추가] 이메일 인증번호 발송 요청 API
+  requestEmailVerify: async (email) => {
+    return await request('/auth/email/verify-request', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  // ▼ [추가] 이메일 인증번호 확인 API
+  confirmEmailVerify: async (email, code) => {
+    return await request('/auth/email/verify-confirm', {
+      method: 'POST',
+      body: JSON.stringify({ email, code }),
+    });
+  },
+
   logout: async () => {
     try {
       if (getAccessToken()) {
@@ -139,29 +154,9 @@ export const authApi = {
       setAccessToken(null);
       setCurrentUserToStorage(null);
     }
-=======
-// ▼ [추가] 이메일 인증번호 발송 요청 API (주석 해제)
-  requestEmailVerify: async (email) => {
-    return await request('/auth/email/verify-request', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-    });
-  },
-
-  // ▼ [추가] 이메일 인증번호 확인 API (주석 해제)
-  confirmEmailVerify: async (email, code) => {
-    return await request('/auth/email/verify-confirm', {
-      method: 'POST',
-      body: JSON.stringify({ email, code }),
-    });
-  },
-  
-  logout: () => {
-    setAccessToken(null);
-    setCurrentUserToStorage(null);
->>>>>>> Stashed changes
   },
 };
+
 
 // 2. 사용자/관리자 API
 export const userApi = {
