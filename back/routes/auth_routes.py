@@ -8,19 +8,27 @@ POST /api/auth/password-reset/request       재설정 인증코드 발급 → SM
 POST /api/auth/password-reset/confirm       인증코드 확인 후 비밀번호 변경
 POST /api/auth/email/verify-request         회원가입 이메일 인증번호 발송
 POST /api/auth/email/verify-confirm         회원가입 이메일 인증번호 확인
-GET  /api/auth/oauth/<provider>/authorize   소셜 동의화면 주소 + state 발급
-POST /api/auth/oauth/<provider>             소셜 code 교환 → 로그인 (login 과 같은 응답)
+GET  /api/auth/<provider>                   소셜 동의화면으로 302
+GET  /api/auth/<provider>/callback          프로바이더 콜백 → 프론트로 302 (토큰은 프래그먼트)
 
 계정 찾기 세 개와 소셜 둘은 **비로그인 상태에서 부르는 공개 엔드포인트**다. 인증코드도
 소셜 state 도 저장하지 않고 그때그때 계산해 대조한다 — 방식과 근거는
 services/account_recovery.py, services/oauth_provider.py 참고.
+
+소셜 로그인은 **리다이렉트 방식 하나뿐이다.** 프론트가 code 를 받아 백엔드에 POST 하던
+SPA/JSON 방식(GET /api/auth/oauth/<provider>/authorize, POST /api/auth/oauth/<provider>)
+은 프론트가 쓰지 않게 되어 걷어냈다 — 아무도 부르지 않는 로그인 경로를 남겨 두면 인증
+표면만 넓어지고, 두 방식이 계정 로직을 공유하는 탓에 한쪽만 고치는 사고가 난다.
+필요하면 git 히스토리(e0d6ea6)에서 꺼낼 수 있다.
 """
 import logging
+from urllib.parse import urlencode
 
 import bcrypt
 import psycopg2
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, abort, current_app, g, jsonify, redirect, request
 
+import config
 import db
 from auth import issue_token, login_required
 from errors import ApiError
@@ -389,52 +397,128 @@ def _find_or_create_social_user(provider: str, identity: dict) -> dict:
     return row
 
 
-@bp.get("/oauth/<provider>/authorize")
-def oauth_authorize(provider: str):
-    """동의화면 주소와 state 를 만들어 준다 (비로그인 공개).
+# ---------- 소셜 로그인 — 시작과 콜백 ----------
+#
+# 프로바이더가 브라우저를 **백엔드로 곧장** 되돌려보내고, 백엔드가 그 자리에서
+# code 를 교환해 프론트로 302 한다 (front/src/api.js 의 startOAuthLogin 이 전제하는
+# 모양). 프론트는 code 도 state 도 만지지 않는다.
 
-    프론트는 state 를 sessionStorage 에 넣어 두고 authorize_url 로 이동한 뒤,
-    콜백 화면에서 받은 code 와 함께 그 state 를 POST /api/auth/oauth/<provider> 에
-    돌려주면 된다.
+def _front_redirect(**fragment_params):
+    """프론트로 302 하되 값은 **프래그먼트(#)에** 싣는다.
 
-    redirect_uri 는 응답에 싣지 않는다 — 프론트가 알 필요가 없고, 알면 그 값을
-    자기 쪽에도 적어 두는 순간 정의가 두 곳이 된다 (oauth_provider.redirect_uri).
+    쿼리스트링(?)에 넣지 않는 이유가 이 방식의 핵심이다 — 쿼리는 웹서버·프록시
+    접근로그에 그대로 쌓이고 다음 요청의 Referer 헤더에도 실려 나가지만,
+    프래그먼트는 브라우저가 서버로 아예 보내지 않는다. 여기 실리는 것이 로그인
+    토큰이라 그 차이가 곧 유출 여부다.
+
+    오류 코드도 같은 자리에 실어서 프론트가 성공·실패를 한 곳에서 읽게 한다.
     """
-    name = _require_provider(provider)
-    state = oauth_provider.issue_state(name)
-    return jsonify({
-        "authorize_url": oauth_provider.authorize_url(name, state),
-        "state": state,
-    })
+    return redirect(f"{config.OAUTH_REDIRECT_BASE.rstrip('/')}/#{urlencode(fragment_params)}")
 
 
-@bp.post("/oauth/<provider>")
-def oauth_login(provider: str):
-    """code 를 우리 JWT 로 바꾼다 (비로그인 공개).
+def _abort_if_shadowing_another_route() -> None:
+    """이 규칙이 **다른 메서드 전용 엔드포인트를 가로챈** 요청이면 405 로 돌려보낸다.
 
-    응답은 POST /api/auth/login 과 **완전히 같은 모양**이다 (_login_response).
+    `/api/auth/<provider>` 는 `/api/auth/login`(POST 전용) 같은 경로와 모양이 겹친다.
+    정적 규칙이 동적 규칙을 이기는 것은 **메서드까지 맞을 때** 이야기고, GET 으로
+    /api/auth/login 을 부르면 Werkzeug 는 405 를 내기 전에 GET 을 받는 이 동적
+    규칙을 찾아낸다. 그대로 두면 POST 전용 엔드포인트 전부가 GET 에
+    "지원하지 않는 소셜 로그인" 302 를 돌려주게 되고, 공통 405 응답이 깨진다
+    (회귀 테스트: tests/test_health_errors.py::test_405_returns_common_error_shape).
+
+    같은 경로를 GET 아닌 메서드로 받는 규칙이 따로 있으면 그쪽이 주인이라고 본다.
+    이름을 목록으로 적어 두지 않는 이유는, 그 목록이 곧 낡아서 다음에 추가되는
+    POST 엔드포인트에서 같은 사고가 조용히 재발하기 때문이다.
     """
-    name = _require_provider(provider)
-    body = request.get_json(silent=True) or {}
-    code = require_str(body, "code")
-    state = require_str(body, "state")
+    others = set(current_app.url_map.bind("localhost").allowed_methods(request.path))
+    if others - {"GET", "HEAD", "OPTIONS"}:
+        abort(405)
 
-    # state 를 먼저 본다. 위조된 요청으로 프로바이더를 두드려 주면 우리 서버가
-    # 남의 API 를 때리는 도구가 된다.
-    if not oauth_provider.verify_state(name, state):
-        raise ApiError(400, "INVALID_OAUTH_STATE",
-                       "인증 요청이 만료되었거나 올바르지 않습니다. 다시 시도해주세요.")
 
+# ⚠️ 이 규칙은 `/api/auth/me` 처럼 **한 조각짜리 GET 경로를 삼킬 수 있는 모양**이다.
+#    Werkzeug 는 정적 규칙을 동적 규칙보다 먼저 맞추므로 실제로는 /me 가 이기고,
+#    그 사실은 회귀 테스트로 못을 박아 뒀다 (tests/test_oauth_redirect_login.py::
+#    test_me_route_is_not_swallowed_by_the_provider_rule). 다만 그 보호는 '더
+#    구체적인 규칙이 이긴다'는 규칙 하나에만 기대고 있다 — /api/auth 아래에 **동적
+#    세그먼트로 시작하는 GET 경로를 또 추가하면** 그 순간 서로 잡아먹는다.
+@bp.get("/<provider>")
+def oauth_redirect_start(provider: str):
+    """소셜 로그인 시작 — 프로바이더 동의화면으로 302 한다 (비로그인 공개).
+
+    프론트는 window.location.assign('/api/auth/kakao') 한 줄이면 된다. state 는
+    여기서 발급해 URL 에 싣고 콜백에서 HMAC 으로 대조하므로, 프론트가 보관할 것도
+    돌려줄 것도 없다.
+
+    실패해도 JSON 을 주지 않는다 — 브라우저가 주소창째로 이동해 온 곳이라 JSON 을
+    돌려주면 사용자 화면에 원시 JSON 이 그대로 뜬다. 콜백과 같은 자리(프래그먼트의
+    oauth_error)로 알려서 프론트가 한 곳에서 읽게 한다.
+    """
+    _abort_if_shadowing_another_route()
     try:
-        identity = oauth_provider.fetch_identity(name, code, state)
-    except oauth_provider.OAuthProviderError as exc:
-        # 저쪽 문제를 우리 500 으로 뭉개면 장애 때 어디를 볼지 정할 수 없다
-        logger.warning("소셜 로그인 실패 (provider=%s): %s", name, exc)
-        raise ApiError(502, "OAUTH_PROVIDER_ERROR",
-                       "소셜 로그인 제공자와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.")
+        name = _require_provider(provider)
+    except ApiError as exc:
+        return _front_redirect(oauth_error=exc.code)
 
-    user = _find_or_create_social_user(name, identity)
-    _assert_account_usable(user)
+    state = oauth_provider.issue_state(name)
+    return redirect(oauth_provider.authorize_url(name, state))
+
+
+@bp.get("/<provider>/callback")
+def oauth_redirect_callback(provider: str):
+    """프로바이더가 브라우저를 되돌려보내는 곳 (비로그인 공개).
+
+    **어떤 경우에도 302 다.** 사용자의 브라우저가 이 응답을 따라오는 중이라
+    JSON 을 주면 화면에 원시 JSON 이 뜬다. 그래서 실패도 프론트로 돌려보내고
+    프래그먼트의 oauth_error 로 알린다 (코드 문자열은 다른 API 의 error code 와 같은
+    것을 쓴다 — 프론트가 안내 문구를 한 표에서 찾게 하려는 것이다).
+    """
+    # 지금은 `.../callback` 으로 끝나는 다른 경로가 없어 겹칠 일이 없지만, 시작
+    # 라우트와 같은 위험을 안고 있으므로 같은 가드를 둔다 (판단 근거는 그 함수).
+    _abort_if_shadowing_another_route()
+
+    # 1. 사용자가 동의화면에서 취소했거나 프로바이더가 오류를 알려온 경우 — code 가
+    #    없으므로 교환할 것이 없다. 취소는 오류가 아니라 사용자의 선택이라 저쪽
+    #    장애와 구분한다. 뭉치면 프로바이더 장애를 "취소하셨습니다"로 안내하게 된다.
+    provider_error = request.args.get("error")
+    if provider_error:
+        logger.info("소셜 로그인 콜백이 오류로 돌아옴 (provider=%s, error=%s)",
+                    provider, provider_error)
+        return _front_redirect(oauth_error="ACCESS_DENIED"
+                               if provider_error == "access_denied"
+                               else "OAUTH_PROVIDER_ERROR")
+
+    # 2. 아래 헬퍼들은 일반 로그인과 공유하는 것들이라 ApiError 를 던진다 (저쪽은
+    #    그대로 JSON 응답이 된다). 여기서는 한 번에 받아 code 만 꺼내 302 로 바꾼다.
+    try:
+        name = _require_provider(provider)
+
+        # state 를 code 보다 먼저 본다 — 위조된 요청으로 프로바이더를 두드려 주면
+        # 우리 서버가 남의 API 를 때리는 도구가 된다.
+        state = request.args.get("state") or ""
+        if not oauth_provider.verify_state(name, state):
+            raise ApiError(400, "INVALID_OAUTH_STATE",
+                           "인증 요청이 만료되었거나 올바르지 않습니다.")
+
+        code = request.args.get("code")
+        if not code:
+            # error 도 code 도 없이 돌아오는 것은 프로바이더가 규약을 어긴 것이다.
+            # 사용자가 고칠 수 있는 게 아니라 BAD_REQUEST 로 부르지 않는다.
+            raise ApiError(502, "OAUTH_PROVIDER_ERROR",
+                           "소셜 로그인 제공자의 응답이 올바르지 않습니다.")
+
+        try:
+            identity = oauth_provider.fetch_identity(name, code, state)
+        except oauth_provider.OAuthProviderError as exc:
+            logger.warning("소셜 로그인 실패 (provider=%s): %s", name, exc)
+            raise ApiError(502, "OAUTH_PROVIDER_ERROR",
+                           "소셜 로그인 제공자와 통신하지 못했습니다.") from exc
+
+        user = _find_or_create_social_user(name, identity)
+        _assert_account_usable(user)
+    except ApiError as exc:
+        return _front_redirect(oauth_error=exc.code)
 
     activity_service.record(user["user_no"], activity_service.LOGIN)
-    return jsonify(_login_response(user))
+    # _login_response 를 쓰지 않고 토큰만 만든다 — 사용자 정보는 프론트가 이 토큰으로
+    # GET /api/auth/me 를 부르면 되고, URL 에 개인정보를 실을 이유가 없다.
+    return _front_redirect(access_token=issue_token(user))

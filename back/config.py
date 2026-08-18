@@ -90,12 +90,26 @@ KAKAO_CLIENT_SECRET = os.getenv("KAKAO_CLIENT_SECRET", "")
 NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
 NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
 
-# 프론트 주소. 콜백 주소는 서버가 여기에 붙여 만든다 —
-#   {OAUTH_REDIRECT_BASE}/oauth/callback/{provider소문자}
-# 프론트가 자기 콜백 주소를 따로 들고 있으면 값이 두 곳에 생기고, 한쪽만 고쳐서
-# 프로바이더 콘솔 등록값과 어긋나는 순간 redirect_uri_mismatch 가 난다.
-# **여기를 바꾸면 세 콘솔의 등록 URI 도 함께 고쳐야 한다.**
+# ⚠️ 아래 두 주소는 **역할이 다르다.** 이름이 비슷해 자주 헷갈리는데, 바꿔 쓰면
+#    증상이 프로바이더의 redirect_uri_mismatch 로만 나타나 원인을 찾기 어렵다.
+#      OAUTH_CALLBACK_BASE — 프로바이더가 브라우저를 **되돌려보낼 백엔드 주소**
+#                            (프로바이더 콘솔에 등록하는 값이 여기서 나온다)
+#      OAUTH_REDIRECT_BASE — 로그인을 끝낸 뒤 **사용자를 보낼 프론트 주소**
+#                            (콘솔과는 아무 상관이 없다)
+
+# 프론트 주소. 콜백이 로그인을 마친 브라우저를 여기로 302 한다 —
+#   {OAUTH_REDIRECT_BASE}/#access_token=...  또는  /#oauth_error=...
+# 프로바이더 콘솔에 등록할 값이 **아니다** (그것은 아래 OAUTH_CALLBACK_BASE 쪽이다).
 OAUTH_REDIRECT_BASE = os.getenv("OAUTH_REDIRECT_BASE", "http://localhost:5173")
+
+# 백엔드 자신의 주소. 프로바이더에게 알려줄 콜백 주소를 서버가 여기에 붙여 만든다 —
+#   {OAUTH_CALLBACK_BASE}/api/auth/{provider소문자}/callback
+# 프로바이더는 브라우저를 프론트가 아니라 **백엔드로** 되돌려보낸다 (프론트는
+# window.location.assign('/api/auth/kakao') 로 시작만 시킨다). 그래서 위
+# OAUTH_REDIRECT_BASE 와 값이 다르다.
+# **여기를 바꾸면 세 콘솔의 등록 URI 도 함께 고쳐야 한다** — 서버가 보내는 값과
+# 글자 하나라도 다르면 프로바이더가 redirect_uri_mismatch 로 돌려보낸다.
+OAUTH_CALLBACK_BASE = os.getenv("OAUTH_CALLBACK_BASE", "http://localhost:5000")
 
 # 프로바이더 API 호출 타임아웃(초). 사람이 로그인 버튼을 누르고 기다리는 중이라
 # 짧게 둔다. 119 신고(REPORT_HTTP_TIMEOUT_SEC)와 값을 나눠 쓰지 않는 이유는

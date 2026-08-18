@@ -4,14 +4,14 @@ users.user_pw 의 NOT NULL 을 풀어야 소셜 계정을 넣을 수 있는데, 
 있다고 가정하던 코드들이 NULL 을 만나 터진다. 여기서 그 지점들을 고정한다.
 
 여기서 다루는 것은 **비밀번호를 가정하던 경로들이 NULL 을 만났을 때**다. 소셜 계정을
-실제로 만들어 로그인하는 경로(POST /api/auth/oauth/<provider>)는
-tests/test_oauth_login.py 에 있다 — 이 파일의 계정은 conftest.make_social_user 로
-직접 심는다. 프로바이더를 거치지 않으므로 여기 테스트는 외부 스텁이 필요 없다.
+실제로 만들어 로그인하는 경로(GET /api/auth/<provider>/callback)는
+tests/test_oauth_redirect_login.py 에 있다 — 이 파일의 계정은 conftest.make_social_user
+로 직접 심는다. 프로바이더를 거치지 않으므로 여기 테스트는 외부 스텁이 필요 없다.
 
 PUT /api/users/password 의 소셜 가드도 채워졌다. OAuth 로그인이 붙으면서 소셜 계정이
 토큰을 얻을 수 있게 되어 도달 가능한 경로가 됐기 때문이다 (그 회귀 테스트는
-test_oauth_login.py::test_social_account_cannot_change_password — 진짜 소셜 토큰으로
-불러야 의미가 있어서 저쪽에 뒀다).
+test_oauth_redirect_login.py::test_social_account_cannot_change_password — 진짜 소셜
+토큰으로 불러야 의미가 있어서 저쪽에 뒀다).
 """
 import psycopg2
 import pytest

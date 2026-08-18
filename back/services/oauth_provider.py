@@ -12,6 +12,11 @@
 ⚠️ 네이버는 **실패해도 HTTP 200 을 주고 본문 resultcode 로 알린다.** 상태코드만
    보면 인증 실패를 성공으로 착각한다 — 표의 ok_path/ok_value 가 그것을 잡는다.
 
+로그인 방식은 **리다이렉트 하나뿐이다.** 프로바이더는 브라우저를 언제나 백엔드
+콜백(`/api/auth/{provider}/callback`)으로 되돌려보내므로 redirect_uri 도 하나다.
+프론트가 code 를 받아 되돌려주던 SPA/JSON 방식은 걷어냈다 (필요하면 git 히스토리
+e0d6ea6 에 있다).
+
 state (CSRF 방지값)는 **저장하지 않는다.** account_recovery.py 의 인증코드와 같은
 방식으로 HMAC 을 그때그때 계산해 대조한다 — 표를 새로 만들면 팀원 로컬 DB
 마이그레이션까지 줄줄이 따라오는데, 왕복 한 번 쓰고 버릴 값에 치를 비용이 아니다.
@@ -102,7 +107,7 @@ PROVIDERS = {
 def normalize_provider(raw) -> str | None:
     """경로로 받은 값을 표의 키(대문자)로 바꾼다. 미지원이면 None.
 
-    경로는 소문자(`/api/auth/oauth/google`)로 쓰기로 했지만 대문자로 와도 받는다.
+    경로는 소문자(`/api/auth/google`)로 쓰기로 했지만 대문자로 와도 받는다.
     DB 의 user_provider 는 항상 대문자다 (db/schema.sql '상태값 정의' 블록).
     """
     name = str(raw or "").strip().upper()
@@ -122,13 +127,18 @@ def is_configured(provider: str) -> bool:
 
 
 def redirect_uri(provider: str) -> str:
-    """콜백 주소를 **서버가 계산한다.**
+    """프로바이더가 브라우저를 되돌려보낼 곳 — **서버가 계산한다.**
 
     프론트가 자기 주소를 따로 들고 있으면 값이 두 곳에 생기고, 한쪽만 고쳐서
     프로바이더 콘솔에 등록한 값과 어긋나는 순간 redirect_uri_mismatch 가 난다.
-    한 곳(OAUTH_REDIRECT_BASE)에서만 정의하고 프론트는 그 경로에 화면만 붙인다.
+    한 곳(config)에서만 정의한다.
+
+    돌아오는 곳은 **백엔드 자신**이다 (프론트가 아니다). 그래서 프론트 주소인
+    OAUTH_REDIRECT_BASE 가 아니라 OAUTH_CALLBACK_BASE 를 쓴다 — 두 변수의 역할
+    차이는 config.py 주석에 적어 뒀다.
     """
-    return f"{config.OAUTH_REDIRECT_BASE.rstrip('/')}/oauth/callback/{provider.lower()}"
+    return (f"{config.OAUTH_CALLBACK_BASE.rstrip('/')}"
+            f"/api/auth/{provider.lower()}/callback")
 
 
 # ---------- state — 저장하지 않고 계산해 대조한다 ----------
@@ -178,7 +188,13 @@ def verify_state(provider: str, state, now: float | None = None) -> bool:
 
 
 def authorize_url(provider: str, state: str) -> str:
-    """프론트가 사용자를 보낼 동의화면 주소."""
+    """사용자를 보낼 동의화면 주소.
+
+    ⚠️ 여기 실리는 redirect_uri 와 _exchange_code 가 보내는 redirect_uri 는
+       **글자 하나까지 같아야** 한다 (프로바이더가 대조한다). 그래서 두 곳 모두
+       같은 redirect_uri() 를 부른다 — 한쪽만 다른 값을 만들면 동의화면은 열리는데
+       토큰 교환에서만 실패하는, 원인 찾기 어려운 버그가 난다.
+    """
     spec = PROVIDERS[provider]
     client_id, _ = credentials(provider)
     params = {
@@ -230,7 +246,8 @@ def _exchange_code(provider: str, code: str, state: str) -> str:
         "code": code,
         "client_id": client_id,
         "client_secret": client_secret,
-        # 동의화면에 보냈던 값과 **글자 하나까지 같아야** 한다 (프로바이더가 대조한다)
+        # 동의화면에 보냈던 값과 **글자 하나까지 같아야** 한다 (프로바이더가 대조한다).
+        # authorize_url 과 같은 함수를 부르는 것이 그 보장이다.
         "redirect_uri": redirect_uri(provider),
     }
     if spec["state_in_token"]:
@@ -278,7 +295,8 @@ def fetch_identity(provider: str, code: str, state: str = "") -> dict:
     빠진 채로 진행하면 서로 다른 사람이 같은 행에 묶인다.
     """
     spec = PROVIDERS[provider]
-    payload = _fetch_userinfo(provider, _exchange_code(provider, code, state))
+    payload = _fetch_userinfo(provider,
+                              _exchange_code(provider, code, state))
 
     provider_id = _dig(payload, spec["id_path"])
     if provider_id is None or str(provider_id).strip() == "":
