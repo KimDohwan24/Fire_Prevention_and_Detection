@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { authApi } from '../api';
 import AppHeader from '../components/AppHeader';
+import EventDetailModal from '../components/dashboard/EventDetailModal';
 import {
   AlertStatusSummary,
   CctvHealthList,
@@ -38,6 +39,7 @@ const createMonitoringPath = (params = {}) => {
 function Dashboard() {
   const navigate = useNavigate();
   const [trendDays, setTrendDays] = useState(7);
+  const [selectedEvent, setSelectedEvent] = useState(null);
   const {
     currentUser,
     cctvs,
@@ -335,13 +337,17 @@ function Dashboard() {
             events={metrics.recentEvents}
             loading={isLoading}
             error={errors.events}
-            onOpenEvent={(event) => openMonitoring({
-              event_no: event.event_no,
-              cctv_no: event.cctv_no,
-            })}
+            onOpenEvent={setSelectedEvent}
           />
         </section>
       </main>
+
+      {selectedEvent && (
+        <EventDetailModal
+          event={selectedEvent}
+          onClose={() => setSelectedEvent(null)}
+        />
+      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@ import CctvPlayer from '../components/CctvPlayer';
 import ItsCctvModal from '../components/ItsCctvModal';
 import GisMap from '../components/GisMap';
 import AppHeader from '../components/AppHeader';
+import { appendLocalActivityLog, getLocalActivityLogs, normalizeActivityRecord } from '../utils/activityLog';
 
 const DEFAULT_AGENCIES = [];
 const INITIAL_CCTVS = [];
@@ -468,6 +469,7 @@ function Monitoring() {
           event_class: activeAlertBanner?.event_class || 'FLAME_SMOKE',
           event_confidence: (activeAlertBanner?.confidence || 98) / 100,
           event_first_detected_at: activeAlertBanner?.detected_at || new Date().toISOString(),
+          isTest: Boolean(activeAlertBanner?.isTest),
           thumbnail_url: null,
           reports: []
         });
@@ -536,6 +538,19 @@ function Monitoring() {
     showToast(`🚨 [비상 테스트] (${testData.cctv_name}) 화재 비상 배너가 동작되었습니다.`);
   };
 
+  // 테스트 알림은 서버 조치 없이 화면과 테스트 로그만 종료한다.
+  const handleEndTestAlert = () => {
+    if (!activeAlertBanner?.isTest && !selectedEventDetail?.isTest) return;
+
+    setIsDetailLoading(false);
+    setSelectedEventDetail(null);
+    setIsBannerDismissed(true);
+    setActionNotice(null);
+    setActiveAlertBanner(null);
+    setEventLogs((previousLogs) => previousLogs.filter((log) => !log.isTest));
+    showToast('✅ 비상 알림 테스트가 종료되었습니다.');
+  };
+
   // 알림 응답 (화재 확인 / 오탐 취소)
   const handleRespondAlert = async (action) => {
     const alertNo = activeAlertBanner?.alert_no;
@@ -545,7 +560,7 @@ function Monitoring() {
     const confidence = activeAlertBanner?.confidence || 98;
     const dateStr = new Date().toISOString().substring(0, 16).replace('T', ' ');
 
-    if (activeAlertBanner?.isTest || !alertNo) {
+    if (activeAlertBanner?.isTest || selectedEventDetail?.isTest || !alertNo) {
       setActionNotice('테스트 알림은 서버 조치 대상이 아닙니다. 실제 발송 알림에서만 처리할 수 있습니다.');
       return;
     }
@@ -576,17 +591,16 @@ function Monitoring() {
       if (alertNo && !resolvedList.includes(alertNo)) resolvedList.push(alertNo);
       localStorage.setItem('resolvedEvents', JSON.stringify(resolvedList));
 
-      // 3. 마이페이지 표시용 로컬 활동 기록을 추가한다.
-      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
-      const newActivity = {
+      // 3. 마이페이지 표시용 활동 기록을 공통 저장소에 추가한다.
+      appendLocalActivityLog({
         id: targetEventNo,
+        user_no: currentUser?.user_no,
+        activity_type: isConfirm ? 'FIRE_CONFIRMED' : 'FALSE_ALARM_CANCELLED',
         time: dateStr,
         type: isConfirm ? 'fire' : 'false_alarm',
         title: isConfirm ? '🔥 화재 확인 및 119 신고 절차 시작' : '✅ 화재 알림 오탐지 취소 처리',
         detail: `${cctvName} (${cctvLoc}) - ${isConfirm ? `신뢰도 ${confidence}% 신고 처리 요청` : '관제 요원 오탐 취소 완료'}`
-      };
-      userLogs.unshift(newActivity);
-      localStorage.setItem('userActivityLogs', JSON.stringify(userLogs.slice(0, 30)));
+      });
 
       // 4. 오탐인 경우 falseAlarmEvents 스토리지에도 기록 추가
       if (!isConfirm) {
@@ -1077,20 +1091,34 @@ function Monitoring() {
               >
                 <span>🔥 상세보기</span>
               </button>
-              <button
-                onClick={() => handleRespondAlert('CANCEL')}
-                className="h-8 px-3 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer"
-                title="오탐지 취소 및 기록 저장"
-              >
-                오탐지 취소
-              </button>
-              <button
-                onClick={() => handleRespondAlert('READ')}
-                className="h-8 px-3 bg-black hover:bg-neutral-900 text-white font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer"
-                title="화재 확인 및 119 신고 시작"
-              >
-                화재 확인
-              </button>
+              {activeAlertBanner.isTest ? (
+                <button
+                  type="button"
+                  onClick={handleEndTestAlert}
+                  className="h-8 px-3 bg-black hover:bg-neutral-900 text-white font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer inline-flex items-center gap-1"
+                  title="서버 조치 없이 비상 알림 테스트 종료"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  테스트 종료
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => handleRespondAlert('CANCEL')}
+                    className="h-8 px-3 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer"
+                    title="오탐지 취소 및 기록 저장"
+                  >
+                    오탐지 취소
+                  </button>
+                  <button
+                    onClick={() => handleRespondAlert('READ')}
+                    className="h-8 px-3 bg-black hover:bg-neutral-900 text-white font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer"
+                    title="화재 확인 및 119 신고 시작"
+                  >
+                    화재 확인
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -1249,20 +1277,33 @@ function Monitoring() {
             {/* 모달 푸터 액션 (shrink-0) */}
             <div className="p-4 border-t border-hairline bg-surface-soft/60 flex items-center justify-between shrink-0 rounded-b-2xl">
               <div className="flex items-center gap-3">
-                <button
-                  onClick={() => handleRespondAlert('READ')}
-                  className="h-11 px-5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-md flex items-center gap-1.5"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>화재 확인 및 119 신고 시작</span>
-                </button>
-                <button
-                  onClick={() => handleRespondAlert('CANCEL')}
-                  className="h-11 px-4 bg-canvas border border-hairline hover:border-ink text-ink font-semibold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
-                >
-                  <XCircle className="w-4 h-4 text-mute" />
-                  <span>오탐지 취소</span>
-                </button>
+                {activeAlertBanner?.isTest || selectedEventDetail?.isTest ? (
+                  <button
+                    type="button"
+                    onClick={handleEndTestAlert}
+                    className="h-11 px-5 bg-black hover:bg-neutral-900 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-md flex items-center gap-1.5"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>테스트 종료</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => handleRespondAlert('READ')}
+                      className="h-11 px-5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-md flex items-center gap-1.5"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>화재 확인 및 119 신고 시작</span>
+                    </button>
+                    <button
+                      onClick={() => handleRespondAlert('CANCEL')}
+                      className="h-11 px-4 bg-canvas border border-hairline hover:border-ink text-ink font-semibold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                    >
+                      <XCircle className="w-4 h-4 text-mute" />
+                      <span>오탐지 취소</span>
+                    </button>
+                  </>
+                )}
               </div>
 
               <button
@@ -1401,7 +1442,7 @@ function Monitoring() {
             {/* 조치 이력 목록 스크롤 영역 */}
             <div className="p-6 overflow-y-auto space-y-3 shrink flex-1 max-h-[60vh]">
               {(() => {
-                const logs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
+                const logs = getLocalActivityLogs(currentUser?.user_no).map(normalizeActivityRecord);
                 if (logs.length === 0) {
                   return (
                     <div className="py-12 text-center text-mute space-y-2">
