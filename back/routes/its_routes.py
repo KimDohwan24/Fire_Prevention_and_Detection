@@ -23,6 +23,12 @@ def _to_public_item(item: dict) -> dict | None:
 
     return {
         "cctv_name": name,
+        # 왼쪽 가지는 사실상 죽어 있다 — 2026-08-18 실측으로 ITS 개방 API 의
+        # roadsectionid 는 전 건이 빈 문자열이다(고속도로 282건·국도 23건 모두).
+        # 그래서 cctv_location 에는 항상 카메라 이름이 그대로 들어간다
+        # ('[수도권제1순환선] 판교분기점'). 명세상 언제든 채워 보낼 수 있으니
+        # 왼쪽은 남겨 둔다. 119 로 나가는 주소는 이 값이 아니라 좌표를
+        # 역지오코딩해 등록 시 저장하는 cctv_address 다.
         "cctv_location": item.get("roadsectionid") or name,
         "cctv_lat": lat,
         "cctv_lng": lng,
