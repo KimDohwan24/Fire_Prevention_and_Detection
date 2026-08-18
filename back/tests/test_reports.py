@@ -13,6 +13,7 @@ REPORT_FIELDS = {
     "report_sequence", "report_external_id", "report_trigger_reason",
     "report_status", "report_address", "report_distance_km",
     "report_attempt_count", "reported_at", "report_accepted_at",
+    "report_dispatched_at", "report_dispatch",
 }
 
 
@@ -266,3 +267,25 @@ def test_active_report_index_includes_dispatched():
     assert row is not None
     for status in ("SENDING", "ACCEPTED", "DISPATCHED"):
         assert status in row["indexdef"]
+
+
+def test_report_list_exposes_dispatch_fields(client, admin_headers):
+    """목록에 출동 정보가 실린다 — 대시보드가 '출동 접수'로 표기할 근거."""
+    event_no = make_event()
+    report_no = make_report(event_no, status="ACCEPTED")
+    db.execute(
+        """
+        UPDATE report_119
+        SET report_status = 'DISPATCHED', report_dispatched_at = now(),
+            report_dispatch = %s::jsonb
+        WHERE report_no = %s
+        """,
+        ('{"vehicles": 3, "eta_sec": 240}', report_no),
+    )
+
+    r = client.get("/api/reports", headers=admin_headers)
+
+    item = next(i for i in r.get_json()["items"] if i["report_no"] == report_no)
+    assert item["report_status"] == "DISPATCHED"
+    assert item["report_dispatched_at"] is not None
+    assert item["report_dispatch"]["vehicles"] == 3
