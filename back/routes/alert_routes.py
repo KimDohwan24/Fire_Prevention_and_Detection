@@ -10,7 +10,7 @@ from flask import Blueprint, g, jsonify, request
 import db
 from auth import login_required
 from errors import ApiError
-from services import report_service
+from services import activity_service, report_service
 from utils.pagination import get_page_params, paged_response
 
 bp = Blueprint("alerts", __name__)
@@ -58,10 +58,16 @@ def respond_alert(alert_no: int):
         raise ApiError(400, "BAD_REQUEST", "action 은 READ 또는 CANCEL 이어야 합니다.",
                        field="action")
 
+    # cctv_name 은 활동이력 요약 문구에 쓴다 — 어차피 한 번 읽는 김에 조인해 둔다
+    # (list_alerts 가 쓰는 것과 같은 조인이다)
     alert = db.query_one(
         """
-        SELECT alert_no, event_no, user_no, alert_status, alert_responded_at
-        FROM alert WHERE alert_no = %s
+        SELECT a.alert_no, a.event_no, a.user_no, a.alert_status, a.alert_responded_at,
+               c.cctv_name
+        FROM alert a
+        JOIN fire_event e ON e.event_no = a.event_no
+        JOIN cctv c ON c.cctv_no = e.cctv_no
+        WHERE a.alert_no = %s
         """,
         (alert_no,),
     )
@@ -116,6 +122,19 @@ def respond_alert(alert_no: int):
               AND alert_status IN ('SENT', 'NO_RESPONSE')
             """,
             (new_status, row["alert_responded_at"], alert["event_no"], alert_no),
+        )
+
+    # 관제 조치 이력 — 종류만 남기면 "화재를 확인했다"가 전부 똑같이 보이므로
+    # 대상 이벤트 번호와 카메라 이름까지 같이 남긴다.
+    if action == "READ":
+        activity_service.record(
+            g.user["user_no"], activity_service.FIRE_CONFIRMED,
+            target_no=alert["event_no"], detail=f"{alert['cctv_name']} 화재 확인",
+        )
+    else:
+        activity_service.record(
+            g.user["user_no"], activity_service.FIRE_DISMISSED,
+            target_no=alert["event_no"], detail=f"{alert['cctv_name']} 오탐 취소",
         )
 
     if action == "READ" and alert["alert_status"] == "SENT":

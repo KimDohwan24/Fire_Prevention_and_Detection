@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { adminUpgradeApi } from '../api';
 import {
   User, ShieldCheck, Mail, Phone, Building, Calendar,
   Lock, Bell, Shield, Key, CheckCircle, Clock,
-  LogOut, ArrowLeft, Edit3, Camera, Save, X, AlertTriangle,
+  ArrowLeft, Edit3, Camera, Save, X, AlertTriangle,
   FileText, Activity, Smartphone, Monitor, ShieldAlert, Video, MapPin, ExternalLink, Loader2,
-  Trash2, ChevronLeft, ChevronRight
+  LogOut, RotateCcw, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 import CctvPlayer from '../components/CctvPlayer';
-import { authApi, cctvApi, eventApi, getCurrentUserFromStorage, userApi } from '../api';
+import AppHeader from '../components/AppHeader';
+import { authApi, cctvApi, getCurrentUserFromStorage, userApi } from '../api';
 
 export default function MyPage() {
   const navigate = useNavigate();
@@ -18,7 +19,10 @@ export default function MyPage() {
   // 내 활동 및 접속 이력 페이지네이션 및 로딩 상태
   const [activityPage, setActivityPage] = useState(1);
   const [isActivitiesLoading, setIsActivitiesLoading] = useState(true);
-  const [isDeletingActivities, setIsDeletingActivities] = useState(false);
+  const [activityTotal, setActivityTotal] = useState(0);
+  const [activityTotalPages, setActivityTotalPages] = useState(0);
+  const [activityError, setActivityError] = useState('');
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0);
   const ITEMS_PER_PAGE = 5;
 
   // 사용자 프로필 정보 (실시간 DB / 세션 복원 및 안전한 초기값)
@@ -48,7 +52,6 @@ export default function MyPage() {
     smsNotify: true,
     emailNotify: true,
     pushNotify: true,
-    autoNotify119: true,
     nightMode: true
   });
 
@@ -147,80 +150,53 @@ export default function MyPage() {
 
     loadCurrentUserAndCctvs();
 
-    // 3. 최근 활동 이력 수신 (백엔드 API + localStorage 조치 내역 통합)
-    setIsActivitiesLoading(true);
-    eventApi.list({ size: 30 }).then(res => {
-      const items = res?.items || res || [];
-      const falseAlarmList = JSON.parse(localStorage.getItem('falseAlarmEvents') || '[]');
-      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
-
-      const mappedActs = Array.isArray(items) ? items.map(ev => {
-        const isFalse = ev.event_status === 'FALSE_ALARM' || ev.event_status === 'CANCEL' || ev.alert_status === 'CANCEL' || falseAlarmList.includes(ev.event_no);
-        return {
-          id: ev.event_no,
-          time: ev.event_first_detected_at ? ev.event_first_detected_at.substring(0, 16).replace('T', ' ') : '2026-08-11 12:00',
-          type: isFalse ? 'false_alarm' : (ev.event_status === 'CONFIRMED' || ev.event_class === 'FLAME_SMOKE' ? 'fire' : 'system'),
-          title: isFalse 
-            ? '✅ 화재 알림 오탐지 취소 처리' 
-            : (ev.event_class === 'FLAME_SMOKE' ? '🔥 화재 및 연기 감지' : '⚠️ 화재 의심 상태 감지'),
-          detail: `${ev.cctv_name || '카메라'} (${ev.cctv_location || 'A동 관제 구역'}) - ${isFalse ? '관제 요원 오탐 취소 완료' : '실시간 AI 감지'}`
-        };
-      }) : [];
-
-      // 사용자가 직접 조치한 userLogs(오탐 취소 / 119 출동 승인)를 최우선 상단에 통합
-      const combined = [...userLogs, ...mappedActs];
-      const uniqueActs = Array.from(new Map(combined.map(item => [item.id, item])).values());
-      setActivities(uniqueActs);
-    }).catch(err => {
-      console.warn('MyPage 활동이력 로드 오류:', err);
-      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
-      if (userLogs.length > 0) setActivities(userLogs);
-    }).finally(() => {
-      setIsActivitiesLoading(false);
-    });
   }, [navigate]);
 
-  // 활동 이력 전체 삭제
-  const handleClearActivities = () => {
-    if (activities.length === 0) {
-      alert('삭제할 활동 이력이 존재하지 않습니다.');
-      return;
-    }
-    if (confirm('내 활동 및 접속 이력을 모두 삭제하시겠습니까?')) {
-      setIsDeletingActivities(true);
-      setTimeout(() => {
-        setActivities([]);
-        localStorage.removeItem('userActivityLogs');
-        localStorage.setItem('falseAlarmEvents', '[]');
-        setActivityPage(1);
-        setIsDeletingActivities(false);
-        showToast('활동 이력이 성공적으로 모두 삭제되었습니다.');
-      }, 400);
-    }
-  };
+  useEffect(() => {
+    if (!currentUser?.user_no) return;
 
-  // 개별 활동 이력 삭제
-  const handleDeleteSingleActivity = (actId) => {
-    setActivities(prev => {
-      const updated = prev.filter(a => a.id !== actId);
-      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
-      const filteredUserLogs = userLogs.filter(a => a.id !== actId);
-      localStorage.setItem('userActivityLogs', JSON.stringify(filteredUserLogs));
-      
-      const newTotalPages = Math.max(1, Math.ceil(updated.length / ITEMS_PER_PAGE));
-      if (activityPage > newTotalPages) {
-        setActivityPage(newTotalPages);
-      }
-      return updated;
+    let isCurrentRequest = true;
+    setIsActivitiesLoading(true);
+    setActivityError('');
+
+    userApi.activities(currentUser.user_no, {
+      page: activityPage,
+      size: ITEMS_PER_PAGE,
+    }).then((res) => {
+      if (!isCurrentRequest) return;
+
+      const items = Array.isArray(res?.items) ? res.items : [];
+      setActivities(items.map((activity) => {
+        const isLogin = activity.activity_type === 'LOGIN';
+        return {
+          id: activity.activity_no,
+          time: activity.activity_at
+            ? activity.activity_at.substring(0, 16).replace('T', ' ')
+            : '-',
+          type: isLogin ? 'login' : 'logout',
+          title: isLogin ? '로그인' : '로그아웃',
+          detail: isLogin
+            ? 'FireGuard에 접속했습니다.'
+            : 'FireGuard에서 로그아웃했습니다.',
+        };
+      }));
+      setActivityTotal(res?.total_count || 0);
+      setActivityTotalPages(res?.total_pages || 0);
+    }).catch((error) => {
+      if (!isCurrentRequest) return;
+      console.warn('MyPage 활동 이력 로드 오류:', error);
+      setActivities([]);
+      setActivityTotal(0);
+      setActivityTotalPages(0);
+      setActivityError(error.message || '활동 이력을 불러오지 못했습니다.');
+    }).finally(() => {
+      if (isCurrentRequest) setIsActivitiesLoading(false);
     });
-    showToast('해당 활동 이력이 삭제되었습니다.');
-  };
 
-  const totalActivityPages = Math.max(1, Math.ceil(activities.length / ITEMS_PER_PAGE));
-  const currentPaginatedActivities = activities.slice(
-    (activityPage - 1) * ITEMS_PER_PAGE,
-    activityPage * ITEMS_PER_PAGE
-  );
+    return () => {
+      isCurrentRequest = false;
+    };
+  }, [currentUser?.user_no, activityPage, activityRefreshKey]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -231,8 +207,14 @@ export default function MyPage() {
 
   const isAdmin = currentUser?.role === 'admin';
 
-  const handleLogout = () => {
-    authApi.logout();
+  const handleResetActivities = () => {
+    setActivityPage(1);
+    setActivityRefreshKey((current) => current + 1);
+    showToast('활동 이력을 최신 상태로 초기화했습니다.');
+  };
+
+  const handleLogout = async () => {
+    await authApi.logout();
     navigate('/login');
   };
 
@@ -370,58 +352,11 @@ const handleSavePassword = async (e) => {
         </div>
       )}
 
-      {/* 1. 상단 네비게이션 바 (GNB) */}
-      <header className="flex items-center justify-between px-6 h-14 border-b border-hairline shrink-0 bg-canvas z-20 sticky top-0">
-        <div className="flex items-center gap-3">
-          <Link to="/dashboard" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
-            <AlertTriangle className="w-5 h-5 text-ink" />
-            <span className="font-display text-heading-md tracking-tight">FireGuard</span>
-          </Link>
-
-          {/* 권한 표시 배지 */}
-          {isAdmin ? (
-            <span className="flex items-center gap-1.5 text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 font-semibold px-3 py-1 rounded-full border border-amber-500/30">
-              <ShieldCheck className="w-4 h-4" /> 관리자 권한
-            </span>
-          ) : (
-            <span className="text-xs bg-surface-soft text-mute px-2.5 py-1 rounded-full border border-hairline">
-              일반 관제회원
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-6">
-          <nav className="flex items-center gap-6 text-body-sm-strong text-body">
-            <span className="text-ink font-bold underline decoration-ink underline-offset-4 cursor-default">마이페이지</span>
-
-            <button onClick={() => navigate('/dashboard')} className="hover:text-ink transition-colors cursor-pointer">
-              CCTV 모니터링
-            </button>
-
-            {isAdmin && (
-              <button
-                onClick={() => navigate('/admin')}
-                className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-bold bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3 py-1 rounded-full transition-all text-xs cursor-pointer"
-              >
-                <span>관리자 페이지</span>
-              </button>
-            )}
-          </nav>
-
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-white font-bold bg-neutral-900 dark:bg-neutral-800 px-3 py-1 rounded-full border border-neutral-700 hidden sm:inline-flex items-center shadow-xs">
-              {currentUser?.name ? `${currentUser.name.replace(/\s*님$/, '')}님` : '사용자님'}
-            </span>
-            <button
-              onClick={handleLogout}
-              className="flex items-center gap-2 bg-primary text-on-primary px-4 h-[34px] rounded-full text-button-md hover:bg-ink-deep transition-colors focus:outline-none focus-visible:outline-none text-xs cursor-pointer"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>로그아웃</span>
-            </button>
-          </div>
-        </div>
-      </header>
+      <AppHeader
+        currentPage="mypage"
+        currentUser={currentUser}
+        onLogout={handleLogout}
+      />
 
       {/* 메인 컨텐츠 영역 */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-8 space-y-8">
@@ -591,13 +526,13 @@ const handleSavePassword = async (e) => {
                 <Video className="w-5 h-5 text-ink" />
                 <span>최근 등록 CCTV ({isCctvsLoading ? '조회중...' : `${Math.min(myCctvs.length, 3)} / ${myCctvs.length}대`})</span>
               </h3>
-              <p className="text-body-sm text-mute mt-0.5">최근 등록한 CCTV 3대의 상태를 확인합니다. 전체 모니터링은 대시보드에서 진행하세요.</p>
+              <p className="text-body-sm text-mute mt-0.5">최근 등록한 CCTV 3대의 상태를 확인합니다. 전체 영상과 지도는 실시간 관제에서 확인하세요.</p>
             </div>
             <button
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate('/monitoring')}
               className="flex items-center gap-1.5 text-xs text-primary hover:text-ink font-semibold px-3 py-1.5 rounded-full border border-hairline hover:bg-surface-soft transition-colors shrink-0 self-start sm:self-auto cursor-pointer"
             >
-              <span>대시보드 지도에서 전체 확인</span>
+              <span>실시간 관제에서 전체 확인</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -669,9 +604,6 @@ const handleSavePassword = async (e) => {
                 <Bell className="w-5 h-5 text-ink" />
                 <h3 className="text-heading-md font-bold text-ink">화재 경보 & 알림 설정</h3>
               </div>
-              <span className="text-caption-sm text-mute bg-surface-soft px-2.5 py-1 rounded-full border border-hairline">
-                실시간 119 자동 연동
-              </span>
             </div>
 
             <div className="space-y-4">
@@ -729,23 +661,7 @@ const handleSavePassword = async (e) => {
                 </button>
               </div>
 
-              {/* 토글 4: 119 소방서 자동 신고 동의 */}
-              <div className="flex items-center justify-between p-3.5 bg-amber-500/5 border border-amber-500/20 rounded-xl">
-                <div className="flex items-start gap-3">
-                  <ShieldAlert className="w-5 h-5 text-amber-500 mt-0.5" />
-                  <div>
-                    <p className="text-body-sm font-semibold text-ink">119 소방서 자동 긴급 신고 연동</p>
-                    <p className="text-caption-sm text-mute">AI 화재 신뢰도 90% 이상 시 즉시 소방서 지능형 자동 신고</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => toggleSetting('autoNotify119')}
-                  className={`w-12 h-6 rounded-full transition-colors relative cursor-pointer focus:outline-none ${settings.autoNotify119 ? 'bg-amber-600' : 'bg-surface-soft border border-hairline'}`}
-                >
-                  <span className={`absolute top-1 w-4 h-4 rounded-full bg-canvas transition-transform ${settings.autoNotify119 ? 'right-1' : 'left-1'}`} />
-                </button>
-              </div>
+
 
             </div>
           </section>
@@ -757,32 +673,31 @@ const handleSavePassword = async (e) => {
                 <Activity className="w-5 h-5 text-ink" />
                 <h3 className="text-heading-md font-bold text-ink">내 활동 및 접속 이력</h3>
                 <span className="text-caption-sm text-mute font-mono bg-surface-soft px-2.5 py-0.5 rounded-full border border-hairline">
-                  총 {activities.length}건
+                  총 {activityTotal}건
                 </span>
               </div>
-
-              {/* 이력 전체 삭제 버튼 */}
               <button
                 type="button"
-                onClick={handleClearActivities}
-                disabled={activities.length === 0 || isDeletingActivities}
-                className="flex items-center gap-1.5 text-xs text-terminal-red hover:bg-terminal-red/10 border border-terminal-red/20 px-3 py-1.5 rounded-full transition-colors font-semibold cursor-pointer disabled:opacity-40 shrink-0 self-start sm:self-auto"
-                title="모든 활동 이력 삭제"
+                onClick={handleResetActivities}
+                disabled={isActivitiesLoading}
+                className="flex items-center gap-1.5 text-xs text-body hover:text-ink hover:bg-surface-soft border border-hairline px-3 py-1.5 rounded-full transition-colors font-semibold cursor-pointer disabled:opacity-40 shrink-0 self-start sm:self-auto"
+                title="활동 이력 목록을 최신 상태로 다시 불러오기"
               >
-                {isDeletingActivities ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="w-3.5 h-3.5" />
-                )}
-                <span>이력 전체 삭제</span>
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>초기화</span>
               </button>
             </div>
 
             {/* 본문: 로딩 버퍼링 / 비어있음 / 5건씩 슬라이스된 목록 */}
-            {isActivitiesLoading || isDeletingActivities ? (
+            {isActivitiesLoading ? (
               <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl">
                 <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
-                <span className="text-xs font-semibold text-body">활동 이력 데이터를 처리 중입니다... (버퍼링)</span>
+                <span className="text-xs font-semibold text-body">활동 이력을 불러오는 중입니다.</span>
+              </div>
+            ) : activityError ? (
+              <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl text-center">
+                <AlertTriangle className="w-8 h-8 text-terminal-red/60" />
+                <span className="text-xs font-medium">{activityError}</span>
               </div>
             ) : activities.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl text-center">
@@ -792,11 +707,12 @@ const handleSavePassword = async (e) => {
             ) : (
               <div className="space-y-4">
                 <div className="space-y-3">
-                  {currentPaginatedActivities.map((act) => (
+                  {activities.map((act) => (
                     <div key={act.id} className="flex items-start justify-between gap-3.5 p-3.5 rounded-xl border border-hairline/60 hover:bg-surface-soft transition-colors group">
                       <div className="flex items-start gap-3.5 min-w-0 flex-1">
                         <div className="p-2 rounded-lg bg-surface-soft border border-hairline text-ink shrink-0 mt-0.5">
                           {act.type === 'login' && <Monitor className="w-4 h-4 text-blue-500" />}
+                          {act.type === 'logout' && <LogOut className="w-4 h-4 text-mute" />}
                           {act.type === 'fire' && <AlertTriangle className="w-4 h-4 text-red-500" />}
                           {act.type === 'false_alarm' && <ShieldAlert className="w-4 h-4 text-amber-500" />}
                           {act.type === 'admin' && <ShieldCheck className="w-4 h-4 text-amber-500" />}
@@ -814,24 +730,15 @@ const handleSavePassword = async (e) => {
                         </div>
                       </div>
 
-                      {/* 개별 이력 삭제 버튼 */}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteSingleActivity(act.id)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-mute hover:text-terminal-red rounded-lg transition-all cursor-pointer shrink-0"
-                        title="이 항목 삭제"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
                     </div>
                   ))}
                 </div>
 
                 {/* 5건씩 조회 컨트롤러 바 */}
-                {totalActivityPages > 1 && (
+                {activityTotalPages > 1 && (
                   <div className="pt-3 border-t border-hairline/60 flex items-center justify-between text-xs">
                     <span className="text-mute font-mono text-[11px]">
-                      {activityPage} / {totalActivityPages} 페이지 (총 {activities.length}건)
+                      {activityPage} / {activityTotalPages} 페이지 (총 {activityTotal}건)
                     </span>
 
                     <div className="flex items-center gap-1.5">
@@ -845,7 +752,7 @@ const handleSavePassword = async (e) => {
                         <span>이전</span>
                       </button>
 
-                      {Array.from({ length: totalActivityPages }, (_, i) => i + 1).map((pageNum) => (
+                      {Array.from({ length: activityTotalPages }, (_, i) => i + 1).map((pageNum) => (
                         <button
                           key={pageNum}
                           type="button"
@@ -862,8 +769,8 @@ const handleSavePassword = async (e) => {
 
                       <button
                         type="button"
-                        onClick={() => setActivityPage(prev => Math.min(totalActivityPages, prev + 1))}
-                        disabled={activityPage === totalActivityPages}
+                        onClick={() => setActivityPage(prev => Math.min(activityTotalPages, prev + 1))}
+                        disabled={activityPage === activityTotalPages}
                         className="px-2.5 py-1 rounded-lg border border-hairline bg-canvas hover:bg-surface-soft disabled:opacity-40 transition-colors flex items-center gap-1 cursor-pointer font-semibold"
                       >
                         <span>다음</span>
@@ -921,7 +828,6 @@ const handleSavePassword = async (e) => {
                   key={selectedMyCctv.id}
                   streamUrl={selectedMyCctv.stream_url || selectedMyCctv.cctv_stream_url || 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4'}
                   cctvName={selectedMyCctv.name}
-                  isFire={selectedMyCctv.status === 'fire'}
                 />
               </div>
 
@@ -982,11 +888,11 @@ const handleSavePassword = async (e) => {
                 type="button"
                 onClick={() => {
                   setSelectedMyCctv(null);
-                  navigate('/dashboard');
+                  navigate('/monitoring');
                 }}
                 className="flex items-center gap-1.5 text-xs text-primary font-semibold hover:underline cursor-pointer"
               >
-                <span>CCTV 모니터링 화면으로 보기</span>
+                <span>실시간 관제 화면으로 보기</span>
                 <ExternalLink className="w-3.5 h-3.5" />
               </button>
               <button

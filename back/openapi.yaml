@@ -51,6 +51,8 @@ tags:
     description: 인증 (로그인·세션 복원)
   - name: users
     description: 관리자 계정
+  - name: me
+    description: 내 정보 — 토큰 주인의 것만 다룬다 (user_no 를 URL 로 받지 않는다)
   - name: cctvs
     description: 연동 카메라
   - name: its
@@ -188,6 +190,10 @@ paths:
         아이디·비밀번호로 JWT 를 발급받는다. 정지(SUSPENDED)·탈퇴(WITHDRAWN)
         계정은 비밀번호가 맞아도 403 이다.
         로그인에는 비밀번호 작성규칙을 적용하지 않는다 (기존 계정 보장).
+
+        소셜 로그인으로 가입한 계정은 비밀번호가 없어서 이 경로로는 절대 들어올 수
+        없다 — 400 `SOCIAL_ACCOUNT` 로 돌려보낸다. 어느 서비스로 가입했는지까지는
+        알려주지 않으니, 프론트는 소셜 로그인 버튼들을 다시 보여주면 된다.
       requestBody:
         required: true
         content:
@@ -217,15 +223,23 @@ paths:
                   user:
                     $ref: "#/components/schemas/LoginUser"
         "400":
-          description: 필수값 누락 또는 형식 오류 (`BAD_REQUEST`)
+          description: 필수값 누락·형식 오류(`BAD_REQUEST`) 또는 소셜 계정(`SOCIAL_ACCOUNT`)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-              example:
-                code: BAD_REQUEST
-                message: user_id 는 필수입니다.
-                field: user_id
+              examples:
+                missing_field:
+                  summary: 필수값 누락
+                  value:
+                    code: BAD_REQUEST
+                    message: user_id 는 필수입니다.
+                    field: user_id
+                social:
+                  summary: 소셜 로그인 계정
+                  value:
+                    code: SOCIAL_ACCOUNT
+                    message: 소셜 로그인으로 가입한 계정입니다. 해당 서비스로 로그인해주세요.
         "401":
           $ref: "#/components/responses/InvalidCredentials"
         "403":
@@ -234,21 +248,22 @@ paths:
   /api/auth/logout:
     post:
       tags: [auth]
-      summary: 로그아웃
+      summary: 로그아웃 (토큰 폐기 + 이력 기록)
       description: |
-        활동이력에 `LOGOUT` 을 1행 남긴다. **토큰은 무효화되지 않는다** —
-        JWT 는 무상태라 이미 발급한 토큰을 서버가 되돌릴 수 없다.
+        **토큰을 폐기하고** 활동이력에 `LOGOUT` 을 1행 남긴다. 두 가지를 다 한다.
 
-        실제 로그아웃은 프론트가 저장한 토큰을 지우는 것으로 끝난다. 이 엔드포인트는
-        "사용자가 나갔다"는 사실을 서버가 알 수 있는 **유일한 통로**다. 프론트가
-        토큰만 지우고 이걸 안 부르면 `LOGOUT` 행은 영영 쌓이지 않는다.
+        폐기는 사용자 단위다 — **그 사람의 다른 기기도 함께 끊긴다.** 이후 기존
+        토큰으로 보낸 요청은 401 `TOKEN_REVOKED` 를 받는다. 로그아웃 직후 바로
+        다시 로그인하는 것은 정상 동작한다.
 
-        브라우저를 그냥 닫은 경우는 잡히지 않는다 — 명시적 로그아웃만 기록된다.
+        이 엔드포인트를 불러야만 둘 다 일어난다. 프론트가 저장한 토큰만 지우고
+        이걸 건너뛰면 서버 쪽 토큰은 만료(기본 12시간)까지 살아있고 `LOGOUT` 행도
+        쌓이지 않는다. 브라우저를 그냥 닫은 경우도 마찬가지로 잡히지 않는다.
       security:
         - bearerAuth: []
       responses:
         "200":
-          description: 기록 완료
+          description: 폐기·기록 완료
           content:
             application/json:
               schema:
@@ -691,6 +706,12 @@ paths:
                     code: BAD_REQUEST
                     message: "user_phone 은 하이픈 없이 숫자만 입력해야 합니다. (예: 01012345678)"
                     field: user_phone
+                social_password:
+                  summary: 소셜 계정에 비밀번호 설정 시도
+                  value:
+                    code: SOCIAL_ACCOUNT
+                    message: 소셜 로그인 계정에는 비밀번호를 설정할 수 없습니다.
+                    field: user_pw
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -701,18 +722,20 @@ paths:
   /api/users/{user_no}/activities:
     get:
       tags: [users]
-      summary: 활동이력 (접속 · 로그아웃)
+      summary: 활동이력 (지정 사용자)
       description: |
-        해당 사용자의 접속(`LOGIN`)과 로그아웃(`LOGOUT`) 이력을 **최신순**으로 준다.
-        남기는 종류는 이 둘뿐이며 IP·User-Agent 는 수집하지 않는다.
+        해당 사용자의 활동이력을 **최신순**으로 준다. 남기는 종류는
+        `ActivityType` 참고. IP·User-Agent 는 수집하지 않는다.
 
         권한은 계정 수정과 같은 규칙이다 — ADMIN 은 전체, 일반 사용자는 본인 것만.
-        접속 이력은 감사 자료라 남의 것을 아무나 볼 수 없다.
+        활동 이력은 감사 자료라 남의 것을 아무나 볼 수 없다.
 
-        회원 상세 화면의 "최근 로그인"은 첫 번째 `LOGIN` 항목을 쓰면 된다
-        (`?size=1` 로 한 건만 받아도 된다).
+        **본인 이력만 필요하면 `GET /api/me/activities` 를 쓸 것.** 이 경로는
+        관리자가 남의 이력을 보는 화면(회원 상세)을 위한 것이다.
 
-        주의: 로그인 **실패**는 여기 쌓이지 않는다. 그리고 `LOGOUT` 은 프론트가
+        회원 상세 화면의 "최근 로그인"은 `?size=1` 로 받은 첫 `LOGIN` 항목을 쓰면 된다.
+
+        주의: 실패한 시도는 여기 쌓이지 않는다. 그리고 `LOGOUT` 은 프론트가
         `POST /api/auth/logout` 을 불러야만 생긴다 — 브라우저를 그냥 닫으면
         `LOGIN` 만 있고 짝이 되는 `LOGOUT` 이 없는 행이 남는다. 정상이다.
       security:
@@ -748,6 +771,43 @@ paths:
                 message: 본인 계정의 활동이력만 조회할 수 있습니다.
         "404":
           $ref: "#/components/responses/UserNotFound"
+
+  # ---------------------------------------------------------------- 내 정보
+  /api/me/activities:
+    get:
+      tags: [me]
+      summary: 내 활동이력
+      description: |
+        **토큰 주인의** 활동이력을 최신순으로 준다. 남기는 종류는 `ActivityType` 참고.
+
+        `GET /api/users/{user_no}/activities` 와 같은 표를 읽지만 `user_no` 를
+        URL 로 받지 않는다. 그래서 남의 번호를 넣어 훔쳐보는 일이 원천적으로
+        불가능하고, **403 도 404 도 나오지 않는다** — 토큰이 곧 신원이기 때문이다.
+        ADMIN 이라도 이 경로로는 본인 이력만 나온다.
+
+        마이페이지의 "활동 이력" 목록이 쓸 엔드포인트다. 이력이 없으면
+        `items` 가 빈 배열이고, 그것 말고 다른 응답은 없다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: 조회 성공 (이력이 없으면 `items` 가 빈 배열)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/UserActivity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   # ---------------------------------------------------------------- 카메라
   /api/cctvs:
@@ -1624,8 +1684,13 @@ components:
   responses:
     Unauthorized:
       description: |
-        토큰 없음(`UNAUTHORIZED`) · 만료(`TOKEN_EXPIRED`) · 손상(`INVALID_TOKEN`).
-        `TOKEN_EXPIRED` 면 로그인 화면으로 돌려보내야 한다.
+        토큰 없음(`UNAUTHORIZED`) · 만료(`TOKEN_EXPIRED`) · 손상(`INVALID_TOKEN`) ·
+        폐기(`TOKEN_REVOKED`). 넷 다 로그인 화면으로 돌려보내야 하지만,
+        **안내 문구는 갈라주는 편이 낫다.**
+
+        `TOKEN_REVOKED` 는 사용자가 잘못한 게 없는데 튕기는 경우다 — 다른 기기에서
+        로그아웃했거나 관리자가 계정을 정지했을 때 나온다. 이유를 안 알려주면
+        사용자는 영문도 모르고 튕긴 것으로 느낀다.
       content:
         application/json:
           schema:
@@ -1646,6 +1711,11 @@ components:
               value:
                 code: INVALID_TOKEN
                 message: 유효하지 않은 토큰입니다.
+            revoked:
+              summary: 토큰 폐기 (로그아웃·계정 정지)
+              value:
+                code: TOKEN_REVOKED
+                message: 로그아웃되었거나 무효화된 토큰입니다. 다시 로그인해주세요.
 
     Forbidden:
       description: 관리자 권한 필요 (`FORBIDDEN`)
@@ -2039,15 +2109,32 @@ components:
     ActivityType:
       type: string
       description: |
-        `LOGIN` 접속 · `LOGOUT` 로그아웃.
-        로그인 **실패**는 여기 들어오지 않는다 (침입 시도는 접속 이력이 아니다).
-      enum: [LOGIN, LOGOUT]
+        | 값 | 언제 | `activity_target_no` |
+        |---|---|---|
+        | `LOGIN` | 로그인 성공 | 없음 |
+        | `LOGOUT` | 로그아웃 | 없음 |
+        | `PASSWORD_CHANGED` | 비밀번호 변경 성공 | 관리자 변경이면 대상 `user_no` |
+        | `PROFILE_UPDATED` | 프로필 수정 성공 | 수정된 `user_no` |
+        | `FIRE_CONFIRMED` | 알림에 화재 확인(`READ`) 응답 | `event_no` |
+        | `FIRE_DISMISSED` | 알림에 오탐 취소(`CANCEL`) 응답 | `event_no` |
+
+        **실패한 시도는 들어오지 않는다** — 로그인 실패, 거절된 조치 모두 제외다
+        (침입 시도·오조작은 활동 이력이 아니다).
+
+        ⚠️ `PUT /api/users/password` 로 바꾼 비밀번호는 아직 `PASSWORD_CHANGED` 가
+        남지 않는다. 그 경로만 기록이 빠져 있고 별도로 붙일 예정이다.
+      enum: [LOGIN, LOGOUT, PASSWORD_CHANGED, PROFILE_UPDATED,
+             FIRE_CONFIRMED, FIRE_DISMISSED]
 
     UserActivity:
       type: object
       description: |
-        사용자 활동이력 1행 (`GET /api/users/{user_no}/activities`).
+        사용자 활동이력 1행 (`GET /api/me/activities`,
+        `GET /api/users/{user_no}/activities`).
         사용자 1명에 N행이 쌓인다. IP·User-Agent 는 수집하지 않는다.
+
+        `user_no` 는 **행위자**다. 관리자가 남의 계정을 고친 행은 관리자의
+        `user_no` 에 쌓이고 `activity_target_no` 가 수정당한 계정을 가리킨다.
       properties:
         activity_no:
           type: integer
@@ -2055,8 +2142,20 @@ components:
         user_no:
           type: integer
           format: int64
+          description: 행위자
         activity_type:
           $ref: "#/components/schemas/ActivityType"
+        activity_target_no:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            대상 번호. 종류에 따라 `event_no` 이거나 `user_no` 다
+            (어느 쪽인지는 `ActivityType` 표 참고). 대상이 없는 종류는 `null`.
+        activity_detail:
+          type: string
+          nullable: true
+          description: 화면에 그대로 띄울 한 줄 요약. 없을 수 있다.
         activity_at:
           type: string
           format: date-time
@@ -2064,7 +2163,9 @@ components:
       example:
         activity_no: 42
         user_no: 1
-        activity_type: LOGIN
+        activity_type: FIRE_CONFIRMED
+        activity_target_no: 12
+        activity_detail: 정문 카메라 화재 확인
         activity_at: "2026-08-14T09:12:33"
 
     UserCreate:

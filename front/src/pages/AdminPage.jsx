@@ -1,15 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { authApi, cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi } from '../api';
 import {
-  ShieldCheck, Users, PlusCircle, LogOut,
-  AlertTriangle, ArrowLeft, Video, CheckCircle, Trash2,
+  Users, PlusCircle,
+  Video, CheckCircle, Trash2,
   Activity, UserCheck, Search, ShieldAlert, X, Clock,
   Film, AlertCircle, Info, FileText, CheckCircle2, Play,
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
   BadgeCheck, ChevronRight, Edit3, MapPin, Loader2
 } from 'lucide-react';
 import CctvPlayer from '../components/CctvPlayer';
+import AppHeader from '../components/AppHeader';
 
 // 초기 CCTV 데이터
 const INITIAL_CCTVS = [];
@@ -169,8 +170,8 @@ const AdminPage = () => {
     }
   };
 
-  const handleLogout = () => {
-    authApi.logout();
+  const handleLogout = async () => {
+    await authApi.logout();
     navigate('/login');
   };
 
@@ -390,47 +391,11 @@ const AdminPage = () => {
 
   return (
     <div className="min-h-screen bg-canvas text-ink flex flex-col font-ui transition-colors duration-300">
-      {/* 1. 상단 Header */}
-      <header className="h-16 px-6 border-b border-hairline bg-canvas flex items-center justify-between sticky top-0 z-30 shrink-0">
-        <div className="flex items-center gap-4">
-          <Link to="/dashboard" className="flex items-center gap-2 text-ink hover:opacity-80 transition-opacity">
-            <AlertTriangle className="w-5 h-5 text-amber-500" />
-            <span className="font-display text-heading-md tracking-tight">FireGuard</span>
-          </Link>
-
-          <span className="flex items-center gap-1 text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 font-semibold px-3 py-1 rounded-full border border-amber-500/30">
-            <ShieldCheck className="w-4 h-4" /> 관리자 전용 센터
-          </span>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <span className="text-xs text-white font-bold bg-neutral-900 dark:bg-neutral-800 px-3 py-1 rounded-full border border-neutral-700 hidden sm:inline-flex items-center shadow-xs">
-            {currentUser?.name ? `${currentUser.name.replace(/\s*님$/, '')}님` : '관리자님'}
-          </span>
-          <Link
-            to="/mypage"
-            className="flex items-center gap-1.5 text-body-sm text-mute hover:text-ink transition-colors px-3 py-1.5 rounded-full border border-hairline hover:bg-surface-soft"
-          >
-            <User className="w-4 h-4" />
-            <span>마이페이지</span>
-          </Link>
-          <Link
-            to="/dashboard"
-            className="flex items-center gap-1.5 text-body-sm text-mute hover:text-ink transition-colors px-3 py-1.5 rounded-full border border-hairline hover:bg-surface-soft"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>CCTV 모니터링으로 돌아가기</span>
-          </Link>
-
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-2 bg-primary text-on-primary px-4 py-1.5 rounded-full text-xs font-semibold hover:bg-ink-deep transition-colors cursor-pointer"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>로그아웃</span>
-          </button>
-        </div>
-      </header>
+      <AppHeader
+        currentPage="admin"
+        currentUser={currentUser}
+        onLogout={handleLogout}
+      />
 
       {/* 2. 관리자 메인 타이틀 & 탭 네비게이션 */}
       <div className="px-8 py-6 bg-surface-soft border-b border-hairline shrink-0">
@@ -510,7 +475,7 @@ const AdminPage = () => {
                   CCTV 자산 모니터링 목록 ({cctvList.length}대)
                 </h2>
                 <p className="text-xs text-mute mt-1">
-                  등록된 CCTV 정보는 GIS 지도 및 관제 대시보드 화면에 실시간으로 반영됩니다.
+                  등록된 CCTV 정보는 GIS 지도 및 실시간 관제 화면에 반영됩니다.
                 </p>
               </div>
 
@@ -695,7 +660,7 @@ const AdminPage = () => {
               <div className="flex items-center justify-between gap-3 mb-5">
                 <div>
                   <h3 className="text-body-md font-bold text-ink">{agencyForm.agency_no ? '소방서 정보 수정' : '소방서 직접 등록'}</h3>
-                  <p className="mt-1 text-xs text-mute">저장된 정보는 대시보드의 소방서 목록과 지도 마커에 반영됩니다.</p>
+                  <p className="mt-1 text-xs text-mute">저장된 정보는 실시간 관제 화면의 소방서 목록과 지도 마커에 반영됩니다.</p>
                 </div>
                 {agencyForm.agency_no && <button type="button" onClick={resetAgencyForm} className="text-xs font-bold text-mute hover:text-ink cursor-pointer">새로 등록</button>}
               </div>
@@ -1558,7 +1523,6 @@ const AdminPage = () => {
               <CctvPlayer
                 streamUrl={previewCctv.stream_url || previewCctv.cctv_stream_url}
                 cctvName={previewCctv.name}
-                isFire={previewCctv.status === 'fire'}
               />
 
               <div className="bg-surface-soft p-4 rounded-xl border border-hairline space-y-2 text-xs">
