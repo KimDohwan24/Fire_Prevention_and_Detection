@@ -36,6 +36,7 @@ const AdminPage = () => {
   // 폼 및 검색 상태
   const [newCctvName, setNewCctvName] = useState('');
   const [newCctvLoc, setNewCctvLoc] = useState('');
+  const [newCctvStreamUrl, setNewCctvStreamUrl] = useState('');
   const [newCctvStatus, setNewCctvStatus] = useState('normal');
   const [newCctvLat, setNewCctvLat] = useState('37.5665');
   const [newCctvLng, setNewCctvLng] = useState('126.9780');
@@ -302,7 +303,8 @@ const AdminPage = () => {
       };
 
       const payload = {
-        cctv_name: newCctvName,
+        cctv_name: newCctvName.trim(),
+        cctv_stream_url: newCctvStreamUrl.trim(),
         cctv_location: newCctvLoc || '위치 미지정',
         cctv_status: statusMapToApi[newCctvStatus] || 'ACTIVE',
         cctv_lat: parseFloat(newCctvLat) || 37.5665,
@@ -314,6 +316,7 @@ const AdminPage = () => {
 
       setNewCctvName('');
       setNewCctvLoc('');
+      setNewCctvStreamUrl('');
       setNewCctvStatus('normal');
       setNewCctvLat('37.5665');
       setNewCctvLng('126.9780');
@@ -881,9 +884,7 @@ const AdminPage = () => {
                             <span>상세보기</span>
                             <ChevronRight className="w-3.5 h-3.5" />
                           </button>
-                          {user.isSuperAdmin ? (
-                            <span className="text-[11px] text-ink font-bold">최고 관리자 권한 고정</span>
-                          ) : canManageUserRole(user) ? (
+                          {user.isSuperAdmin ? null : canManageUserRole(user) ? (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1526,6 +1527,19 @@ const AdminPage = () => {
                   <option value="fire">🔥 화재 감지 경보 (fire)</option>
                   <option value="offline">🔌 연결 끊김 (offline)</option>
                 </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-ink">스트림 URL *</label>
+                <input
+                  type="url"
+                  value={newCctvStreamUrl}
+                  onChange={(e) => setNewCctvStreamUrl(e.target.value)}
+                  className="w-full block h-11 px-3.5 bg-canvas border border-hairline rounded-xl text-body-sm text-ink outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all font-ui"
+                  placeholder="rtsp://... or https://...m3u8"
+                  required
+                />
+                <p className="text-[11px] text-mute">실시간 영상 재생에 사용하는 스트림 주소를 입력하세요.</p>
               </div>
 
               <div className="space-y-2 pt-2 border-t border-hairline">

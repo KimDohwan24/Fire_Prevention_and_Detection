@@ -155,6 +155,7 @@ function Monitoring() {
           name: sessionUser.user_name || loggedInUser?.name || sessionUser.user_id,
           role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
           rawRole: sessionUser.user_role,
+          authProvider: loggedInUser?.authProvider || null,
         };
 
         loggedInUser = verifiedUser;

@@ -13,7 +13,9 @@ import {
 } from 'lucide-react';
 import { authApi } from '../api';
 import AppHeader from '../components/AppHeader';
+import CctvHealthDetailModal from '../components/dashboard/CctvHealthDetailModal';
 import EventDetailModal from '../components/dashboard/EventDetailModal';
+import TodayKpiDetailModal from '../components/dashboard/TodayKpiDetailModal';
 import {
   AlertStatusSummary,
   CctvHealthList,
@@ -38,8 +40,10 @@ const createMonitoringPath = (params = {}) => {
 
 function Dashboard() {
   const navigate = useNavigate();
-  const [trendDays, setTrendDays] = useState(7);
+  const [trendDays, setTrendDays] = useState(30);
   const [selectedEvent, setSelectedEvent] = useState(null);
+  const [selectedCctv, setSelectedCctv] = useState(null);
+  const [selectedTodayKpi, setSelectedTodayKpi] = useState(null);
   const {
     currentUser,
     cctvs,
@@ -70,10 +74,23 @@ function Dashboard() {
     ? events.find((event) => String(event.event_no) === String(activeAlert.event_no))
     : null;
   const latestConfirmedEvent = metrics.confirmedToday[0] || null;
-  const latestReport = metrics.reportsToday[0] || null;
   const attentionCctv = metrics.unhealthyCctvs[0] || null;
 
   const openMonitoring = (params) => navigate(createMonitoringPath(params));
+
+  const openCctvHealthDetail = (cctv) => {
+    setSelectedCctv(cctv);
+  };
+
+  const openMonitoringFromCctv = (cctv) => {
+    setSelectedCctv(null);
+    openMonitoring({ cctv_no: cctv.cctv_no });
+  };
+
+  const openEventFromTodayKpi = (event) => {
+    setSelectedTodayKpi(null);
+    setSelectedEvent(event);
+  };
 
   const handleLogout = async () => {
     await authApi.logout();
@@ -194,17 +211,14 @@ function Dashboard() {
           />
           <DashboardKpiCard
             icon={<Flame className="w-4 h-4" />}
-            label="오늘 화재 확정"
+            label="오늘 화재 건수"
             value={`${metrics.confirmedToday.length}건`}
             helper="테스트 이벤트 제외"
             detail={latestConfirmedEvent ? `${latestConfirmedEvent.cctv_name || 'CCTV'}에서 최근 감지` : '오늘 확정 이벤트 없음'}
             error={errors.events}
             loading={isLoading}
             critical={metrics.confirmedToday.length > 0}
-            onClick={() => openMonitoring({
-              event_no: latestConfirmedEvent?.event_no,
-              cctv_no: latestConfirmedEvent?.cctv_no,
-            })}
+            onClick={() => setSelectedTodayKpi('confirmed')}
           />
           <DashboardKpiCard
             icon={<PhoneCall className="w-4 h-4" />}
@@ -215,7 +229,7 @@ function Dashboard() {
             error={errors.reports}
             loading={isLoading}
             critical={metrics.failedReportsToday.length > 0}
-            onClick={() => openMonitoring({ event_no: latestReport?.event_no })}
+            onClick={() => setSelectedTodayKpi('reports')}
           />
         </section>
 
@@ -232,9 +246,8 @@ function Dashboard() {
                     key={days}
                     type="button"
                     onClick={() => setTrendDays(days)}
-                    className={`h-7 px-3 rounded-full text-[11px] font-semibold focus:outline-none focus-visible:outline-none ${
-                      trendDays === days ? 'bg-primary text-on-primary' : 'text-body'
-                    }`}
+                    className={`h-7 px-3 rounded-full text-[11px] font-semibold focus:outline-none focus-visible:outline-none ${trendDays === days ? 'bg-primary text-on-primary' : 'text-body'
+                      }`}
                   >
                     {days}일
                   </button>
@@ -274,7 +287,7 @@ function Dashboard() {
               items={metrics.unhealthyCctvs}
               loading={isLoading}
               error={errors.cctvs}
-              onOpenMonitoring={(cctv) => openMonitoring({ cctv_no: cctv.cctv_no })}
+              onOpenMonitoring={openCctvHealthDetail}
             />
           </article>
 
@@ -341,6 +354,26 @@ function Dashboard() {
           />
         </section>
       </main>
+
+      {selectedCctv && (
+        <CctvHealthDetailModal
+          cctv={selectedCctv}
+          onClose={() => setSelectedCctv(null)}
+          onOpenMonitoring={openMonitoringFromCctv}
+        />
+      )}
+
+      {selectedTodayKpi && (
+        <TodayKpiDetailModal
+          type={selectedTodayKpi}
+          items={selectedTodayKpi === 'confirmed' ? metrics.confirmedToday : metrics.reportsToday}
+          events={events}
+          loading={isLoading}
+          error={selectedTodayKpi === 'confirmed' ? errors.events : errors.reports}
+          onClose={() => setSelectedTodayKpi(null)}
+          onOpenEvent={openEventFromTodayKpi}
+        />
+      )}
 
       {selectedEvent && (
         <EventDetailModal

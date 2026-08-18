@@ -15,6 +15,22 @@ export const OAUTH_PROVIDER_PATHS = Object.freeze({
   naver: `${API_BASE_URL}/auth/naver`,
 });
 
+const OAUTH_PENDING_PROVIDER_KEY = 'oauth_pending_provider';
+
+const OAUTH_ERROR_MESSAGES = Object.freeze({
+  ACCESS_DENIED: '소셜 로그인 동의를 취소했습니다.',
+  UNSUPPORTED_PROVIDER: '지원하지 않는 소셜 로그인입니다.',
+  OAUTH_NOT_CONFIGURED: '해당 소셜 로그인이 아직 서버에 설정되지 않았습니다.',
+  INVALID_OAUTH_STATE: '소셜 로그인 요청이 만료되었습니다. 다시 시도해주세요.',
+  OAUTH_PROVIDER_ERROR: '소셜 로그인 제공자와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.',
+  ACCOUNT_SUSPENDED: '정지된 계정이라 로그인할 수 없습니다.',
+  ACCOUNT_WITHDRAWN: '탈퇴한 계정이라 로그인할 수 없습니다.',
+  DUPLICATE_USER_ID: '소셜 계정을 생성하지 못했습니다. 관리자에게 문의해주세요.',
+});
+
+// StrictMode에서 로그인 콜백 effect가 한 번 더 실행되어도 같은 인증 요청을 재사용한다.
+let oauthCompletionPromise = null;
+
 export function getOAuthLoginUrl(provider) {
   const endpoint = OAUTH_PROVIDER_PATHS[provider];
   if (!endpoint) {
@@ -23,8 +39,14 @@ export function getOAuthLoginUrl(provider) {
   return endpoint;
 }
 
+export function getOAuthErrorMessage(code) {
+  return OAUTH_ERROR_MESSAGES[code] || '소셜 로그인에 실패했습니다. 다시 시도해주세요.';
+}
+
 export function startOAuthLogin(provider) {
-  window.location.assign(getOAuthLoginUrl(provider));
+  const endpoint = getOAuthLoginUrl(provider);
+  localStorage.setItem(OAUTH_PENDING_PROVIDER_KEY, provider);
+  window.location.assign(endpoint);
 }
 
 export function isSuperAdminUser(user) {
@@ -59,6 +81,96 @@ export function setCurrentUserToStorage(user) {
   } else {
     localStorage.removeItem('currentUser');
   }
+}
+
+function createSignedInUser(user, authProvider = null) {
+  if (!user?.user_id || user.user_no == null) {
+    throw new Error('로그인 사용자 정보를 확인하지 못했습니다.');
+  }
+
+  const isSuperAdmin = isSuperAdminUser(user);
+  return {
+    id: user.user_id,
+    user_no: user.user_no,
+    name: user.user_name || user.user_id,
+    role: isSuperAdmin || user.user_role === 'ADMIN' ? 'admin' : 'user',
+    rawRole: isSuperAdmin ? 'ADMIN' : user.user_role,
+    isSuperAdmin,
+    authProvider,
+  };
+}
+
+function persistSignedInSession(accessToken, user, authProvider = null) {
+  const signedInUser = createSignedInUser(user, authProvider);
+  setAccessToken(accessToken);
+  setCurrentUserToStorage(signedInUser);
+  appendLocalActivityLog({
+    user_no: signedInUser.user_no,
+    activity_type: 'LOGIN',
+    type: 'login',
+    title: '로그인',
+    detail: 'FireGuard에 로그인했습니다.',
+  });
+  return signedInUser;
+}
+
+function clearOAuthCallbackHash() {
+  const cleanUrl = `${window.location.pathname}${window.location.search}`;
+  window.history.replaceState(window.history.state, document.title, cleanUrl);
+}
+
+/**
+ * 백엔드 OAuth 콜백이 루트 URL 프래그먼트로 전달한 토큰을 세션으로 확정한다.
+ * 성공 시 백엔드는 사용자 정보를 URL에 싣지 않으므로, 저장한 토큰으로 /auth/me를
+ * 호출해 일반 로그인과 같은 currentUser 형태를 만든다.
+ */
+export function completeOAuthLogin() {
+  if (oauthCompletionPromise) return oauthCompletionPromise;
+  if (typeof window === 'undefined') return null;
+
+  const hash = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const params = new URLSearchParams(hash);
+  const accessToken = params.get('access_token');
+  const oauthError = params.get('oauth_error');
+
+  if (!accessToken && !oauthError) return null;
+
+  const pendingProvider = localStorage.getItem(OAUTH_PENDING_PROVIDER_KEY);
+  localStorage.removeItem(OAUTH_PENDING_PROVIDER_KEY);
+  clearOAuthCallbackHash();
+
+  oauthCompletionPromise = (async () => {
+    if (oauthError) {
+      const error = new Error(getOAuthErrorMessage(oauthError));
+      error.code = oauthError;
+      throw error;
+    }
+
+    setAccessToken(accessToken);
+
+    try {
+      const sessionResponse = await request('/auth/me');
+      const sessionUser = sessionResponse?.user || sessionResponse;
+      const signedInUser = persistSignedInSession(
+        accessToken,
+        sessionUser,
+        pendingProvider,
+      );
+      return { user: signedInUser, provider: pendingProvider };
+    } catch {
+      setAccessToken(null);
+      setCurrentUserToStorage(null);
+      throw new Error('소셜 로그인 세션을 확인하지 못했습니다. 다시 시도해주세요.');
+    }
+  })();
+
+  oauthCompletionPromise = oauthCompletionPromise.finally(() => {
+    oauthCompletionPromise = null;
+  });
+
+  return oauthCompletionPromise;
 }
 
 async function request(endpoint, options = {}) {
@@ -116,30 +228,17 @@ export const authApi = {
       body: JSON.stringify({ user_id, user_pw }),
     });
     if (res?.access_token) {
-      const isSuperAdmin = isSuperAdminUser(res.user);
-      const signedInUser = {
-        id: res.user.user_id,
-        user_no: res.user.user_no,
-        name: res.user.user_name,
-        role: isSuperAdmin || res.user.user_role === 'ADMIN' ? 'admin' : 'user',
-        rawRole: isSuperAdmin ? 'ADMIN' : res.user.user_role,
-        isSuperAdmin,
-      };
-      setAccessToken(res.access_token);
-      setCurrentUserToStorage(signedInUser);
-      appendLocalActivityLog({
-        user_no: signedInUser.user_no,
-        activity_type: 'LOGIN',
-        type: 'login',
-        title: '로그인',
-        detail: 'FireGuard에 로그인했습니다.',
-      });
+      persistSignedInSession(res.access_token, res.user);
     }
     return res;
   },
 
   oauthLogin: (provider) => {
-    startOAuthLogin(provider);
+    return startOAuthLogin(provider);
+  },
+
+  completeOAuthLogin: () => {
+    return completeOAuthLogin();
   },
 
   me: async () => {
@@ -203,6 +302,7 @@ export const authApi = {
       }
       setAccessToken(null);
       setCurrentUserToStorage(null);
+      localStorage.removeItem(OAUTH_PENDING_PROVIDER_KEY);
     }
   },
 };
