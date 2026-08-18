@@ -1,0 +1,6 @@
+# 테스트 전용 도구. 서버를 띄우는 데는 필요 없다.
+#   .venv/Scripts/pip install -r requirements.txt -r requirements-dev.txt
+
+pytest==8.3.3
+openapi-spec-validator==0.9.0
+PyYAML==6.0.3    # tests/test_openapi.py 만 쓴다 — 서버는 스펙을 파싱 없이 그대로 내보낸다

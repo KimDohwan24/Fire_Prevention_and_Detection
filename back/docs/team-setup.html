@@ -99,11 +99,32 @@ git checkout dev-Wang</code></pre>
 <h3>2) 파이썬 가상환경 + 의존성</h3>
 <pre><code>cd back
 python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt</code></pre>
+.venv/Scripts/pip install -r requirements.txt -r requirements-dev.txt</code></pre>
 <div class="note">
   💡 Mac · Linux 는 <code>.venv/bin/pip</code> 입니다. 아래 예시들의 <code>.venv/Scripts/</code> 도
   모두 <code>.venv/bin/</code> 으로 바꿔 읽으세요.<br>
   파이썬은 3.11 이상을 권장합니다 (3.14 에서 동작 확인).
+</div>
+<div class="warn">
+  ⚠️ <strong>이 프로젝트는 파이썬 가상환경이 두 개입니다. 섞어 쓰면 안 됩니다.</strong>
+  <table>
+    <tr><th>위치</th><th>파이썬</th><th>설치할 것</th><th>용도</th></tr>
+    <tr>
+      <td><code>back/.venv</code></td><td>3.11 이상 (3.14 확인)</td>
+      <td><code>back/requirements.txt</code> + <code>back/requirements-dev.txt</code></td>
+      <td>백엔드 서버 · 테스트 · <code>mock-119</code></td>
+    </tr>
+    <tr>
+      <td><code>ai-model/.venv</code></td><td><strong>3.11 고정</strong></td>
+      <td><code>ai-model/requirements.txt</code></td>
+      <td>YOLO 추론 · 학습</td>
+    </tr>
+  </table>
+  <code>ai-model</code> 이 3.11 에 묶인 이유는 <code>torch</code> 가 3.14 에 아직
+  안 들어가기 때문입니다. 그래서 <code>ai-model/requirements.txt</code> 를
+  <code>back/.venv</code> 에 설치하면 <code>torch</code> 에서 막히고, 반대로
+  <code>back/requirements.txt</code> 만 깔린 환경에서는 추론이 돌지 않습니다.
+  <code>ai-model</code> 은 <code>py -3.11 -m venv .venv</code> 로 따로 만드세요.
 </div>
 
 <h3>3) PostgreSQL + PostGIS 설치</h3>

@@ -10,7 +10,7 @@ from flask import Blueprint, g, jsonify, request
 import db
 from auth import admin_required, login_required
 from errors import ApiError
-from services import its_cctv
+from services import cctv_service
 from utils.validation import int_param, require_number, require_str
 
 bp = Blueprint("cctvs", __name__)
@@ -20,46 +20,26 @@ UPDATABLE = [
     "cctv_stream_url", "cctv_width", "cctv_height", "cctv_status",
 ]
 
-# 응답에 내보내는 컬럼을 명시한다 — SELECT * 를 쓰면 나중에 컬럼이 추가될 때
-# 의도치 않은 값이 조용히 API 응답에 섞여 나간다 (명세서 4번 섹션 기준)
-COLUMNS = """cctv_no, user_no, cctv_name, cctv_location, cctv_lat, cctv_lng,
-             cctv_stream_url, cctv_width, cctv_height, cctv_status, cctv_created_at"""
-
 
 @bp.get("")
 @login_required
 def list_cctvs():
-    conds = []
-    params: list = []
-    if v := request.args.get("cctv_status"):
-        conds.append("cctv_status = %s")
-        params.append(v)
     # user_no: 특정 사용자가 담당(소유)하는 카메라만 — 관리자 화면에서 쓴다.
     # 없으면 필터 없이 전체 (기존 호출자 동작 그대로)
-    if (v := int_param("user_no")) is not None:
-        conds.append("user_no = %s")
-        params.append(v)
-
-    where = f"WHERE {' AND '.join(conds)}" if conds else ""
-
-    rows = db.query(
-        f"SELECT {COLUMNS} FROM cctv {where} ORDER BY cctv_no", tuple(params)
+    rows = cctv_service.list_cctvs(
+        cctv_status=request.args.get("cctv_status"),
+        user_no=int_param("user_no"),
     )
-    # ITS 카메라의 스트림 주소는 토큰이 만료되므로 응답 직전에 최신 값으로 갈아끼운다
-    # (외부 API 가 죽어 있으면 저장된 주소 그대로 내려간다)
-    rows = its_cctv.refresh_stream_urls(rows)
     return jsonify({"items": rows})
 
 
 @bp.get("/<int:cctv_no>")
 @login_required
 def get_cctv(cctv_no: int):
-    row = db.query_one(
-        f"SELECT {COLUMNS} FROM cctv WHERE cctv_no = %s", (cctv_no,)
-    )
+    row = cctv_service.get_cctv(cctv_no)
     if not row:
         raise ApiError(404, "CCTV_NOT_FOUND", "카메라를 찾을 수 없습니다.")
-    return jsonify(its_cctv.refresh_stream_urls([row])[0])
+    return jsonify(row)
 
 
 @bp.post("")
