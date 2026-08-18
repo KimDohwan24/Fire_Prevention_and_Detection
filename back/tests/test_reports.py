@@ -218,3 +218,51 @@ def test_report_logs_only_that_report(client, admin_headers):
     items = r.get_json()["items"]
     assert len(items) == 1
     assert items[0]["report_no"] == mine
+
+
+# ---------- 스키마 (출동 연동) ----------
+
+def test_report_119_has_dispatch_columns():
+    """출동 통지를 받아 적을 컬럼이 있다."""
+    rows = db.query(
+        """
+        SELECT column_name, data_type FROM information_schema.columns
+        WHERE table_schema = 'fireguard' AND table_name = 'report_119'
+          AND column_name IN ('report_dispatched_at', 'report_dispatch')
+        ORDER BY column_name
+        """
+    )
+    assert {r["column_name"]: r["data_type"] for r in rows} == {
+        "report_dispatch": "jsonb",
+        "report_dispatched_at": "timestamp without time zone",
+    }
+
+
+def test_cctv_has_address_column():
+    """역지오코딩한 주소를 저장할 컬럼이 있다."""
+    row = db.query_one(
+        """
+        SELECT data_type, character_maximum_length AS len
+        FROM information_schema.columns
+        WHERE table_schema = 'fireguard' AND table_name = 'cctv'
+          AND column_name = 'cctv_address'
+        """
+    )
+    assert row is not None
+    assert row["data_type"] == "character varying"
+    assert row["len"] == 255
+
+
+def test_active_report_index_includes_dispatched():
+    """진행 중 신고의 정의에 DISPATCHED 가 들어 있다.
+
+    이 집합이 report_service.ACTIVE_STATUSES 와 어긋나면, 출동 중인 화재에
+    신고가 한 번 더 나가거나 INSERT 가 유니크 위반(23505)으로 터진다.
+    """
+    row = db.query_one(
+        "SELECT indexdef FROM pg_indexes "
+        "WHERE schemaname = 'fireguard' AND indexname = 'ux_report_119_active'"
+    )
+    assert row is not None
+    for status in ("SENDING", "ACCEPTED", "DISPATCHED"):
+        assert status in row["indexdef"]
