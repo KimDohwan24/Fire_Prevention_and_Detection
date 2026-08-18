@@ -1,30 +1,30 @@
 """인증 API.
 
-<<<<<<< Updated upstream
-POST /api/auth/login                    로그인, JWT 발급
-POST /api/auth/logout                   로그아웃 (토큰 폐기 + 활동이력 LOGOUT)
-GET  /api/auth/me                       내 정보 (세션 복원용)
-POST /api/auth/find-id                  아이디 찾기 (이름 + 이메일)
-=======
-POST /api/auth/login                  로그인, JWT 발급
-GET  /api/auth/me                     내 정보 (세션 복원용)
-POST /api/auth/find-id                아이디 찾기 (이름 + 이메일)
->>>>>>> Stashed changes
-POST /api/auth/password-reset/request   재설정 인증코드 발급 → SMS
-POST /api/auth/password-reset/confirm   인증코드 확인 후 비밀번호 변경
+POST /api/auth/login                        로그인, JWT 발급
+POST /api/auth/logout                       로그아웃 (토큰 폐기 + 활동이력 LOGOUT)
+GET  /api/auth/me                           내 정보 (세션 복원용)
+POST /api/auth/find-id                      아이디 찾기 (이름 + 이메일)
+POST /api/auth/password-reset/request       재설정 인증코드 발급 → SMS
+POST /api/auth/password-reset/confirm       인증코드 확인 후 비밀번호 변경
+POST /api/auth/email/verify-request         회원가입 이메일 인증번호 발송
+POST /api/auth/email/verify-confirm         회원가입 이메일 인증번호 확인
+GET  /api/auth/oauth/<provider>/authorize   소셜 동의화면 주소 + state 발급
+POST /api/auth/oauth/<provider>             소셜 code 교환 → 로그인 (login 과 같은 응답)
 
-계정 찾기 세 개는 **비로그인 상태에서 부르는 공개 엔드포인트**다. 인증코드는 저장하지
-않고 그때그때 계산해 대조한다 — 방식과 근거는 services/account_recovery.py 참고.
+계정 찾기 세 개와 소셜 둘은 **비로그인 상태에서 부르는 공개 엔드포인트**다. 인증코드도
+소셜 state 도 저장하지 않고 그때그때 계산해 대조한다 — 방식과 근거는
+services/account_recovery.py, services/oauth_provider.py 참고.
 """
 import logging
 
 import bcrypt
+import psycopg2
 from flask import Blueprint, g, jsonify, request
 
 import db
 from auth import issue_token, login_required
 from errors import ApiError
-from services import account_recovery, activity_service, sms
+from services import account_recovery, activity_service, oauth_provider, sms
 from utils.validation import require_str, validate_password
 import random
 import smtplib
@@ -66,6 +66,36 @@ _RESET_ACCEPTED = {
 }
 
 
+def _assert_account_usable(user: dict) -> None:
+    """정지·탈퇴 계정을 막는다. 로그인 경로가 둘(일반·소셜)이라 한 곳에 모아 뒀다.
+
+    비밀번호가 맞았는지(소셜이면 프로바이더 인증을 통과했는지) 확인한 **뒤에**
+    부른다 — 순서를 바꾸면 아무나 아이디만 넣어보고 그 계정이 정지 상태인지
+    알아낼 수 있다.
+    """
+    if user["user_status"] == "SUSPENDED":
+        raise ApiError(403, "ACCOUNT_SUSPENDED", "정지된 계정입니다.")
+    if user["user_status"] == "WITHDRAWN":
+        raise ApiError(403, "ACCOUNT_WITHDRAWN", "탈퇴한 계정입니다.")
+
+
+def _login_response(user: dict) -> dict:
+    """로그인 성공 응답. 일반·소셜이 **완전히 같은 모양**이어야 한다.
+
+    프론트가 두 버튼의 결과를 같은 코드로 받아 저장하게 하려는 것이다. 여기서
+    갈라지면 소셜 로그인만 세션 복원이 안 되는 식의 버그가 나기 쉽다.
+    """
+    return {
+        "access_token": issue_token(user),
+        "user": {
+            "user_no": user["user_no"],
+            "user_id": user["user_id"],
+            "user_name": user["user_name"],
+            "user_role": user["user_role"],
+        },
+    }
+
+
 @bp.post("/login")
 def login():
     body = request.get_json(silent=True) or {}
@@ -95,22 +125,10 @@ def login():
     if not user or not user["user_pw"] \
             or not bcrypt.checkpw(user_pw.encode(), user["user_pw"].encode()):
         raise ApiError(401, "INVALID_CREDENTIALS", "아이디 또는 비밀번호가 일치하지 않습니다.")
-    if user["user_status"] == "SUSPENDED":
-        raise ApiError(403, "ACCOUNT_SUSPENDED", "정지된 계정입니다.")
-    if user["user_status"] == "WITHDRAWN":
-        raise ApiError(403, "ACCOUNT_WITHDRAWN", "탈퇴한 계정입니다.")
+    _assert_account_usable(user)
 
     activity_service.record(user["user_no"], activity_service.LOGIN)
-
-    return jsonify({
-        "access_token": issue_token(user),
-        "user": {
-            "user_no": user["user_no"],
-            "user_id": user["user_id"],
-            "user_name": user["user_name"],
-            "user_role": user["user_role"],
-        },
-    })
+    return jsonify(_login_response(user))
 
 
 @bp.post("/logout")
@@ -125,6 +143,9 @@ def logout():
     **사용자 단위라서 그 사람의 다른 기기도 함께 끊긴다.** 토큰 하나만 죽이려면
     jti 별 폐기 목록이 필요한데, 매 요청 DB 조회가 드는 건 똑같으면서 표가 하나
     더 늘고 만료행 청소까지 따라온다. 관제 계정 규모에서는 기준선 하나가 낫다고 봤다.
+
+    **소셜 계정도 이 경로 그대로다.** 기준선은 user_no 만 보고 토큰이 어떤 경로로
+    발급됐는지는 따지지 않으므로, 소셜 로그인이 붙었다고 여기에 더할 일이 없다.
 
     폐기와 기록은 별개다 — 토큰은 죽어도 "언제 나갔나"는 이력에 남아야 한다.
     다만 이 엔드포인트를 프론트가 불러줘야만 둘 다 일어난다. 브라우저를 그냥
@@ -288,3 +309,125 @@ def email_verify_confirm():
     del email_storage[email]  # 사용된 인증번호 제거
     
     return jsonify({"message": "이메일 인증이 완료되었습니다.", "verified": True})
+
+
+# ---------- 소셜 로그인 (구글·카카오·네이버) ----------
+
+def _require_provider(raw: str) -> str:
+    """경로의 provider 를 표의 키로 바꾸고, 쓸 수 있는 상태인지까지 확인한다.
+
+    키 미설정을 500 이 아니라 503 으로 따로 내는 이유: 키 없이 배포된 상태에서
+    500 이 나면 로그만 보고는 원인을 찾을 수 없다. 프론트도 "이 버튼은 아직 준비
+    안 됨"으로 안내할 수 있다.
+    """
+    provider = oauth_provider.normalize_provider(raw)
+    if provider is None:
+        raise ApiError(400, "UNSUPPORTED_PROVIDER", "지원하지 않는 소셜 로그인입니다.")
+    if not oauth_provider.is_configured(provider):
+        raise ApiError(503, "OAUTH_NOT_CONFIGURED",
+                       "해당 소셜 로그인이 서버에 설정되어 있지 않습니다.")
+    return provider
+
+
+def _find_or_create_social_user(provider: str, identity: dict) -> dict:
+    """(user_provider, user_provider_id) 로 찾고, 없으면 새로 만든다.
+
+    **이메일이 같은 일반(LOCAL) 계정과 자동으로 연결하지 않는다.** 프로바이더가 그
+    이메일의 소유를 실제로 검증했는지 우리는 보장할 수 없어서다. 검증하지 않는
+    프로바이더에 피해자의 이메일로 계정을 만들어 로그인하면 우리 쪽 계정을 그대로
+    가져가게 된다 — 관리자 계정이면 시스템 전체가 넘어간다. 그래서 이메일이
+    겹쳐도 별개 계정으로 만든다. 같은 사람의 계정 두 개를 합치는 일은 본인 확인을
+    거친 별도 기능(로그인 상태에서 소셜 연결)으로 다뤄야 할 문제다.
+    """
+    select_sql = """
+        SELECT user_no, user_id, user_name, user_role, user_status
+        FROM users WHERE user_provider = %s AND user_provider_id = %s
+    """
+    user = db.query_one(select_sql, (provider, identity["provider_id"]))
+    if user:
+        return user
+
+    # user_id 는 로그인에 쓰이지 않는 합성값이다 — 아이디 유니크 제약을 지키려고
+    # 두는 것뿐이라 프로바이더 값에서 기계적으로 만든다 (컬럼이 varchar(50)).
+    user_id = f"{provider.lower()}_{identity['provider_id']}"[:50]
+    try:
+        row = db.execute_returning(
+            """
+            INSERT INTO users (user_id, user_pw, user_name, user_email,
+                               user_role, user_status, user_provider, user_provider_id)
+            VALUES (%s, NULL, %s, %s, 'VIEWER', 'ACTIVE', %s, %s)
+            RETURNING user_no, user_id, user_name, user_role, user_status
+            """,
+            # 컬럼 길이를 넘기면 DataError 로 로그인 전체가 실패한다. 프로바이더가
+            # 주는 값의 길이를 우리가 정할 수 없으므로 잘라서 받는다.
+            (user_id, (identity["name"] or None) and identity["name"][:50],
+             (identity["email"] or None) and identity["email"][:100],
+             provider, identity["provider_id"]),
+        )
+    except psycopg2.IntegrityError:
+        # 같은 사람이 로그인 버튼을 두 번 눌러 요청이 겹치면 둘 다 '없음'을 보고
+        # INSERT 하러 온다. 늦은 쪽은 UQ_USERS_PROVIDER 에 막히는데, 그때는 이미
+        # 행이 있으므로 다시 읽어 그대로 진행하는 편이 사용자에게 옳다.
+        user = db.query_one(select_sql, (provider, identity["provider_id"]))
+        if user:
+            return user
+        # 여기까지 오면 막힌 것은 user_id 쪽이다 — 50자로 자르면서 다른 계정과
+        # 겹쳤거나, 같은 이름의 일반 계정이 이미 있다. 자동으로 이름을 바꿔 만들면
+        # 계정이 조용히 늘어나므로 사람이 보게 남긴다.
+        logger.warning("소셜 계정 생성 실패 — user_id 충돌 (provider=%s, user_id=%s)",
+                       provider, user_id)
+        raise ApiError(409, "DUPLICATE_USER_ID", "이미 사용 중인 아이디입니다.")
+
+    logger.info("소셜 계정 신규 생성 (provider=%s, user_no=%s)", provider, row["user_no"])
+    return row
+
+
+@bp.get("/oauth/<provider>/authorize")
+def oauth_authorize(provider: str):
+    """동의화면 주소와 state 를 만들어 준다 (비로그인 공개).
+
+    프론트는 state 를 sessionStorage 에 넣어 두고 authorize_url 로 이동한 뒤,
+    콜백 화면에서 받은 code 와 함께 그 state 를 POST /api/auth/oauth/<provider> 에
+    돌려주면 된다.
+
+    redirect_uri 는 응답에 싣지 않는다 — 프론트가 알 필요가 없고, 알면 그 값을
+    자기 쪽에도 적어 두는 순간 정의가 두 곳이 된다 (oauth_provider.redirect_uri).
+    """
+    name = _require_provider(provider)
+    state = oauth_provider.issue_state(name)
+    return jsonify({
+        "authorize_url": oauth_provider.authorize_url(name, state),
+        "state": state,
+    })
+
+
+@bp.post("/oauth/<provider>")
+def oauth_login(provider: str):
+    """code 를 우리 JWT 로 바꾼다 (비로그인 공개).
+
+    응답은 POST /api/auth/login 과 **완전히 같은 모양**이다 (_login_response).
+    """
+    name = _require_provider(provider)
+    body = request.get_json(silent=True) or {}
+    code = require_str(body, "code")
+    state = require_str(body, "state")
+
+    # state 를 먼저 본다. 위조된 요청으로 프로바이더를 두드려 주면 우리 서버가
+    # 남의 API 를 때리는 도구가 된다.
+    if not oauth_provider.verify_state(name, state):
+        raise ApiError(400, "INVALID_OAUTH_STATE",
+                       "인증 요청이 만료되었거나 올바르지 않습니다. 다시 시도해주세요.")
+
+    try:
+        identity = oauth_provider.fetch_identity(name, code, state)
+    except oauth_provider.OAuthProviderError as exc:
+        # 저쪽 문제를 우리 500 으로 뭉개면 장애 때 어디를 볼지 정할 수 없다
+        logger.warning("소셜 로그인 실패 (provider=%s): %s", name, exc)
+        raise ApiError(502, "OAUTH_PROVIDER_ERROR",
+                       "소셜 로그인 제공자와 통신하지 못했습니다. 잠시 후 다시 시도해주세요.")
+
+    user = _find_or_create_social_user(name, identity)
+    _assert_account_usable(user)
+
+    activity_service.record(user["user_no"], activity_service.LOGIN)
+    return jsonify(_login_response(user))

@@ -79,6 +79,29 @@ CCTV_URL_TTL_SEC = int(os.getenv("CCTV_URL_TTL_SEC", "300"))
 # 갱신 기능 스위치 — 끄면 DB 에 저장된 주소를 그대로 내려준다
 ITS_REFRESH_ENABLED = _env_bool("ITS_REFRESH_ENABLED", True)
 
+# ----- 소셜 로그인(OAuth) -----
+# 프로바이더별 앱 키. 각 개발자 콘솔에서 발급받아 .env 에 넣는다.
+# **키가 없으면 그 프로바이더만 503 OAUTH_NOT_CONFIGURED 로 막힌다** — 서버는 그대로
+# 뜨고 나머지 로그인 경로도 살아 있다. 하나도 안 넣은 상태로 배포해도 무방하다.
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+KAKAO_CLIENT_ID = os.getenv("KAKAO_CLIENT_ID", "")
+KAKAO_CLIENT_SECRET = os.getenv("KAKAO_CLIENT_SECRET", "")
+NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+
+# 프론트 주소. 콜백 주소는 서버가 여기에 붙여 만든다 —
+#   {OAUTH_REDIRECT_BASE}/oauth/callback/{provider소문자}
+# 프론트가 자기 콜백 주소를 따로 들고 있으면 값이 두 곳에 생기고, 한쪽만 고쳐서
+# 프로바이더 콘솔 등록값과 어긋나는 순간 redirect_uri_mismatch 가 난다.
+# **여기를 바꾸면 세 콘솔의 등록 URI 도 함께 고쳐야 한다.**
+OAUTH_REDIRECT_BASE = os.getenv("OAUTH_REDIRECT_BASE", "http://localhost:5173")
+
+# 프로바이더 API 호출 타임아웃(초). 사람이 로그인 버튼을 누르고 기다리는 중이라
+# 짧게 둔다. 119 신고(REPORT_HTTP_TIMEOUT_SEC)와 값을 나눠 쓰지 않는 이유는
+# 저쪽이 사람이 기다리지 않는 백그라운드 전송이라 조정 기준이 다르기 때문이다.
+OAUTH_HTTP_TIMEOUT_SEC = float(os.getenv("OAUTH_HTTP_TIMEOUT_SEC", "5"))
+
 APP_PORT = int(os.getenv("APP_PORT", "5000"))
 
 # 검출 프레임/클립 실제 파일이 놓이는 루트 디렉터리.

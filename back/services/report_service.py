@@ -19,6 +19,7 @@
 - 점검 모드(event_is_test) 이벤트는 신고하지 않는다.
 """
 import base64
+import io
 import json
 import logging
 import time
@@ -135,10 +136,17 @@ def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
     돌려준다 — 이미지 때문에 신고가 막히면 안 된다.
     """
     try:
-        import io
-
         from PIL import Image, ImageDraw
+    except ImportError:
+        # Pillow 는 requirements.txt 에 선언된 필수 의존성이다. 여기서 아래 일반
+        # except 로 함께 삼키면 "설치가 빠졌다"가 경고 한 줄로 묻혀서, 상자 없는
+        # 사진이 119 로 나가도 아무도 모른다. 신고 자체는 계속 보내되(이미지 때문에
+        # 신고가 막히면 안 된다) 원인만은 error 로 분명히 남긴다.
+        logger.error("Pillow 가 설치돼 있지 않다 — 검출 상자 없이 원본으로 전송한다. "
+                     "requirements.txt 를 다시 설치할 것")
+        return content
 
+    try:
         im = Image.open(io.BytesIO(content)).convert("RGB")
         draw = ImageDraw.Draw(im)
         width, height = im.size

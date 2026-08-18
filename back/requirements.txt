@@ -1,13 +1,21 @@
+# 백엔드 런타임 의존성. 파이썬 3.11 이상 (3.14.6 에서 동작 확인).
+#   .venv/Scripts/pip install -r requirements.txt -r requirements-dev.txt
+#
+# 테스트 도구는 requirements-dev.txt 로 뺐다 — 배포본에 pytest 가 딸려갈 이유가 없다.
+# 버전은 전부 정확히 못박는다. `2.32.*` 처럼 열어 두면 팀원마다 다른 부버전이
+# 깔려도 알 방법이 없다. 아래 값은 실제로 통과한 조합이다.
+#
+# ai-model/ 은 파이썬 3.11 + 별도 venv 다 (3.14 에는 torch 가 안 들어간다).
+# 이 파일을 거기에 깔지 말 것.
+
 flask==3.0.3
 flask-cors==4.0.1
-psycopg2-binary==2.9.11
+psycopg2-binary==2.9.11    # 파이썬 3.14 는 2.9.11 이상이어야 휠이 있다
 PyJWT==2.9.0
 bcrypt==4.2.0
 python-dotenv==1.0.1
-requests==2.32.*
-Pillow==11.*
-apscheduler==3.10.*
+requests==2.32.5
+urllib3==2.7.0             # services/its_cctv.py 가 직접 쓴다 (InsecureRequestWarning 끄기)
+Pillow==11.3.0             # services/report_service.py 의 검출 상자 그리기
+apscheduler==3.10.4        # 에스컬레이션 스윕 스케줄러
 flask-swagger-ui==5.32.12
-PyYAML==6.0.3
-pytest==8.3.3
-openapi-spec-validator==0.9.0
