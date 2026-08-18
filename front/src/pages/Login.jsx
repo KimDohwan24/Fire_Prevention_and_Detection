@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { authApi } from '../api';
 
@@ -33,6 +33,35 @@ const Login = () => {
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState('');
+
+  useEffect(() => {
+    let isActive = true;
+    const completion = authApi.completeOAuthLogin();
+
+    if (!completion) {
+      return () => {
+        isActive = false;
+      };
+    }
+
+    setOauthLoading('callback');
+    completion
+      .then(() => {
+        if (isActive) navigate('/dashboard', { replace: true });
+      })
+      .catch((error) => {
+        if (isActive) {
+          setErrorMsg(error.message || '소셜 로그인에 실패했습니다. 다시 시도해주세요.');
+        }
+      })
+      .finally(() => {
+        if (isActive) setOauthLoading('');
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [navigate]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -117,7 +146,7 @@ const Login = () => {
           <div className="flex flex-col space-y-2 pt-2">
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || Boolean(oauthLoading)}
               className="w-full h-[36px] bg-primary text-on-primary rounded-full text-button-md hover:bg-ink-deep active:scale-[0.98] transition-all duration-200 disabled:opacity-50"
             >
               {isLoading ? '로그인 중...' : '로그인'}

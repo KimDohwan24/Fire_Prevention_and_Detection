@@ -11,6 +11,7 @@ import {
 
 const PAGE_SIZE = 100;
 const HISTORY_DAYS = 30;
+const LIVE_DATA_REFRESH_INTERVAL_MS = 10_000;
 
 const EMPTY_DATA = {
   cctvs: [],
@@ -82,6 +83,7 @@ const normalizeSessionUser = (response, fallback) => {
     name: sessionUser.user_name || fallback?.name || sessionUser.user_id,
     role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
     rawRole: sessionUser.user_role,
+    authProvider: fallback?.authProvider || null,
   };
 };
 
@@ -120,7 +122,7 @@ export default function useDashboardData() {
   const mountedRef = useRef(false);
   const initializedRef = useRef(false);
   const refreshInFlightRef = useRef(false);
-  const alertInFlightRef = useRef(false);
+  const liveDataInFlightRef = useRef(false);
   const dataRef = useRef(EMPTY_DATA);
   const userRef = useRef(storedUser);
 
@@ -133,7 +135,7 @@ export default function useDashboardData() {
   }, []);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
-    if (refreshInFlightRef.current) return;
+    if (refreshInFlightRef.current || liveDataInFlightRef.current) return;
     refreshInFlightRef.current = true;
 
     if (!silent) setIsRefreshing(true);
@@ -201,18 +203,37 @@ export default function useDashboardData() {
     refreshInFlightRef.current = false;
   }, [updateData]);
 
-  const refreshAlerts = useCallback(async () => {
-    if (alertInFlightRef.current) return;
-    alertInFlightRef.current = true;
+  const refreshLiveData = useCallback(async () => {
+    if (refreshInFlightRef.current || liveDataInFlightRef.current) return;
+    liveDataInFlightRef.current = true;
 
     try {
-      const alerts = await fetchAllPages(alertApi.list);
+      const [eventResult, alertResult, reportResult] = await Promise.allSettled([
+        fetchAllPages(eventApi.list, getHistoryParams()),
+        fetchAllPages(alertApi.list),
+        fetchAllPages(reportApi.list),
+      ]);
+
       if (mountedRef.current) {
-        updateData((previous) => scopeDataForUser(
-          { ...previous, alerts },
-          userRef.current,
-        ));
-        setErrors((previous) => ({ ...previous, alerts: '' }));
+        updateData((previous) => scopeDataForUser({
+          cctvs: previous.cctvs,
+          events: eventResult.status === 'fulfilled' ? eventResult.value : previous.events,
+          alerts: alertResult.status === 'fulfilled' ? alertResult.value : previous.alerts,
+          reports: reportResult.status === 'fulfilled' ? reportResult.value : previous.reports,
+        }, userRef.current));
+        setErrors((previous) => ({
+          ...previous,
+          events: eventResult.status === 'rejected'
+            ? getErrorMessage(eventResult.reason, 'Failed to refresh fire events.')
+            : '',
+          alerts: alertResult.status === 'rejected'
+            ? getErrorMessage(alertResult.reason, 'Failed to refresh alerts.')
+            : '',
+          reports: reportResult.status === 'rejected'
+            ? getErrorMessage(reportResult.reason, 'Failed to refresh 119 reports.')
+            : '',
+        }));
+        setLastUpdated(new Date());
       }
     } catch (error) {
       if (mountedRef.current) {
@@ -222,7 +243,7 @@ export default function useDashboardData() {
         }));
       }
     } finally {
-      alertInFlightRef.current = false;
+      liveDataInFlightRef.current = false;
     }
   }, [updateData]);
 
@@ -231,14 +252,14 @@ export default function useDashboardData() {
     refresh();
 
     const dashboardInterval = window.setInterval(() => refresh({ silent: true }), 30_000);
-    const alertInterval = window.setInterval(refreshAlerts, 4_000);
+    const liveDataInterval = window.setInterval(refreshLiveData, LIVE_DATA_REFRESH_INTERVAL_MS);
 
     return () => {
       mountedRef.current = false;
       window.clearInterval(dashboardInterval);
-      window.clearInterval(alertInterval);
+      window.clearInterval(liveDataInterval);
     };
-  }, [refresh, refreshAlerts]);
+  }, [refresh, refreshLiveData]);
 
   return {
     ...data,

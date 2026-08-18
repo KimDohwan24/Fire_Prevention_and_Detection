@@ -18,6 +18,21 @@ import {
   normalizeActivityRecord,
 } from '../utils/activityLog';
 
+const normalizePhoneNumber = (value = '') => (
+  String(value).replace(/\D/g, '').slice(0, 11)
+);
+
+const formatPhoneNumber = (value = '') => {
+  const digits = normalizePhoneNumber(value);
+
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  if (digits.length <= 10) {
+    return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+};
+
 export default function MyPage() {
   const navigate = useNavigate();
 
@@ -100,6 +115,8 @@ export default function MyPage() {
       try {
         const sessionResponse = await authApi.me();
         const sessionUser = sessionResponse?.user || sessionResponse;
+        const storedUser = getCurrentUserFromStorage();
+        const storedAuthProvider = storedUser?.authProvider || null;
         if (sessionUser?.user_no == null || !sessionUser?.user_id) {
           throw new Error('현재 로그인 사용자 정보를 확인할 수 없습니다.');
         }
@@ -112,8 +129,11 @@ export default function MyPage() {
           email: sessionUser.user_email || `${sessionUser.user_id}@fireguard.or.kr`,
           phone: sessionUser.user_phone || '',
           role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
+          authProvider: storedAuthProvider,
           dept: sessionUser.user_role === 'ADMIN' ? '관제총괄팀' : '관제팀',
-          position: sessionUser.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원',
+          position: storedUser?.position || (
+            sessionUser.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원'
+          ),
           joinedAt: '2026-01-01',
           lastLogin: '최근 접속 중',
           assignedZone: 'A동 및 외곽 관제 구역'
@@ -181,6 +201,7 @@ export default function MyPage() {
   };
 
   const isAdmin = currentUser?.role === 'admin';
+  const isSocialAccount = Boolean(currentUser?.authProvider);
 
   const handleResetActivities = () => {
     setActivityPage(1);
@@ -198,7 +219,7 @@ export default function MyPage() {
     setEditForm({
       name: currentUser.name || '',
       email: currentUser.email || '',
-      phone: currentUser.phone || '',
+      phone: formatPhoneNumber(currentUser.phone || ''),
       dept: currentUser.dept || '',
       position: currentUser.position || '',
       assignedZone: currentUser.assignedZone || ''
@@ -237,17 +258,27 @@ export default function MyPage() {
       return;
     }
 
+    const name = editForm.name.trim();
+    const phone = normalizePhoneNumber(editForm.phone);
+    const email = editForm.email.trim();
+    const profilePayload = {
+      user_name: name,
+      user_phone: phone || null,
+    };
+
+    // 소셜 계정은 로그인 제공자가 관리하는 이메일을 수정하지 않는다.
+    if (!isSocialAccount) {
+      profilePayload.user_email = email;
+    }
+
     try {
-      await userApi.update(currentUser.user_no, {
-        user_name: editForm.name.trim(),
-        user_email: editForm.email.trim(),
-        user_phone: editForm.phone.replace(/-/g, '').trim() || null,
-      });
+      await userApi.update(currentUser.user_no, profilePayload);
       const updatedUser = {
         ...currentUser,
-        name: editForm.name.trim(),
-        email: editForm.email.trim(),
-        phone: editForm.phone.replace(/-/g, '').trim(),
+        name,
+        phone,
+        position: editForm.position.trim() || currentUser.position,
+        ...(isSocialAccount ? {} : { email }),
       };
       setCurrentUser(updatedUser);
       localStorage.setItem('currentUser', JSON.stringify(updatedUser));
@@ -256,7 +287,9 @@ export default function MyPage() {
         activity_type: 'PROFILE_UPDATE',
         type: 'system',
         title: '프로필 정보 수정',
-        detail: '이름, 이메일 또는 연락처 정보를 변경했습니다.',
+        detail: isSocialAccount
+          ? '닉네임, 직책 또는 연락처 정보를 변경했습니다.'
+          : '이름, 이메일 또는 연락처 정보를 변경했습니다.',
       });
       setIsEditProfileOpen(false);
       setActivityPage(1);
@@ -270,6 +303,10 @@ export default function MyPage() {
  // 비밀번호 변경 저장
 const handleSavePassword = async (e) => {
   e.preventDefault();
+  if (currentUser?.authProvider) {
+    showToast('소셜 로그인 계정은 해당 소셜 서비스에서 비밀번호를 관리합니다.');
+    return;
+  }
   if (!pwForm.currentPassword) {
     alert('현재 비밀번호를 입력해주세요.');
     return;
@@ -390,13 +427,20 @@ const handleSavePassword = async (e) => {
               <Edit3 className="w-4 h-4 text-mute" />
               <span>프로필 수정</span>
             </button>
-            <button
-              onClick={() => setIsChangePasswordOpen(true)}
-              className="flex items-center gap-2 bg-primary text-on-primary hover:bg-ink-deep px-4 h-10 rounded-full text-body-sm font-medium transition-colors focus:outline-none cursor-pointer"
-            >
-              <Key className="w-4 h-4" />
-              <span>비밀번호 변경</span>
-            </button>
+            {isSocialAccount ? (
+              <span className="inline-flex items-center gap-2 px-4 h-10 rounded-full border border-hairline bg-surface-soft text-body-sm text-mute">
+                <Key className="w-4 h-4" />
+                <span>소셜 계정</span>
+              </span>
+            ) : (
+              <button
+                onClick={() => setIsChangePasswordOpen(true)}
+                className="flex items-center gap-2 bg-primary text-on-primary hover:bg-ink-deep px-4 h-10 rounded-full text-body-sm font-medium transition-colors focus:outline-none cursor-pointer"
+              >
+                <Key className="w-4 h-4" />
+                <span>비밀번호 변경</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -435,9 +479,6 @@ const handleSavePassword = async (e) => {
                     <User className="w-3.5 h-3.5" /> {currentUser?.dept || '관제 요원'}
                   </span>
                 )}
-                <span className="text-caption-sm text-mute border border-hairline px-2.5 py-0.5 rounded-full bg-surface-soft">
-                  ID: {currentUser?.id || '-'}
-                </span>
               </div>
 
               <p className="text-body-md text-mute flex items-center gap-2 flex-wrap">
@@ -475,7 +516,7 @@ const handleSavePassword = async (e) => {
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Phone className="w-4 h-4 text-mute" />
-                  <span>{currentUser?.phone || '연락처 미등록'}</span>
+                  <span>{formatPhoneNumber(currentUser?.phone) || '연락처 미등록'}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Calendar className="w-4 h-4 text-mute" />
@@ -942,7 +983,9 @@ const handleSavePassword = async (e) => {
             <form onSubmit={handleSaveProfile} className="flex flex-col shrink-0">
               <div className="p-6 max-h-[70vh] overflow-y-auto space-y-4">
                 <div>
-                  <label className="block text-body-sm font-semibold text-ink mb-1">이름</label>
+                  <label className="block text-body-sm font-semibold text-ink mb-1">
+                    {isSocialAccount ? '닉네임' : '이름'}
+                  </label>
                   <input
                     type="text"
                     value={editForm.name}
@@ -952,39 +995,20 @@ const handleSavePassword = async (e) => {
                   />
                 </div>
 
-                <div>
-                  <label className="block text-body-sm font-semibold text-ink mb-1">이메일 주소</label>
-                  <input
-                    type="email"
-                    value={editForm.email}
-                    onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                    className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-body-sm font-semibold text-ink mb-1">연락처 (전화번호)</label>
-                  <input
-                    type="text"
-                    value={editForm.phone}
-                    onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
-                    className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
-                    placeholder="010-0000-0000"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
+                {!isSocialAccount && (
                   <div>
-                    <label className="block text-body-sm font-semibold text-ink mb-1">소속 부서</label>
+                    <label className="block text-body-sm font-semibold text-ink mb-1">이메일 주소</label>
                     <input
-                      type="text"
-                      value={editForm.dept}
-                      onChange={(e) => setEditForm({ ...editForm, dept: e.target.value })}
+                      type="email"
+                      value={editForm.email}
+                      onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
                       className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
-                      placeholder="예: 관제1팀, 시설팀"
+                      required
                     />
                   </div>
+                )}
+
+                {isSocialAccount && (
                   <div>
                     <label className="block text-body-sm font-semibold text-ink mb-1">직책 (사용자 입력)</label>
                     <input
@@ -995,7 +1019,44 @@ const handleSavePassword = async (e) => {
                       placeholder="예: 관제팀장, 보안담당관"
                     />
                   </div>
+                )}
+
+                <div>
+                  <label className="block text-body-sm font-semibold text-ink mb-1">연락처 (전화번호)</label>
+                  <input
+                    type="text"
+                    value={formatPhoneNumber(editForm.phone)}
+                    onChange={(e) => setEditForm({ ...editForm, phone: formatPhoneNumber(e.target.value) })}
+                    className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
+                    placeholder="010-0000-0000"
+                    inputMode="tel"
+                  />
                 </div>
+
+                {!isSocialAccount && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-body-sm font-semibold text-ink mb-1">소속 부서</label>
+                      <input
+                        type="text"
+                        value={editForm.dept}
+                        onChange={(e) => setEditForm({ ...editForm, dept: e.target.value })}
+                        className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
+                        placeholder="예: 관제1팀, 시설팀"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-body-sm font-semibold text-ink mb-1">직책 (사용자 입력)</label>
+                      <input
+                        type="text"
+                        value={editForm.position}
+                        onChange={(e) => setEditForm({ ...editForm, position: e.target.value })}
+                        className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
+                        placeholder="예: 관제팀장, 보안담당관"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <div className="p-3.5 bg-surface-soft border border-hairline rounded-xl space-y-1">
                   <span className="block text-caption-sm text-mute font-semibold">📹 내가 설치 / 등록한 CCTV 카메라 ({myCctvs.length}대 - 클릭시 실시간 재생)</span>
@@ -1018,39 +1079,6 @@ const handleSavePassword = async (e) => {
                   </div>
                 </div>
 
-                {/* 👑 관리자 승인 요청 섹션 (일반 사용자일 경우에만 노출) */}
-                {!isAdmin && (
-                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-2 mt-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-bold text-xs">
-                        <span>👑</span>
-                        <span>관리자 권한 승격 신청</span>
-                      </div>
-                      {currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING' ? (
-                        <span className="text-[11px] font-bold text-amber-500 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 animate-pulse">
-                          ⏳ 승인 대기 중
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="text-caption-sm text-ink/80 leading-relaxed">
-                      최고 관리자에게 승인 요청을 전송합니다. 관리자가 승인하면 관리자 전용 대시보드 및 시스템 설정 권한으로 승격됩니다.
-                    </p>
-
-                    <button
-                      type="button"
-                      onClick={handleRequestAdmin}
-                      disabled={currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING'}
-                      className="w-full h-10 mt-1 bg-amber-500 hover:bg-amber-600 active:scale-[0.99] text-white font-bold text-xs rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <span>👑</span>
-                      <span>
-                        {currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING'
-                          ? '관리자 승인 요청됨 (대기 중)'
-                          : '관리자 승인 요청 보내기'}
-                      </span>
-                    </button>
-                  </div>
-                )}
               </div>
 
               {/* Modal Footer (shrink-0) */}
