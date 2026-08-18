@@ -1,5 +1,6 @@
 """인증 API — 명세서 2번 섹션 (POST /api/auth/login, GET /api/auth/me)."""
-from conftest import PW
+import db
+from conftest import PW, PW_HASH
 
 
 def _login(client, user_id, user_pw):
@@ -95,3 +96,19 @@ def test_me_with_garbage_token(client):
     r = client.get("/api/auth/me", headers={"Authorization": "Bearer abc"})
     assert r.status_code == 401
     assert r.get_json()["code"] == "INVALID_TOKEN"
+
+
+def test_login_allows_pending_account(client):
+    """승격 승인 대기(PENDING)는 계정 잠금이 아니다 — 로그인은 그대로 된다.
+
+    _assert_account_usable 이 막는 것은 정지·탈퇴뿐이라는 사실을 고정해 둔다.
+    여기에 PENDING 이 끼면 승인 기다리는 동안 접속이 끊긴다.
+    """
+    db.execute(
+        "INSERT INTO users (user_id, user_pw, user_name, user_role, user_status)"
+        " VALUES ('wait01', %s, '대기자', 'VIEWER', 'PENDING')",
+        (PW_HASH,),
+    )
+    r = _login(client, "wait01", PW)
+    assert r.status_code == 200
+    assert r.get_json()["user"]["user_role"] == "VIEWER"

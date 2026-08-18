@@ -198,3 +198,45 @@ def test_code_differs_per_user_and_password():
     b = account_recovery.issue_code(2, "hash-a")
     c = account_recovery.issue_code(1, "hash-b")
     assert a != b and a != c
+
+
+# ---------- 승격 승인 대기(PENDING) 계정 ----------
+# PENDING 은 '관리자 승격 승인 대기'일 뿐 계정 자체는 정상 사용 중이다(로그인도 된다).
+# 계정 찾기 경로가 ACTIVE 만 보면 승인 대기 중인 사람은 아이디도 못 찾고 비밀번호도
+# 못 바꾼다 — 승인이 며칠 걸릴 수 있으므로 그 사이 계정을 잠그는 셈이 된다.
+
+def _make_pending_user(user_id="wait01", name="대기자", email="wait@fg.kr",
+                       phone="01033333333"):
+    """VIEWER 권한 그대로 승격 승인만 기다리는 계정을 만든다."""
+    from conftest import PW_HASH
+    db.execute(
+        "INSERT INTO users (user_id, user_pw, user_name, user_email, user_phone,"
+        " user_role, user_status) VALUES (%s, %s, %s, %s, %s, 'VIEWER', 'PENDING')",
+        (user_id, PW_HASH, name, email, phone),
+    )
+
+
+def test_find_id_includes_pending_account(client):
+    _make_pending_user()
+    res = client.post(FIND_ID, json={"user_name": "대기자", "user_email": "wait@fg.kr"})
+    assert res.status_code == 200
+    assert res.get_json()["user_id"].startswith("wai")
+
+
+def test_request_sends_code_to_pending_account(client, sent_sms):
+    _make_pending_user()
+    res = client.post(REQ, json={"user_id": "wait01", "user_name": "대기자",
+                                 "user_email": "wait@fg.kr"})
+    assert res.status_code == 200
+    assert len(sent_sms) == 1
+    phone, message = sent_sms[0]
+    assert phone == "01033333333"
+    assert _issue("wait01") in message
+
+
+def test_confirm_resets_password_of_pending_account(client):
+    _make_pending_user()
+    res = client.post(CONFIRM, json={"user_id": "wait01", "code": _issue("wait01"),
+                                     "user_pw": NEW_PW})
+    assert res.status_code == 200
+    assert bcrypt.checkpw(NEW_PW.encode(), _pw_hash("wait01").encode())

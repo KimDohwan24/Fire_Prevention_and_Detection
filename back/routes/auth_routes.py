@@ -35,6 +35,13 @@ _RESET_ACCEPTED = {
 }
 
 
+# 계정 찾기·비밀번호 재설정이 대상으로 삼는 상태 — 지금 정상적으로 쓰이는 계정이다.
+# PENDING(관리자 승격 승인 대기)은 권한만 기다릴 뿐 로그인도 되는 정상 계정이라 포함한다.
+# 빼면 승인이 날 때까지 아이디 찾기도 비밀번호 재설정도 막혀, 승인 대기가 곧 계정 잠금이 된다.
+# 정지·탈퇴는 되찾아 봐야 로그인이 막혀 있으므로 제외한다.
+RECOVERABLE_STATUSES = ["ACTIVE", "PENDING"]
+
+
 def _assert_account_usable(user: dict) -> None:
     """정지·탈퇴 계정을 막는다. 로그인 경로가 둘(일반·소셜)이라 한 곳에 모아 뒀다.
 
@@ -142,10 +149,10 @@ def find_id():
     user = db.query_one(
         """
         SELECT user_id FROM users
-        WHERE user_name = %s AND user_email = %s AND user_status = 'ACTIVE'
+        WHERE user_name = %s AND user_email = %s AND user_status = ANY(%s)
         ORDER BY user_no
         """,
-        (user_name, user_email),
+        (user_name, user_email, RECOVERABLE_STATUSES),
     )
     if not user:
         raise ApiError(404, "USER_NOT_FOUND", "일치하는 계정을 찾을 수 없습니다.")
@@ -176,9 +183,9 @@ def password_reset_request():
         """
         SELECT user_no, user_pw, user_phone FROM users
         WHERE user_id = %s AND user_name = %s AND user_email = %s
-          AND user_status = 'ACTIVE' AND user_pw IS NOT NULL
+          AND user_status = ANY(%s) AND user_pw IS NOT NULL
         """,
-        (user_id, user_name, user_email),
+        (user_id, user_name, user_email, RECOVERABLE_STATUSES),
     )
     if user:
         code = account_recovery.issue_code(user["user_no"], user["user_pw"])
@@ -212,9 +219,9 @@ def password_reset_confirm():
     user = db.query_one(
         """
         SELECT user_no, user_pw FROM users
-        WHERE user_id = %s AND user_status = 'ACTIVE' AND user_pw IS NOT NULL
+        WHERE user_id = %s AND user_status = ANY(%s) AND user_pw IS NOT NULL
         """,
-        (user_id,),
+        (user_id, RECOVERABLE_STATUSES),
     )
     # 계정이 없어도 코드가 틀린 것과 같은 응답을 준다 (아이디 존재 여부 은닉)
     if not user or not account_recovery.verify_code(user["user_no"], user["user_pw"], code):

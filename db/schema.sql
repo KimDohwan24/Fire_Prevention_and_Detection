@@ -453,7 +453,10 @@ COMMENT ON COLUMN fireguard.user_activity.activity_at        IS '활동 일시';
 -- 상태값 정의 (참고용, 코드에서 비교하는 값)
 -- =====================================================
 -- users.user_role          : ADMIN(관리자) VIEWER(조회전용)
--- users.user_status        : ACTIVE(정상) SUSPENDED(정지) WITHDRAWN(탈퇴)
+-- users.user_status        : ACTIVE(정상) PENDING(관리자 승격 승인 대기)
+--                            SUSPENDED(정지) WITHDRAWN(탈퇴)
+--                            PENDING 은 권한만 기다리는 정상 계정이다 — 로그인·계정 찾기가 되고
+--                            user_role 은 VIEWER 그대로다. 승인되면 ADMIN·ACTIVE 가 된다.
 -- users.user_provider      : LOCAL(아이디/비밀번호) GOOGLE KAKAO NAVER
 --                            LOCAL 이 아니면 user_pw 가 NULL 이고 비밀번호 로그인이 막힌다.
 --                            소셜 계정의 user_id 는 '{provider소문자}_{provider_id}' 를

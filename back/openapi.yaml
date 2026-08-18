@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: 파이어가드 API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
 
@@ -79,7 +79,8 @@ paths:
         - users
       summary: 관리자 권한 승인 요청
       description: |
-        일반 회원이 관리자 권한 승인을 요청한다. 계정 상태가 `USER` 에서 `PENDING` (승인 대기)으로 변경된다.
+        일반 회원이 관리자 권한 승인을 요청한다. 계정 상태가 `ACTIVE` 에서 `PENDING` (승인 대기)으로 변경된다.
+        권한(`user_role`)은 `VIEWER` 그대로이고, `PENDING` 인 동안에도 로그인·계정 찾기는 정상 동작한다.
       security:
         - bearerAuth: []
       responses:
@@ -2156,7 +2157,13 @@ components:
       enum: [ADMIN, VIEWER]
     UserStatus:
       type: string
-      enum: [ACTIVE, SUSPENDED, WITHDRAWN]
+      description: |
+        `ACTIVE` 정상 · `PENDING` 관리자 승격 승인 대기 · `SUSPENDED` 정지 · `WITHDRAWN` 탈퇴.
+
+        `PENDING` 은 **권한만 기다리는 정상 계정**이다 — 로그인도 되고 아이디 찾기·비밀번호
+        재설정도 된다. 권한은 그동안 `VIEWER` 그대로이며, 관리자가 승인하면 `ADMIN`·`ACTIVE`,
+        거절하면 `VIEWER`·`ACTIVE` 로 돌아간다 (POST /api/admin/request-upgrade).
+      enum: [ACTIVE, PENDING, SUSPENDED, WITHDRAWN]
     CctvStatus:
       type: string
       enum: [ACTIVE, INACTIVE]
