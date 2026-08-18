@@ -12,6 +12,11 @@ import {
 import CctvPlayer from '../components/CctvPlayer';
 import AppHeader from '../components/AppHeader';
 import { authApi, cctvApi, getCurrentUserFromStorage, userApi } from '../api';
+import {
+  appendLocalActivityLog,
+  getLocalActivityLogs,
+  normalizeActivityRecord,
+} from '../utils/activityLog';
 
 export default function MyPage() {
   const navigate = useNavigate();
@@ -155,47 +160,17 @@ export default function MyPage() {
   useEffect(() => {
     if (!currentUser?.user_no) return;
 
-    let isCurrentRequest = true;
-    setIsActivitiesLoading(true);
     setActivityError('');
 
-    userApi.activities(currentUser.user_no, {
-      page: activityPage,
-      size: ITEMS_PER_PAGE,
-    }).then((res) => {
-      if (!isCurrentRequest) return;
+    const localActivities = getLocalActivityLogs(currentUser.user_no)
+      .map(normalizeActivityRecord);
+    const localTotalPages = Math.ceil(localActivities.length / ITEMS_PER_PAGE);
+    const localStart = (activityPage - 1) * ITEMS_PER_PAGE;
 
-      const items = Array.isArray(res?.items) ? res.items : [];
-      setActivities(items.map((activity) => {
-        const isLogin = activity.activity_type === 'LOGIN';
-        return {
-          id: activity.activity_no,
-          time: activity.activity_at
-            ? activity.activity_at.substring(0, 16).replace('T', ' ')
-            : '-',
-          type: isLogin ? 'login' : 'logout',
-          title: isLogin ? '로그인' : '로그아웃',
-          detail: isLogin
-            ? 'FireGuard에 접속했습니다.'
-            : 'FireGuard에서 로그아웃했습니다.',
-        };
-      }));
-      setActivityTotal(res?.total_count || 0);
-      setActivityTotalPages(res?.total_pages || 0);
-    }).catch((error) => {
-      if (!isCurrentRequest) return;
-      console.warn('MyPage 활동 이력 로드 오류:', error);
-      setActivities([]);
-      setActivityTotal(0);
-      setActivityTotalPages(0);
-      setActivityError(error.message || '활동 이력을 불러오지 못했습니다.');
-    }).finally(() => {
-      if (isCurrentRequest) setIsActivitiesLoading(false);
-    });
-
-    return () => {
-      isCurrentRequest = false;
-    };
+    setActivities(localActivities.slice(localStart, localStart + ITEMS_PER_PAGE));
+    setActivityTotal(localActivities.length);
+    setActivityTotalPages(localTotalPages);
+    setIsActivitiesLoading(false);
   }, [currentUser?.user_no, activityPage, activityRefreshKey]);
 
   const showToast = (msg) => {
@@ -276,7 +251,16 @@ export default function MyPage() {
       };
       setCurrentUser(updatedUser);
       localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+      appendLocalActivityLog({
+        user_no: updatedUser.user_no,
+        activity_type: 'PROFILE_UPDATE',
+        type: 'system',
+        title: '프로필 정보 수정',
+        detail: '이름, 이메일 또는 연락처 정보를 변경했습니다.',
+      });
       setIsEditProfileOpen(false);
+      setActivityPage(1);
+      setActivityRefreshKey((current) => current + 1);
       showToast('프로필 정보가 저장되었습니다.');
     } catch (error) {
       showToast(error.message || '프로필 저장에 실패했습니다.');
@@ -324,6 +308,15 @@ const handleSavePassword = async (e) => {
 
     setIsChangePasswordOpen(false);
     setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    appendLocalActivityLog({
+      user_no: currentUser.user_no,
+      activity_type: 'PASSWORD_CHANGE',
+      type: 'setting',
+      title: '비밀번호 변경',
+      detail: '계정 비밀번호를 변경했습니다.',
+    });
+    setActivityPage(1);
+    setActivityRefreshKey((current) => current + 1);
     setIsPasswordChangeNoticeOpen(true);
 
   } catch (error) {
@@ -334,11 +327,25 @@ const handleSavePassword = async (e) => {
 
   // 설정을 변경할 때의 핸들러
   const toggleSetting = (key) => {
-    setSettings(prev => {
-      const next = { ...prev, [key]: !prev[key] };
-      showToast('설정이 업데이트되었습니다.');
-      return next;
+    const nextValue = !settings[key];
+    const settingLabels = {
+      smsNotify: '긴급 SMS 알림',
+      emailNotify: '이메일 화재 리포트',
+      pushNotify: '브라우저 웹 푸시',
+      nightMode: '야간 모드',
+    };
+
+    setSettings(prev => ({ ...prev, [key]: nextValue }));
+    appendLocalActivityLog({
+      user_no: currentUser?.user_no,
+      activity_type: 'SETTING_UPDATE',
+      type: 'setting',
+      title: '알림 설정 변경',
+      detail: `${settingLabels[key] || '개인 설정'}을 ${nextValue ? '켜짐' : '꺼짐'}으로 변경했습니다.`,
     });
+    setActivityPage(1);
+    setActivityRefreshKey((current) => current + 1);
+    showToast('설정이 업데이트되었습니다.');
   };
 
   return (
@@ -684,7 +691,7 @@ const handleSavePassword = async (e) => {
                 title="활동 이력 목록을 최신 상태로 다시 불러오기"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>초기화</span>
+                <span>새로고침</span>
               </button>
             </div>
 

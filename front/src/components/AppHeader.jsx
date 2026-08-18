@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   UserRound,
 } from 'lucide-react';
+import { isSuperAdminUser } from '../api';
 
 const NAV_ITEMS = [
   { key: 'dashboard', label: '대시보드', path: '/dashboard', icon: LayoutDashboard },
@@ -19,7 +20,8 @@ const NAV_ITEMS = [
 
 export default function AppHeader({ currentPage, currentUser, onLogout }) {
   const navigate = useNavigate();
-  const isAdmin = currentUser?.role === 'admin' || currentUser?.rawRole === 'ADMIN';
+  const isSuperAdmin = isSuperAdminUser(currentUser);
+  const isAdmin = isSuperAdmin || currentUser?.role === 'admin' || currentUser?.rawRole === 'ADMIN';
   const visibleItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
 
   return (
@@ -37,7 +39,11 @@ export default function AppHeader({ currentPage, currentUser, onLogout }) {
           </button>
 
           <span className="hidden md:inline-flex items-center h-7 px-2.5 rounded-full border border-hairline bg-surface-soft text-[11px] font-semibold text-body whitespace-nowrap">
-            {isAdmin ? <><ShieldCheck className="w-3.5 h-3.5 mr-1" />관리자 권한</> : '일반 관제회원'}
+            {isSuperAdmin
+              ? <><ShieldCheck className="w-3.5 h-3.5 mr-1" />최고 관리자</>
+              : isAdmin
+                ? <><ShieldCheck className="w-3.5 h-3.5 mr-1" />관리자 권한</>
+                : '일반 관제회원'}
           </span>
         </div>
 

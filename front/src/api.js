@@ -1,9 +1,35 @@
+import { appendLocalActivityLog } from './utils/activityLog';
+
 /**
  * FireGuard 백엔드 API 클라이언트
  * Base URL: /api (vite proxy -> http://localhost:5000/api)
  */
 
 export const API_BASE_URL = '/api';
+export const SUPER_ADMIN_USER_NO = 1;
+
+// OAuth2 로그인 시작 엔드포인트. 각 백엔드 엔드포인트는 OAuth 제공자 인증 화면으로 리다이렉트해야 합니다.
+export const OAUTH_PROVIDER_PATHS = Object.freeze({
+  kakao: `${API_BASE_URL}/auth/kakao`,
+  google: `${API_BASE_URL}/auth/google`,
+  naver: `${API_BASE_URL}/auth/naver`,
+});
+
+export function getOAuthLoginUrl(provider) {
+  const endpoint = OAUTH_PROVIDER_PATHS[provider];
+  if (!endpoint) {
+    throw new Error('지원하지 않는 소셜 로그인입니다.');
+  }
+  return endpoint;
+}
+
+export function startOAuthLogin(provider) {
+  window.location.assign(getOAuthLoginUrl(provider));
+}
+
+export function isSuperAdminUser(user) {
+  return Number(user?.user_no) === SUPER_ADMIN_USER_NO;
+}
 
 // 토큰 저장/조회/삭제 헬퍼
 export function getAccessToken() {
@@ -33,22 +59,6 @@ export function setCurrentUserToStorage(user) {
   } else {
     localStorage.removeItem('currentUser');
   }
-}
-
-// 로그인 응답(access_token + user)을 스토리지에 반영한다.
-// 일반 로그인과 소셜 로그인의 응답 형식이 같으므로, 저장 경로가 갈라지면
-// 로그인 이후 화면들이 서로 다른 모양의 currentUser 를 읽게 된다 — 한 곳으로 모은다.
-function persistLoginResult(res) {
-  if (!res?.access_token) return res;
-  setAccessToken(res.access_token);
-  setCurrentUserToStorage({
-    id: res.user.user_id,
-    user_no: res.user.user_no,
-    name: res.user.user_name,
-    role: res.user.user_role === 'ADMIN' ? 'admin' : 'user',
-    rawRole: res.user.user_role,
-  });
-  return res;
 }
 
 async function request(endpoint, options = {}) {
@@ -105,7 +115,31 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ user_id, user_pw }),
     });
-    return persistLoginResult(res);
+    if (res?.access_token) {
+      const isSuperAdmin = isSuperAdminUser(res.user);
+      const signedInUser = {
+        id: res.user.user_id,
+        user_no: res.user.user_no,
+        name: res.user.user_name,
+        role: isSuperAdmin || res.user.user_role === 'ADMIN' ? 'admin' : 'user',
+        rawRole: isSuperAdmin ? 'ADMIN' : res.user.user_role,
+        isSuperAdmin,
+      };
+      setAccessToken(res.access_token);
+      setCurrentUserToStorage(signedInUser);
+      appendLocalActivityLog({
+        user_no: signedInUser.user_no,
+        activity_type: 'LOGIN',
+        type: 'login',
+        title: '로그인',
+        detail: 'FireGuard에 로그인했습니다.',
+      });
+    }
+    return res;
+  },
+
+  oauthLogin: (provider) => {
+    startOAuthLogin(provider);
   },
 
   me: async () => {
@@ -133,7 +167,24 @@ export const authApi = {
     });
   },
 
+// ▼ [추가] 이메일 인증번호 발송 요청 API
+  requestEmailVerify: async (email) => {
+    return await request('/auth/email/verify-request', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  // ▼ [추가] 이메일 인증번호 확인 API
+  confirmEmailVerify: async (email, code) => {
+    return await request('/auth/email/verify-confirm', {
+      method: 'POST',
+      body: JSON.stringify({ email, code }),
+    });
+  },
+
   logout: async () => {
+    const currentUser = getCurrentUserFromStorage();
     try {
       if (getAccessToken()) {
         await request('/auth/logout', { method: 'POST' });
@@ -141,51 +192,21 @@ export const authApi = {
     } catch (error) {
       console.warn('로그아웃 활동 이력을 서버에 저장하지 못했습니다.', error);
     } finally {
+      if (currentUser?.user_no != null) {
+        appendLocalActivityLog({
+          user_no: currentUser.user_no,
+          activity_type: 'LOGOUT',
+          type: 'logout',
+          title: '로그아웃',
+          detail: 'FireGuard에서 로그아웃했습니다.',
+        });
+      }
       setAccessToken(null);
       setCurrentUserToStorage(null);
     }
   },
 };
 
-// 1-1. 소셜 로그인(OAuth) API
-// 백엔드가 받는 provider 값(소문자)과 사람에게 보여줄 이름.
-export const SOCIAL_PROVIDERS = [
-  { id: 'google', name: 'Google' },
-  { id: 'kakao', name: '카카오' },
-  { id: 'naver', name: '네이버' },
-];
-
-// state 는 CSRF 방어용이라 브라우저 탭 안에서만 살아있으면 된다 —
-// 탭을 닫으면 사라지도록 localStorage 가 아니라 sessionStorage 를 쓴다.
-const oauthStateKey = (provider) => `oauth_state_${provider}`;
-
-export const oauthApi = {
-  // 프로바이더 동의 화면 URL 과 state 를 받아온다. (비로그인 공개 엔드포인트)
-  getAuthorizeUrl: async (provider) => {
-    return await request(`/auth/oauth/${provider}/authorize`);
-  },
-
-  saveState: (provider, state) => {
-    sessionStorage.setItem(oauthStateKey(provider), state ?? '');
-  },
-
-  // 콜백에서 한 번만 쓰고 버린다 — 남겨두면 다음 로그인 시도에 재사용될 수 있다.
-  takeState: (provider) => {
-    const key = oauthStateKey(provider);
-    const saved = sessionStorage.getItem(key);
-    sessionStorage.removeItem(key);
-    return saved;
-  },
-
-  // 인가 코드를 토큰으로 교환한다. 응답 형식이 /auth/login 과 같으므로 저장 경로도 같다.
-  login: async (provider, code, state) => {
-    const res = await request(`/auth/oauth/${provider}`, {
-      method: 'POST',
-      body: JSON.stringify({ code, state }),
-    });
-    return persistLoginResult(res);
-  },
-};
 
 // 2. 사용자/관리자 API
 export const userApi = {
@@ -205,6 +226,16 @@ export const userApi = {
     return await request(`/users/${user_no}`, {
       method: 'PUT',
       body: JSON.stringify(userData),
+    });
+  },
+
+  updateRole: async (user_no, user_role, user_status) => {
+    const payload = { user_role };
+    if (user_status) payload.user_status = user_status;
+
+    return await request(`/users/${user_no}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
     });
   },
 
@@ -342,3 +373,71 @@ export const adminUpgradeApi = {
     });
   },
 };
+
+
+// 1. 인증 API
+// export const authApi = {
+//   login: async (user_id, user_pw) => {
+//     const res = await request('/auth/login', {
+//       method: 'POST',
+//       body: JSON.stringify({ user_id, user_pw }),
+//     });
+//     if (res?.access_token) {
+//       setAccessToken(res.access_token);
+//       setCurrentUserToStorage({
+//         id: res.user.user_id,
+//         user_no: res.user.user_no,
+//         name: res.user.user_name,
+//         role: res.user.user_role === 'ADMIN' ? 'admin' : 'user',
+//         rawRole: res.user.user_role,
+//       });
+//     }
+//     return res;
+//   },
+
+//   me: async () => {
+//     return await request('/auth/me');
+//   },
+
+//   findId: async (user_name, user_email) => {
+//     return await request('/auth/find-id', {
+//       method: 'POST',
+//       body: JSON.stringify({ user_name, user_email }),
+//     });
+//   },
+
+//   requestPasswordReset: async (user_id, user_name, user_email) => {
+//     return await request('/auth/password-reset/request', {
+//       method: 'POST',
+//       body: JSON.stringify({ user_id, user_name, user_email }),
+//     });
+//   },
+
+//   confirmPasswordReset: async (user_id, code, user_pw) => {
+//     return await request('/auth/password-reset/confirm', {
+//       method: 'POST',
+//       body: JSON.stringify({ user_id, code, user_pw }),
+//     });
+//   },
+
+//   // ▼ [추가] 이메일 인증번호 발송 요청 API
+//   requestEmailVerify: async (email) => {
+//     return await request('/auth/email/verify-request', {
+//       method: 'POST',
+//       body: JSON.stringify({ email }),
+//     });
+//   },
+
+//   // ▼ [추가] 이메일 인증번호 확인 API
+//   confirmEmailVerify: async (email, code) => {
+//     return await request('/auth/email/verify-confirm', {
+//       method: 'POST',
+//       body: JSON.stringify({ email, code }),
+//     });
+//   },
+
+//   logout: () => {
+//     setAccessToken(null);
+//     setCurrentUserToStorage(null);
+//   },
+// };

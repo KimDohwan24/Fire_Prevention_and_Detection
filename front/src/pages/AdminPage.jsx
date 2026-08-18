@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { authApi, cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi } from '../api';
+import { authApi, cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi, isSuperAdminUser } from '../api';
 import {
   Users, PlusCircle,
   Video, CheckCircle, Trash2,
@@ -25,6 +25,7 @@ const AdminPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAgencyLoading, setIsAgencyLoading] = useState(false);
   const [isAgencySubmitting, setIsAgencySubmitting] = useState(false);
+  const [updatingUserNo, setUpdatingUserNo] = useState(null);
 
   // 데이터 상태 (실시간 백엔드 DB 연동)
   const [cctvList, setCctvList] = useState(INITIAL_CCTVS);
@@ -57,13 +58,20 @@ const AdminPage = () => {
   const [editingCctv, setEditingCctv] = useState(null);
   const [isAddingCctv, setIsAddingCctv] = useState(false);
   const [previewCctv, setPreviewCctv] = useState(null);
+  const isCurrentUserSuperAdmin = isSuperAdminUser(currentUser);
+
+  const canManageUserRole = (user) => {
+    if (!user || isSuperAdminUser(user)) return false;
+    if (user.role === 'admin') return isCurrentUserSuperAdmin;
+    return user.isAdminRequestPending;
+  };
 
   useEffect(() => {
     const stored = localStorage.getItem('currentUser');
     if (stored) {
       try {
         const user = JSON.parse(stored);
-        if (user.role !== 'admin') {
+        if (user.role !== 'admin' && !isSuperAdminUser(user)) {
           alert('관리자만 접근 가능한 페이지입니다.');
           navigate('/dashboard');
           return;
@@ -83,21 +91,36 @@ const AdminPage = () => {
     userApi.list().then(res => {
       const items = res?.items || res || [];
       if (Array.isArray(items)) {
-        const mappedUsers = items.map(u => ({
-          id: u.user_id,
-          user_no: u.user_no,
-          name: u.user_name || u.user_id,
-          email: u.user_email || `${u.user_id}@fireguard.or.kr`,
-          role: u.user_role === 'ADMIN' ? 'admin' : 'user',
-          status: u.user_status === 'ACTIVE' ? '승인' : u.user_status === 'WITHDRAWN' ? '탈퇴' : '승인대기',
-          dept: u.user_role === 'ADMIN' ? '관제총괄팀' : '관제팀',
-          phone: u.user_phone || '010-0000-0000',
-          position: u.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원',
-          joinedAt: u.user_created_at ? u.user_created_at.substring(0, 10) : '2026-01-01',
-          lastLogin: '접속 이력 확인가능',
-          assignedZone: '지정 관제 구역',
-          activities: []
-        }));
+        const mappedUsers = items.map(u => {
+          const userStatus = String(u.user_status || '').trim().toUpperCase();
+          const isSuperAdmin = isSuperAdminUser(u);
+          const role = isSuperAdmin || u.user_role === 'ADMIN' ? 'admin' : 'user';
+
+          return {
+            id: u.user_id,
+            user_no: u.user_no,
+            name: u.user_name || u.user_id,
+            email: u.user_email || `${u.user_id}@fireguard.or.kr`,
+            role,
+            isSuperAdmin,
+            userStatus,
+            isAdminRequestPending: userStatus === 'PENDING',
+            status: userStatus === 'ACTIVE'
+              ? '승인'
+              : userStatus === 'WITHDRAWN'
+                ? '탈퇴'
+                : userStatus === 'PENDING'
+                  ? '관리자 요청 대기'
+                  : '승인대기',
+            dept: role === 'admin' ? '관제총괄팀' : '관제팀',
+            phone: u.user_phone || '010-0000-0000',
+            position: role === 'admin' ? '총괄 관제 책임자' : '관제 전담 요원',
+            joinedAt: u.user_created_at ? u.user_created_at.substring(0, 10) : '2026-01-01',
+            lastLogin: '접속 이력 확인가능',
+            assignedZone: '지정 관제 구역',
+            activities: []
+          };
+        });
         setUserList(mappedUsers);
       }
     }).catch(err => console.warn('사용자 목록 로드 오류:', err));
@@ -361,8 +384,68 @@ const AdminPage = () => {
   };
 
   // 회원 권한 토글
-  const toggleRole = () => {
-    alert('회원 권한 변경 API가 아직 연동되지 않아 권한은 변경되지 않았습니다.');
+  const toggleRole = async (user) => {
+    if (user?.user_no == null || updatingUserNo !== null) return;
+    if (!canManageUserRole(user)) {
+      if (isSuperAdminUser(user)) {
+        alert('최고 관리자의 권한은 변경할 수 없습니다.');
+      } else if (user.role === 'admin' && !isCurrentUserSuperAdmin) {
+        alert('다른 관리자의 권한은 최고 관리자만 변경할 수 있습니다.');
+      }
+      return;
+    }
+
+    const nextRole = user.role === 'admin' ? 'VIEWER' : 'ADMIN';
+    const nextRoleLabel = nextRole === 'ADMIN' ? '관리자' : '일반 관제원';
+    const nextUserStatus = user.userStatus === 'PENDING' ? 'ACTIVE' : user.userStatus || 'ACTIVE';
+    const nextUserStatusLabel = nextUserStatus === 'ACTIVE'
+      ? '승인'
+      : nextUserStatus === 'WITHDRAWN'
+        ? '탈퇴'
+        : nextUserStatus === 'PENDING'
+          ? '관리자 요청 대기'
+          : '승인대기';
+    setUpdatingUserNo(user.user_no);
+
+    try {
+      await userApi.updateRole(user.user_no, nextRole, nextUserStatus);
+
+      const updatedUser = {
+        ...user,
+        role: nextRole === 'ADMIN' ? 'admin' : 'user',
+        userStatus: nextUserStatus,
+        isAdminRequestPending: false,
+        status: nextUserStatusLabel,
+        adminRequested: false,
+        adminRequestStatus: nextRole === 'ADMIN' ? 'APPROVED' : undefined,
+        dept: nextRole === 'ADMIN' ? '관제총괄팀' : '관제팀',
+        position: nextRole === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원',
+      };
+
+      setUserList(prev => prev.map(item => (
+        item.user_no === user.user_no ? updatedUser : item
+      )));
+      setSelectedUser(prev => (
+        prev?.user_no === user.user_no ? updatedUser : prev
+      ));
+
+      if (currentUser?.user_no === user.user_no) {
+        const updatedSessionUser = {
+          ...currentUser,
+          role: updatedUser.role,
+          rawRole: nextRole,
+        };
+        setCurrentUser(updatedSessionUser);
+        localStorage.setItem('currentUser', JSON.stringify(updatedSessionUser));
+      }
+
+      alert(`[${user.name}] 권한이 ${nextRoleLabel}(으)로 변경되었습니다.`);
+    } catch (err) {
+      console.error('회원 권한 변경 실패:', err);
+      alert(`회원 권한 변경에 실패했습니다. ${err.message || '오류가 발생했습니다.'}`);
+    } finally {
+      setUpdatingUserNo(null);
+    }
   };
 
   // 회원 승인
@@ -724,7 +807,7 @@ const AdminPage = () => {
                       <th className="p-3.5">이름 (아이디)</th>
                       <th className="p-3.5">이메일 / 소속 (클릭 시 상세조회)</th>
                       <th className="p-3.5">현재 권한</th>
-                      <th className="p-3.5">가입 승인 상태</th>
+                      <th className="p-3.5">사용자 상태</th>
                       <th className="p-3.5 text-right">상세조회 및 관리</th>
                     </tr>
                   </thead>
@@ -751,11 +834,15 @@ const AdminPage = () => {
                           </button>
                         </td>
                         <td className="p-3.5">
-                          {user.role === 'admin' ? (
+                          {user.isSuperAdmin ? (
+                            <span className="px-2.5 py-0.5 bg-ink text-canvas font-bold rounded-full border border-ink">
+                              👑 최고 관리자
+                            </span>
+                          ) : user.role === 'admin' ? (
                             <span className="px-2.5 py-0.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold rounded-full border border-amber-500/30">
                               👑 관리자
                             </span>
-                          ) : user.adminRequested || user.adminRequestStatus === 'PENDING' ? (
+                          ) : user.isAdminRequestPending ? (
                             <span className="px-2.5 py-0.5 bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold rounded-full border border-amber-500/40">
                               ⏳ 관리자 승격 요청됨
                             </span>
@@ -766,7 +853,11 @@ const AdminPage = () => {
                           )}
                         </td>
                         <td className="p-3.5">
-                          {user.status === '승인' ? (
+                          {user.isAdminRequestPending ? (
+                            <span className="text-amber-500 font-bold flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5" /> 관리자 요청 대기
+                            </span>
+                          ) : user.status === '승인' ? (
                             <span className="text-emerald-500 font-bold flex items-center gap-1">
                               <UserCheck className="w-3.5 h-3.5" /> 승인완료
                             </span>
@@ -790,36 +881,32 @@ const AdminPage = () => {
                             <span>상세보기</span>
                             <ChevronRight className="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleRole(user.id);
-                              // 승격 승인 시 localStorage 내 currentUser도 함께 업데이트
-                              const stored = localStorage.getItem('currentUser');
-                              if (stored) {
-                                try {
-                                  const parsed = JSON.parse(stored);
-                                  if (parsed.id === user.id || user.role !== 'admin') {
-                                    parsed.role = 'admin';
-                                    parsed.adminRequested = false;
-                                    parsed.adminRequestStatus = 'APPROVED';
-                                    localStorage.setItem('currentUser', JSON.stringify(parsed));
-                                  }
-                                } catch (err) {}
-                              }
-                            }}
-                            className={`px-3 py-1 font-bold rounded-lg transition-colors cursor-pointer shadow-xs ${
-                              user.adminRequested || user.adminRequestStatus === 'PENDING'
-                                ? 'bg-amber-500 text-white hover:bg-amber-600 border border-amber-600'
-                                : 'bg-canvas border border-hairline hover:border-ink'
-                            }`}
-                          >
-                            {user.role === 'admin'
-                              ? '일반 변경'
-                              : user.adminRequested || user.adminRequestStatus === 'PENDING'
-                              ? '👑 관리자 승인 (승격)'
-                              : '관리자 승격'}
-                          </button>
+                          {user.isSuperAdmin ? (
+                            <span className="text-[11px] text-ink font-bold">최고 관리자 권한 고정</span>
+                          ) : canManageUserRole(user) ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleRole(user);
+                              }}
+                              disabled={updatingUserNo !== null}
+                              className={`px-3 py-1 font-bold rounded-lg transition-colors cursor-pointer shadow-xs ${
+                                user.isAdminRequestPending
+                                  ? 'bg-amber-500 text-white hover:bg-amber-600 border border-amber-600'
+                                  : 'bg-canvas border border-hairline hover:border-ink'
+                              }`}
+                            >
+                              {updatingUserNo === user.user_no ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : user.role === 'admin'
+                                ? '일반 변경'
+                                : '👑 관리자 승인 (승격)'}
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-mute">
+                              {user.role === 'admin' ? '최고 관리자 전용' : '관리자 요청 없음'}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -902,9 +989,17 @@ const AdminPage = () => {
                   <div className="flex items-center gap-2">
                     <h2 className="text-heading-sm font-bold text-ink">{selectedUser.name}</h2>
                     <span className="text-xs text-mute font-mono">({selectedUser.id})</span>
-                    {selectedUser.role === 'admin' ? (
+                    {selectedUser.isSuperAdmin ? (
+                      <span className="px-2 py-0.5 bg-ink text-canvas font-bold rounded-full text-[11px] border border-ink">
+                        👑 최고 관리자
+                      </span>
+                    ) : selectedUser.role === 'admin' ? (
                       <span className="px-2 py-0.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold rounded-full text-[11px] border border-amber-500/30">
                         👑 관리자
+                      </span>
+                    ) : selectedUser.isAdminRequestPending ? (
+                      <span className="px-2 py-0.5 bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold rounded-full text-[11px] border border-amber-500/40">
+                        ⏳ 관리자 요청 대기
                       </span>
                     ) : (
                       <span className="px-2 py-0.5 bg-surface-soft text-mute rounded-full text-[11px] border border-hairline">
@@ -967,9 +1062,13 @@ const AdminPage = () => {
                   <div className="space-y-2 text-xs">
                     <div className="flex items-center justify-between">
                       <span className="text-mute flex items-center gap-1">
-                        <BadgeCheck className="w-3.5 h-3.5" /> 가입 승인 상태
+                        <BadgeCheck className="w-3.5 h-3.5" /> 사용자 상태
                       </span>
-                      {selectedUser.status === '승인' ? (
+                      {selectedUser.isAdminRequestPending ? (
+                        <span className="text-amber-500 font-bold flex items-center gap-1">
+                          <Clock className="w-3.5 h-3.5" /> 관리자 요청 대기
+                        </span>
+                      ) : selectedUser.status === '승인' ? (
                         <span className="text-emerald-500 font-bold flex items-center gap-1">
                           <CheckCircle2 className="w-3.5 h-3.5" /> 승인완료
                         </span>
@@ -1053,7 +1152,7 @@ const AdminPage = () => {
             {/* 모달 푸터 액션 */}
             <div className="p-4 border-t border-hairline bg-surface-soft/40 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
-                {selectedUser.status !== '승인' && (
+                {selectedUser.status !== '승인' && !selectedUser.isAdminRequestPending && (
                   <button
                     onClick={() => approveUser(selectedUser.id)}
                     className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs py-2 px-4 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
@@ -1062,12 +1161,22 @@ const AdminPage = () => {
                     가입 승인하기
                   </button>
                 )}
-                <button
-                  onClick={() => toggleRole(selectedUser.id)}
-                  className="bg-canvas border border-hairline hover:border-ink text-ink font-semibold text-xs py-2 px-4 rounded-lg transition-colors cursor-pointer"
-                >
-                  {selectedUser.role === 'admin' ? '일반 관제원으로 권한 변경' : '관리자 권한으로 승격'}
-                </button>
+                {selectedUser.isSuperAdmin ? (
+                  <span className="text-xs text-ink font-bold">최고 관리자 권한 고정</span>
+                ) : canManageUserRole(selectedUser) ? (
+                  <button
+                    onClick={() => toggleRole(selectedUser)}
+                    disabled={updatingUserNo !== null}
+                    className="bg-canvas border border-hairline hover:border-ink text-ink font-semibold text-xs py-2 px-4 rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
+                  >
+                    {updatingUserNo === selectedUser.user_no && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    {selectedUser.role === 'admin' ? '일반 관제원으로 권한 변경' : '관리자 권한으로 승격'}
+                  </button>
+                ) : (
+                  <span className="text-xs text-mute">
+                    {selectedUser.role === 'admin' ? '최고 관리자만 권한을 변경할 수 있습니다.' : '관리자 권한 요청 없음'}
+                  </span>
+                )}
               </div>
 
               <button
