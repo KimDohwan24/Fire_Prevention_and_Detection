@@ -40,6 +40,15 @@ API:
         → 200 {"external_id": <먼저 발급한 번호>, "status": "접수", "duplicate": true}
     GET  /reports              이번 세션에 수신한 요청 전체 목록 (메모리, 디버그용)
                                재전송도 전부 남고 duplicate 플래그로 구분된다
+                               image_base64 는 빼고 index/has_image/image_url 을 붙인다
+                               — 접수 콘솔이 2초마다 이 목록을 폴링하는데 매 폴링마다
+                               수 MB base64 를 실어 보내면 브라우저가 멈춘다
+    GET  /reports/<index>/image  그 신고의 대표 프레임을 image/jpeg 로 돌려준다
+                               (범위 밖·이미지 없음·디코딩 실패는 모두 404 JSON)
+    GET  /                     접수 콘솔 화면 — 수신한 신고를 표로 보여주고
+                               [출동 지령] 버튼으로 백엔드에 출동 통지를 되쏜다.
+                               POST 는 **브라우저가 직접** 백엔드로 보낸다 (이 서버는
+                               중계하지 않는다 — 백엔드가 CORS 전 오리진 허용이다)
     GET  /health               {"status": "ok"}
 
 두 기관 승계(승계 시연) 데모:
@@ -52,13 +61,14 @@ API:
        mode=timeout 이면 기관 1도 실제로는 접수하므로, GET /reports 에서
        기관 1 수신 4건 중 1건만 접수이고 나머지는 duplicate 인 것을 보여줄 수 있다.
 """
+import base64
 import itertools
 import os
 import sys
 import time
 from datetime import datetime
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 # Windows 콘솔 기본 인코딩(cp949)은 일부 문자(—)를 못 써서 기동 즉시 죽는다.
 # 로그가 전부 한글이므로 출력 인코딩을 UTF-8 로 고정한다.
@@ -146,8 +156,209 @@ def report():
 
 @app.get("/reports")
 def list_reports():
-    """이번 세션에 수신한 신고 전체 목록 (데모/디버그용)."""
-    return jsonify(RECEIVED)
+    """이번 세션에 수신한 신고 전체 목록 (데모/디버그용).
+
+    대표 프레임(`image_base64`)만 빼고 내보낸다. 접수 콘솔이 2초마다 이 목록을
+    통째로 폴링하는데, 신고 한 건의 base64 가 수 MB 라 그대로 실으면 폴링마다
+    수십 MB 를 파싱하게 되어 브라우저가 멈춘다. 이미지는 있다/없다(`has_image`)만
+    알리고 실물은 `image_url` 로 한 장씩 따로 받아가게 한다 — 그쪽은 브라우저가
+    캐시할 수 있는 진짜 이미지 응답이다.
+    """
+    slim = []
+    for index, entry in enumerate(RECEIVED):
+        item = {key: value for key, value in entry.items() if key != "image_base64"}
+        item["index"] = index
+        item["has_image"] = bool(entry.get("image_base64"))
+        item["image_url"] = f"/reports/{index}/image"
+        slim.append(item)
+    return jsonify(slim)
+
+
+@app.get("/reports/<int:index>/image")
+def report_image(index: int):
+    """그 신고에 실려 온 대표 프레임(bbox 그려진 것)을 이미지로 돌려준다.
+
+    백엔드는 JPEG 만 싣기 때문에 형식 판별 없이 image/jpeg 로 고정한다.
+    깨진 base64 도 404 로 처리한다 — 시연 중에 500 이 뜨면 화면 전체가 멎은
+    것처럼 보이지만, 404 면 그 칸만 깨진 이미지로 남고 나머지는 계속 돈다.
+    """
+    if not 0 <= index < len(RECEIVED):
+        return jsonify({"error": "no such report"}), 404
+    raw = RECEIVED[index].get("image_base64")
+    if not raw:
+        return jsonify({"error": "no image in report"}), 404
+    try:
+        data = base64.b64decode(raw)
+    except (ValueError, TypeError):
+        return jsonify({"error": "broken image data"}), 404
+    return Response(data, mimetype="image/jpeg")
+
+
+# 접수 콘솔 화면. 시연에서 "소방서가 받은 것"을 눈으로 보여주는 게 전부라
+# 꾸미지 않는다 — 표와 이미지와 버튼뿐이고 CSS·프레임워크·빌드 단계가 없다.
+# 출동 지령 POST 는 이 서버를 거치지 않고 브라우저가 백엔드로 직접 쏜다.
+# 중계를 넣으면 mock 서버가 백엔드 주소를 알아야 하는데, 백엔드가 CORS 로 전
+# 오리진을 열어 두었으므로 그럴 이유가 없다 — 화면에서 주소를 바꿔 끼우는 쪽이
+# 시연 중 대응도 빠르다.
+CONSOLE_HTML = """<!doctype html>
+<meta charset="utf-8">
+<title>모의 119 접수 콘솔</title>
+<h1>모의 119 접수 콘솔</h1>
+<p>
+  콜백 주소 <input id="cb" size="60" value="http://localhost:5000/api/reports/dispatch">
+  인증키(X-Agency-Key) <input id="key" size="20" value="dev-agency-key">
+</p>
+<p id="status">불러오는 중...</p>
+<table border="1">
+<thead>
+<tr>
+  <th>접수번호</th><th>수신시각</th><th>station</th><th>mode</th>
+  <th>화재분류 / 신뢰도</th><th>주소</th><th>설치위치</th><th>카메라</th>
+  <th>이미지</th><th>출동</th><th>결과</th>
+</tr>
+</thead>
+<tbody id="rows"></tbody>
+</table>
+<script>
+var DEFAULT_CALLBACK = "http://localhost:5000/api/reports/dispatch";
+// 결과 칸 내용은 표 밖에 따로 둔다 — 2초마다 표를 다시 그리므로 행 안에 두면 지워진다.
+var results = {};
+// 사용자가 콜백 칸을 한 번이라도 건드렸으면 자동 채움을 그만둔다 (타이핑 중에 덮어쓰면 못 쓴다).
+var cbTouched = false;
+// 직전 폴링 결과. 같으면 다시 그리지 않는다 — 매번 그리면 <img> 가 재요청되어 깜빡인다.
+var lastSnapshot = null;
+
+document.getElementById("cb").addEventListener("input", function () { cbTouched = true; });
+
+function text(v) {
+  return (v === null || v === undefined || v === "") ? "-" : String(v);
+}
+
+function cell(tr, value) {
+  var td = document.createElement("td");
+  td.textContent = value;
+  tr.appendChild(td);
+  return td;
+}
+
+function dispatch(row) {
+  var out = document.getElementById("out-" + row.index);
+  var url = document.getElementById("cb").value || DEFAULT_CALLBACK;
+  var body = {
+    report_uid: row.report_uid,
+    external_id: row.external_id,
+    agency_name: "모의소방서 " + row.station,
+    dispatch_no: "D-" + (row.external_id || row.report_uid),
+    vehicles: 3,
+    crew: 12,
+    eta_sec: 240,
+    dispatched_at: new Date().toISOString().slice(0, 19),
+    note: "펌프차 2 · 구급차 1 출동"
+  };
+  out.textContent = "전송 중...";
+  fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Agency-Key": document.getElementById("key").value
+    },
+    body: JSON.stringify(body)
+  }).then(function (res) {
+    return res.text().then(function (t) { show(row.index, res.status + " " + t); });
+  }).catch(function (err) {
+    // 백엔드가 죽어 있어도 폴링은 계속 돌아야 한다. 이 줄에만 실패를 적고 넘어간다.
+    show(row.index, "전송 실패: " + err);
+  });
+}
+
+function show(index, message) {
+  results[index] = message;
+  var out = document.getElementById("out-" + index);
+  if (out) { out.textContent = message; }
+}
+
+function autofillCallback(rows) {
+  if (cbTouched) { return; }
+  // 신고에 실려 온 callback_url 을 그대로 쓴다 — 백엔드 포트가 바뀌어도 화면이 따라간다.
+  var url = DEFAULT_CALLBACK;
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].callback_url) { url = rows[i].callback_url; break; }
+  }
+  document.getElementById("cb").value = url;
+}
+
+function draw(rows) {
+  var snapshot = JSON.stringify(rows);
+  if (snapshot === lastSnapshot) { return; }
+  lastSnapshot = snapshot;
+
+  var tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+  rows.forEach(function (row) {
+    var tr = document.createElement("tr");
+    cell(tr, text(row.external_id) + (row.duplicate ? " (중복)" : ""));
+    cell(tr, text(row.received_at));
+    cell(tr, text(row.station));
+    cell(tr, text(row.mode));
+    cell(tr, text(row.event_class) + " / " + text(row.confidence));
+    cell(tr, text(row.address));
+    cell(tr, text(row.place));
+    var cctv = row.cctv || {};
+    cell(tr, text(cctv.name) + " (" + text(cctv.width) + "x" + text(cctv.height) + ")");
+
+    var imgTd = document.createElement("td");
+    if (row.has_image) {
+      var img = document.createElement("img");
+      img.src = row.image_url;
+      img.width = 240;
+      imgTd.appendChild(img);
+    } else {
+      imgTd.textContent = "-";
+    }
+    tr.appendChild(imgTd);
+
+    var btnTd = document.createElement("td");
+    var btn = document.createElement("button");
+    btn.textContent = "출동 지령";
+    btn.onclick = function () { dispatch(row); };
+    btnTd.appendChild(btn);
+    tr.appendChild(btnTd);
+
+    var outTd = cell(tr, results[row.index] || "");
+    outTd.id = "out-" + row.index;
+
+    tbody.appendChild(tr);
+  });
+  document.getElementById("status").textContent =
+    "신고 " + rows.length + "건 · 2초마다 갱신";
+  autofillCallback(rows);
+}
+
+function poll() {
+  fetch("/reports")
+    .then(function (res) { return res.json(); })
+    .then(draw)
+    .catch(function (err) {
+      document.getElementById("status").textContent = "접수 목록을 못 읽었다: " + err;
+    });
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
+"""
+
+
+@app.get("/")
+def console():
+    """소방서 접수 콘솔 화면 (시연용).
+
+    콘솔 print 만으로는 "소방서가 무엇을 받았는지"를 보여줄 수 없어서 붙인 화면이다.
+    꾸미지 않는다 — 데이터가 오가는 것만 보이면 되므로 CSS 도 프레임워크도 없다.
+    """
+    # charset 은 적지 않는다 — werkzeug 3 이 text/* 에 charset=utf-8 을 무조건
+    # 덧붙여서, 여기에 또 쓰면 Content-Type 에 charset 이 두 번 들어간다.
+    return Response(CONSOLE_HTML, mimetype="text/html")
 
 
 @app.get("/health")
