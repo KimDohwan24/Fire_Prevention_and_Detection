@@ -66,6 +66,11 @@ MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
 
+# 역지오코딩(카카오 Local) HTTP 타임아웃(초).
+# CCTV 등록 요청 안에서 부르므로 사람이 기다리는 시간이다 — 짧게 둔다.
+# 실패해도 등록은 진행되고 주소만 NULL 로 남는다.
+GEOCODE_HTTP_TIMEOUT_SEC = float(os.getenv("GEOCODE_HTTP_TIMEOUT_SEC", "3"))
+
 # ----- 국가교통정보센터(ITS) CCTV 개방 데이터 -----
 # ITS 가 주는 스트림 주소에는 시간 제한 토큰이 박혀 있어 저장해 두면 만료된다.
 # 그래서 카메라 조회 시마다 최신 주소를 받아 이름이 같은 행을 갈아끼운다.
