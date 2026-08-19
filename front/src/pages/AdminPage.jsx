@@ -549,7 +549,7 @@ const AdminPage = () => {
       </div>
 
       {/* 3. 메인 콘텐츠 영역 */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-8">
+      <main className="flex-1 min-w-0 max-w-6xl w-full mx-auto p-4 sm:p-8">
         {/* TAB 1: CCTV 카메라 관리 */}
         {activeTab === 'cctv' && (
           <div className="space-y-6 animate-in fade-in duration-200">
@@ -779,7 +779,7 @@ const AdminPage = () => {
 
         {activeTab === 'users' && (
           <div className="space-y-6 animate-in fade-in duration-200">
-            <div className="bg-canvas border border-hairline rounded-2xl p-6 shadow-sm">
+            <div className="bg-canvas border border-hairline rounded-2xl p-4 sm:p-6 shadow-sm min-w-0">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                 <div>
                   <h2 className="text-heading-sm font-bold text-ink flex items-center gap-2">
@@ -803,15 +803,15 @@ const AdminPage = () => {
                 </div>
               </div>
 
-              <div className="overflow-x-auto border border-hairline rounded-xl">
-                <table className="w-full text-left text-xs">
+              <div className="w-full min-w-0 overflow-x-auto border border-hairline rounded-xl">
+                <table className="w-full min-w-[1080px] text-left text-xs">
                   <thead className="bg-surface-soft border-b border-hairline text-mute uppercase font-semibold">
                     <tr>
-                      <th className="p-3.5">이름 (아이디)</th>
-                      <th className="p-3.5">이메일 / 소속 (클릭 시 상세조회)</th>
-                      <th className="p-3.5">현재 권한</th>
-                      <th className="p-3.5">사용자 상태</th>
-                      <th className="p-3.5 text-right">상세조회 및 관리</th>
+                      <th className="p-3.5 whitespace-nowrap">이름</th>
+                      <th className="p-3.5 whitespace-nowrap">이메일 / 소속 (클릭 시 상세조회)</th>
+                      <th className="p-3.5 whitespace-nowrap">현재 권한</th>
+                      <th className="p-3.5 whitespace-nowrap">사용자 상태</th>
+                      <th className="p-3.5 text-right whitespace-nowrap">상세조회 및 관리</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-hairline">
@@ -821,12 +821,12 @@ const AdminPage = () => {
                           onClick={() => openUserDetail(user)}
                           className="p-3.5 font-bold text-ink cursor-pointer hover:text-amber-500 transition-colors"
                         >
-                          {user.name} <span className="font-normal text-mute">({user.id})</span>
+                          {user.name}
                         </td>
-                        <td className="p-3.5">
+                        <td className="p-3.5 align-middle">
                           <button
                             onClick={() => openUserDetail(user)}
-                            className="text-amber-600 dark:text-amber-400 font-medium hover:underline flex items-center gap-1.5 cursor-pointer text-left"
+                            className="text-amber-600 dark:text-amber-400 font-medium hover:underline flex items-center gap-1.5 cursor-pointer text-left whitespace-nowrap"
                             title="회원 정보 상세 보기"
                           >
                             <Mail className="w-3.5 h-3.5 shrink-0 text-amber-500" />
@@ -836,7 +836,7 @@ const AdminPage = () => {
                             </span>
                           </button>
                         </td>
-                        <td className="p-3.5">
+                        <td className="p-3.5 align-middle whitespace-nowrap">
                           {user.isSuperAdmin ? (
                             <span className="px-2.5 py-0.5 bg-ink text-canvas font-bold rounded-full border border-ink">
                               👑 최고 관리자
@@ -855,7 +855,7 @@ const AdminPage = () => {
                             </span>
                           )}
                         </td>
-                        <td className="p-3.5">
+                        <td className="p-3.5 align-middle whitespace-nowrap">
                           {user.isAdminRequestPending ? (
                             <span className="text-amber-500 font-bold flex items-center gap-1">
                               <Clock className="w-3.5 h-3.5" /> 관리자 요청 대기
@@ -876,38 +876,40 @@ const AdminPage = () => {
                             </button>
                           )}
                         </td>
-                        <td className="p-3.5 text-right space-x-2">
-                          <button
-                            onClick={() => openUserDetail(user)}
-                            className="px-2.5 py-1 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 rounded-lg font-bold transition-colors cursor-pointer inline-flex items-center gap-1"
-                          >
-                            <span>상세보기</span>
-                            <ChevronRight className="w-3.5 h-3.5" />
-                          </button>
-                          {user.isSuperAdmin ? null : canManageUserRole(user) ? (
+                        <td className="p-3.5 text-right align-middle whitespace-nowrap">
+                          <div className="inline-flex min-w-max items-center justify-end gap-2">
                             <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleRole(user);
-                              }}
-                              disabled={updatingUserNo !== null}
-                              className={`px-3 py-1 font-bold rounded-lg transition-colors cursor-pointer shadow-xs ${
-                                user.isAdminRequestPending
-                                  ? 'bg-amber-500 text-white hover:bg-amber-600 border border-amber-600'
-                                  : 'bg-canvas border border-hairline hover:border-ink'
-                              }`}
+                              onClick={() => openUserDetail(user)}
+                              className="px-2.5 py-1 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 rounded-lg font-bold transition-colors cursor-pointer inline-flex items-center gap-1 whitespace-nowrap"
                             >
-                              {updatingUserNo === user.user_no ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : user.role === 'admin'
-                                ? '일반 변경'
-                                : '👑 관리자 승인 (승격)'}
+                              <span>상세보기</span>
+                              <ChevronRight className="w-3.5 h-3.5" />
                             </button>
-                          ) : (
-                            <span className="text-[11px] text-mute">
-                              {user.role === 'admin' ? '최고 관리자 전용' : '관리자 요청 없음'}
-                            </span>
-                          )}
+                            {user.isSuperAdmin ? null : canManageUserRole(user) ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleRole(user);
+                                }}
+                                disabled={updatingUserNo !== null}
+                                className={`px-3 py-1 font-bold rounded-lg transition-colors cursor-pointer shadow-xs whitespace-nowrap ${
+                                  user.isAdminRequestPending
+                                    ? 'bg-amber-500 text-white hover:bg-amber-600 border border-amber-600'
+                                    : 'bg-canvas border border-hairline hover:border-ink'
+                                }`}
+                              >
+                                {updatingUserNo === user.user_no ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : user.role === 'admin'
+                                  ? '일반 변경'
+                                  : '👑 관리자 승인 (승격)'}
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-mute whitespace-nowrap">
+                                {user.role === 'admin' ? '최고 관리자 전용' : '관리자 요청 없음'}
+                              </span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
