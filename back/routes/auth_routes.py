@@ -1,5 +1,6 @@
 """인증 API.
 
+<<<<<<< Updated upstream
 POST /api/auth/login                        로그인, JWT 발급
 POST /api/auth/logout                       로그아웃 (토큰 폐기 + 활동이력 LOGOUT)
 GET  /api/auth/me                           내 정보 (세션 복원용)
@@ -10,6 +11,14 @@ POST /api/auth/email/verify-request         회원가입 이메일 인증번호 
 POST /api/auth/email/verify-confirm         회원가입 이메일 인증번호 확인
 GET  /api/auth/<provider>                   소셜 동의화면으로 302
 GET  /api/auth/<provider>/callback          프로바이더 콜백 → 프론트로 302 (토큰은 프래그먼트)
+=======
+POST /api/auth/login                    로그인, JWT 발급
+POST /api/auth/logout                   로그아웃 (토큰 폐기 + 활동이력 LOGOUT)
+GET  /api/auth/me                       내 정보 (세션 복원용)
+POST /api/auth/find-id                  아이디 찾기 (이름 + 이메일)
+POST /api/auth/password-reset/request   재설정 인증코드 발급 → SMS
+POST /api/auth/password-reset/confirm   인증코드 확인 후 비밀번호 변경
+>>>>>>> Stashed changes
 
 계정 찾기 세 개와 소셜 둘은 **비로그인 상태에서 부르는 공개 엔드포인트**다. 인증코드도
 소셜 state 도 저장하지 않고 그때그때 계산해 대조한다 — 방식과 근거는
@@ -29,6 +38,8 @@ import psycopg2
 from flask import Blueprint, abort, current_app, g, jsonify, redirect, request
 
 import config
+from flask import Blueprint, g, jsonify, request
+import time
 import db
 from auth import issue_token, login_required
 from errors import ApiError
@@ -37,35 +48,70 @@ from utils.validation import require_str, validate_password
 import random
 import smtplib
 from email.mime.text import MIMEText
-
 # 임시 저장소 (메모리 기반)
 email_storage = {}      # {email: verification_code}
 verified_emails = set()   # 인증 완료된 이메일 목록
 
-# SMTP 설정
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = "songjonghan96@gmail.com"
-SENDER_PASSWORD = "geaexurrnrdegrnm"  # 구글 앱 비밀번호
+import os
+from dotenv import load_dotenv
+# .env 파일 로드
+load_dotenv()
+
+SMTP_SERVER = os.getenv("SMTP_SERVER")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
+# 서버 메모리에 인증번호를 잠시 저장할 공간
+verification_storage = {}
 
 def send_email_smtp(to_email: str, code: str):
     msg = MIMEText(f"[FireGuard] 회원가입 인증번호는 [{code}] 입니다. 5분 안에 입력해주세요.")
     msg["Subject"] = "[FireGuard] 회원가입 이메일 인증번호"
     msg["From"] = SENDER_EMAIL
     msg["To"] = to_email
-
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, to_email, msg.as_string())
+            verification_storage[to_email] = {"code": code, "expires_at": time.time() + 300};
     except Exception as e:
         print(f"이메일 전송 실패: {e}")
         print(f"🚨 [상세 에러 발생]: {repr(e)}")
         raise ApiError(500, "EMAIL_SEND_FAILED", "이메일 전송에 실패했습니다.")
+    
+
 
 bp = Blueprint("auth", __name__)
 logger = logging.getLogger("fireguard.auth")
+
+@bp.route("/verify-code", methods=["POST"])
+def verify_code():
+    data = request.get_json()
+    email = data.get("email")
+    user_code = data.get("code")
+
+    if not email or not user_code:
+        return jsonify({"error": "이메일과 인증번호를 모두 입력해주세요."}), 400
+
+    record = verification_storage.get(email)
+
+    if not record:
+        return jsonify({"error": "인증번호가 요청되지 않았거나 만료된 이메일입니다."}), 400
+
+    # 유효시간(5분) 경과 확인
+    if time.time() > record["expires_at"]:
+        del verification_storage[email]  # 만료된 데이터 삭제
+        return jsonify({"error": "인증 시간이 만료되었습니다. 다시 요청해주세요."}), 400
+
+    # 인증번호 일치 여부 확인
+    if record["code"] != user_code:
+        return jsonify({"error": "인증번호가 일치하지 않습니다."}), 400
+
+    # 검증 성공 시 저장소에서 제거 (재사용 방지)
+    del verification_storage[email]
+
+    return jsonify({"message": "이메일 인증이 완료되었습니다."}), 200
 
 # 재설정 요청의 고정 응답 — 정보가 맞든 틀리든 똑같이 나간다 (계정 존재 여부 은닉)
 _RESET_ACCEPTED = {

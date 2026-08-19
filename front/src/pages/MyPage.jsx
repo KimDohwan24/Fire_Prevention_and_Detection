@@ -955,9 +955,7 @@ const handleSavePassword = async (e) => {
         </div>
       )}
 
-      {/* ------------------------------------------------------------- */}
-      {/* 팝업 모달 1: 프로필 수정 다이얼로그 (ui_modal_rules 수칙 준수) */}
-      {/* ------------------------------------------------------------- */}
+
       {isEditProfileOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
           {/* Outer Card with Explicit Width constraints */}

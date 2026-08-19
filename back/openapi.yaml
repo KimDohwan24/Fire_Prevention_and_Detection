@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: 파이어가드 API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
 
@@ -1554,6 +1554,114 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/reports/dispatch:
+    post:
+      tags: [reports]
+      summary: 소방서 출동 통지 수신
+      description: |
+        119 가 실제로 배차했을 때 되쏘는 콜백이다. 우리가 신고에 실어 보낸
+        `callback_url` 이 이 경로를 가리킨다.
+
+        인증은 JWT 가 아니라 공유 키(`X-Agency-Key`)다 — 상대가 사람이 아니라
+        기관 서버다.
+
+        멱등하다. 같은 통지가 여러 번 와도 신고 행이 늘지 않고 최신 값으로
+        덮인다. 접수번호(`external_id`)가 어긋나거나 `dispatched_at` 형식이
+        깨져도 거절하지 않는다 — 출동했다는 사실을 버리는 편이 더 나쁘다.
+      security:
+        - agencyKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [report_uid]
+              additionalProperties: true
+              properties:
+                report_uid:
+                  type: string
+                  pattern: '^FG-\d+$'
+                  description: 신고에 실어 보낸 신고 ID. 어느 화재인지 찾는 열쇠다
+                  example: FG-42
+                external_id:
+                  type: string
+                  description: 119 가 발급한 접수번호. 불일치해도 거절하지 않고 경고만 남긴다
+                  example: R-000001
+                agency_name:
+                  type: string
+                  example: 모의소방서 1
+                dispatch_no:
+                  type: string
+                  description: 출동 지령 번호
+                  example: D-R-000001
+                vehicles:
+                  type: integer
+                  example: 3
+                crew:
+                  type: integer
+                  example: 12
+                eta_sec:
+                  type: integer
+                  description: 예상 도착까지 남은 초
+                  example: 240
+                dispatched_at:
+                  type: string
+                  format: date-time
+                  description: 배차 시각. 없거나 형식이 깨지면 서버 수신 시각을 쓴다
+                note:
+                  type: string
+                  example: 펌프차 2 · 구급차 1 출동
+      responses:
+        "200":
+          description: 출동 통지 반영됨
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report_no:
+                    type: integer
+                    format: int64
+                  event_no:
+                    type: integer
+                    format: int64
+                  report_status:
+                    $ref: "#/components/schemas/ReportStatus"
+                  report_dispatched_at:
+                    type: string
+                    format: date-time
+        "400":
+          description: report_uid 누락 또는 형식 오류 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: BAD_REQUEST
+                message: report_uid 는 'FG-<이벤트번호>' 형식이어야 합니다.
+                field: report_uid
+        "401":
+          description: X-Agency-Key 불일치 (`AGENCY_UNAUTHORIZED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: AGENCY_UNAUTHORIZED
+                message: 기관 인증 키가 올바르지 않습니다.
+        "404":
+          description: |
+            진행 중인 신고 없음 (`REPORT_NOT_FOUND`). 승계로 닫힌
+            (`NO_RESPONSE`·`FAILED`) 신고만 남아 있으면 붙일 곳이 없다.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: REPORT_NOT_FOUND
+                message: 진행 중인 신고를 찾을 수 없습니다.
+
   /api/reports/{report_no}/logs:
     get:
       tags: [reports]
@@ -1756,6 +1864,13 @@ components:
       in: header
       name: X-Internal-Key
       description: AI 모델 전용. 서버의 `INTERNAL_API_KEY` 환경변수 값과 대조한다.
+    agencyKey:
+      type: apiKey
+      in: header
+      name: X-Agency-Key
+      description: |
+        소방서(119) 서버가 출동 통지를 되쏠 때 쓰는 공유 키.
+        값은 백엔드의 `AGENCY_CALLBACK_KEY` 설정과 비교한다.
 
   parameters:
     Page:
@@ -2187,13 +2302,17 @@ components:
       type: string
       description: |
         `SENDING` 전송 중 · `ACCEPTED` 119 서버가 신고를 받았다고 응답 ·
+        `DISPATCHED` 소방서가 실제로 배차했다고 회신 ·
         `NO_RESPONSE` 무응답이라 다음 기관으로 승계 · `FAILED` 모든 기관 소진
 
         `ACCEPTED` 는 **접수 확인까지**를 뜻한다. 2xx 응답은 "신고를 받았다"이지
-        "소방차가 배차됐다"가 아니다. 출동 배차 확인은 119 가 별도 콜백으로
-        회신하는 값이고, 실제 연동 전까지는 구현하지 않는다 —
-        화면에 '출동'으로 표기하지 말 것.
-      enum: [SENDING, ACCEPTED, NO_RESPONSE, FAILED]
+        "소방차가 배차됐다"가 아니다. 배차는 119 가 `POST /api/reports/dispatch` 로
+        따로 회신하며, 그때 `DISPATCHED` 가 된다 — **'출동'으로 표기해도 되는
+        상태는 `DISPATCHED` 하나뿐이다.**
+
+        진행 중으로 보는 상태는 `SENDING` · `ACCEPTED` · `DISPATCHED` 세 개이고,
+        이벤트당 하나만 존재할 수 있다 (DB 부분 유니크 인덱스).
+      enum: [SENDING, ACCEPTED, DISPATCHED, NO_RESPONSE, FAILED]
 
     # ---------- 계정 ----------
     LoginUser:
@@ -2438,6 +2557,13 @@ components:
         cctv_location:
           type: string
           nullable: true
+        cctv_address:
+          type: string
+          nullable: true
+          description: |
+            좌표를 역지오코딩한 주소 (도로명 또는 지번). 119 신고에 싣는 값이다.
+            `cctv_location` 은 사람이 붙인 설치 위치 설명이라 주소가 아니다.
+            변환에 실패했거나 컬럼 추가 이전에 등록된 카메라는 `null`.
         cctv_lat:
           type: number
           format: double
@@ -2826,6 +2952,24 @@ components:
           type: string
           format: date-time
           nullable: true
+        report_dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 소방서 출동 통지를 받은 시각. 아직 배차 회신이 없으면 `null`
+        report_dispatch:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: |
+            소방서가 보낸 출동 정보 원문 (지령번호·차량 수·ETA 등). 기관마다
+            보내는 키가 다를 수 있어 스키마를 고정하지 않고 그대로 보관한다.
+          example:
+            agency_name: 모의소방서 1
+            dispatch_no: D-R-000001
+            vehicles: 3
+            eta_sec: 240
+            received_at: "2026-08-18T14:32:11"
 
     EventReport:
       type: object
@@ -2857,6 +3001,16 @@ components:
           type: string
           format: date-time
           nullable: true
+        report_dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 소방서 출동 통지를 받은 시각. 아직 배차 회신이 없으면 `null`
+        report_dispatch:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 소방서가 보낸 출동 정보 원문 (지령번호·차량 수·ETA 등)
 
     # ---------- 내부 (AI) ----------
     Detection:

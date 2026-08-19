@@ -8,6 +8,7 @@
 - 빠른 실패가 필요하므로 mode=fail(즉시 500)만 쓴다 — mode=timeout 은
   4회 × 3초 = 12초를 잡아먹으므로 테스트에서는 절대 쓰지 않는다.
 """
+import base64
 import os
 import re
 import subprocess
@@ -186,3 +187,86 @@ def test_different_stations_accept_the_same_report_uid(mock119_server, monkeypat
 
     assert a["external_id"] != b["external_id"]
     assert b.get("duplicate") is None
+
+
+# ---------- 소방서 콘솔 화면 ----------
+#
+# 시연에서 "소방서가 무엇을 받았는지"를 보여주는 화면이다. 여기 테스트는 화면의
+# 생김새가 아니라 화면이 딛고 서는 계약만 본다 — 목록에서 이미지가 빠졌는가,
+# 링크로 따로 받아지는가, 표에 찍을 값이 남아 있는가.
+#
+# 접수 대장이 모듈 스코프로 남으므로 테스트마다 station 을 다르게 준다.
+
+# 진짜 JPEG 일 필요는 없다 — 서버는 형식을 보지 않고 바이트를 그대로 돌려주므로,
+# 왕복에서 바이트가 변하지 않았다는 것만 확인하면 된다.
+JPEG_BYTES = b"\xff\xd8fake-jpeg-bytes"
+
+
+def post_console_report(base: str, station: str, with_image: bool) -> dict:
+    """콘솔이 표에 찍는 필드를 갖춘 신고를 한 건 보내고, 그 station 의 목록 항목을 준다."""
+    payload = {
+        "report_uid": f"console-{station}",
+        "event_no": 9001,
+        "address": "서울 강남구 테헤란로 123",
+        "place": "본관 3층 복도",
+        "event_class": "FLAME",
+        "confidence": 0.93,
+        "cctv": {"name": "본관-복도-01", "width": 1920, "height": 1080},
+    }
+    if with_image:
+        payload["image_base64"] = base64.b64encode(JPEG_BYTES).decode()
+
+    requests.post(f"{base}/report?mode=ok&station={station}", json=payload, timeout=2)
+
+    received = requests.get(f"{base}/reports", timeout=2).json()
+    (mine,) = [r for r in received if r.get("station") == station]
+    return mine
+
+
+def test_console_page_is_served(mock119_server):
+    """접수 콘솔 화면이 뜬다 — 출동 지령 버튼과 콜백에 필요한 것들이 실려 있다."""
+    res = requests.get(f"{mock119_server}/", timeout=2)
+
+    assert res.status_code == 200
+    assert "text/html" in res.headers["Content-Type"]
+    assert "출동 지령" in res.text
+    assert "X-Agency-Key" in res.text            # 인증키 헤더를 실어 보낸다
+    assert "/api/reports/dispatch" in res.text   # 콜백 주소가 없을 때의 기본값
+
+
+def test_reports_list_excludes_image_but_links_it(mock119_server):
+    """목록에서는 base64 를 빼고 링크만 준다.
+
+    화면이 2초마다 이 목록을 폴링하는데 수 MB base64 가 매번 실리면 브라우저가 멈춘다.
+    대신 표에 찍어야 하는 값(주소·설치위치)은 그대로 남아 있어야 한다.
+    """
+    mine = post_console_report(mock119_server, "console-list", with_image=True)
+
+    assert "image_base64" not in mine
+    assert mine["has_image"] is True
+    assert mine["image_url"] == f"/reports/{mine['index']}/image"
+    assert mine["address"] == "서울 강남구 테헤란로 123"
+    assert mine["place"] == "본관 3층 복도"
+
+
+def test_image_route_returns_jpeg(mock119_server):
+    """분리한 이미지 경로가 원본 바이트를 그대로 준다 — <img src> 로 바로 걸린다."""
+    mine = post_console_report(mock119_server, "console-image", with_image=True)
+
+    res = requests.get(f"{mock119_server}{mine['image_url']}", timeout=2)
+
+    assert res.status_code == 200
+    assert res.headers["Content-Type"] == "image/jpeg"
+    assert res.content == JPEG_BYTES
+
+
+def test_image_route_404_without_image(mock119_server):
+    """이미지 없이 온 신고는 404 다 — 시연 중 500 이 뜨면 화면이 멎은 것처럼 보인다."""
+    mine = post_console_report(mock119_server, "console-noimage", with_image=False)
+
+    assert mine["has_image"] is False
+
+    res = requests.get(f"{mock119_server}{mine['image_url']}", timeout=2)
+
+    assert res.status_code == 404
+    assert res.json()["error"]

@@ -141,7 +141,7 @@ const handleRequestEmailVerification = async () => {
   }
 };
 
-  const handleConfirmEmailVerification = () => {
+  const handleConfirmEmailVerification = async () => {
     if (emailVerificationTimeLeft <= 0) {
       setErrorMsg('인증 시간이 만료되었습니다. 인증번호를 다시 요청해주세요.');
       return;
@@ -153,7 +153,37 @@ const handleRequestEmailVerification = async () => {
     }
 
     setErrorMsg('');
-    setIsEmailVerificationConfirmed(true);
+
+    // 이메일 문자열 조합
+    const emailDomainStr = formData.emailDomain === '직접입력' ? formData.customDomain : formData.emailDomain;
+    const fullEmail = `${formData.emailId}@${emailDomainStr}`;
+
+    try {
+      // 📌 백엔드의 /verify-code API 호출
+      const response = await fetch("http://localhost:5000/api/auth/verify-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+        email: fullEmail, 
+        code: emailVerificationCode 
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setErrorMsg(data.error || '인증번호가 일치하지 않습니다.');
+        return;
+      }
+
+      // 검증 성공 시
+      setIsEmailVerificationConfirmed(true);
+      alert('이메일 인증이 완료되었습니다.');
+
+    } catch (err) {
+      console.error('인증 확인 실패:', err);
+      setErrorMsg('서버 통신 중 오류가 발생했습니다.');
+    }
   };
 
   const formattedEmailVerificationTime = `${String(Math.floor(emailVerificationTimeLeft / 60)).padStart(2, '0')}:${String(emailVerificationTimeLeft % 60).padStart(2, '0')}`;
@@ -192,7 +222,10 @@ const handleRequestEmailVerification = async () => {
       setErrorMsg('비밀번호와 비밀번호 확인이 일치하지 않습니다.');
       return;
     }
-
+    if (!isEmailVerificationConfirmed) {
+      setErrorMsg('이메일 인증을 완료해주세요.');
+      return;
+    }
     const emailDomainStr = formData.emailDomain === 'type' ? formData.customDomain : formData.emailDomain;
     const fullEmail = formData.emailId && emailDomainStr ? `${formData.emailId}@${emailDomainStr}` : null;
     const rawPhone = formData.phone.replace(/[^0-9]/g, '');

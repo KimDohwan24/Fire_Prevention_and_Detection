@@ -84,13 +84,19 @@ def seed(_test_db):
             """,
             {"pw": PW_HASH},
         )
+        # 1번은 주소 있음 · 2번은 NULL 로 갈라 둔다 — 119 신고가 주소를 못 구했을 때의
+        # 폴백 경로를 검증하려면 주소가 비어 있는 카메라가 기준 데이터에 있어야 한다
+        # (컬럼 추가 이전에 등록된 카메라가 실제로 그 상태다).
         cur.execute(
             """
-            INSERT INTO cctv (user_no, cctv_name, cctv_location, cctv_lat, cctv_lng,
+            INSERT INTO cctv (user_no, cctv_name, cctv_location, cctv_address,
+                              cctv_lat, cctv_lng,
                               cctv_stream_url, cctv_width, cctv_height, cctv_status) VALUES
-            (1, '정문 카메라', '본관 정문 앞', 37.5665000, 126.9780000,
+            (1, '정문 카메라', '본관 정문 앞', '서울특별시 중구 세종대로 110',
+             37.5665000, 126.9780000,
              'http://192.168.0.10:8080/live/cam1.m3u8', 1920, 1080, 'ACTIVE'),
-            (1, '후문 카메라', '본관 후문',    37.5670000, 126.9790000,
+            (1, '후문 카메라', '본관 후문',    NULL,
+             37.5670000, 126.9790000,
              'http://192.168.0.11:8080/live/cam2.m3u8', 1280, 720, 'INACTIVE')
             """
         )
@@ -172,6 +178,32 @@ def _no_real_its_http(monkeypatch):
     monkeypatch.setattr("services.its_cctv._get", lambda params: ITS_SAMPLE_PAYLOAD)
     yield
     its_cctv.clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_geocode_http(request, monkeypatch):
+    """전역 가드: 어떤 테스트도 실제 카카오 Local API 를 부르지 않는다.
+
+    CCTV 등록 경로가 역지오코딩을 호출하므로, 스텁이 없으면 무관한 테스트가
+    매번 외부로 나가며 느려지고 네트워크 상태에 따라 깜빡인다. 기본은 '주소를
+    못 찾음(None)' — 주소가 필요한 테스트는 자기 monkeypatch 로 덮어쓴다
+    (테스트 본문의 setattr 가 나중에 적용되므로 이 스텁을 이긴다).
+
+    앞의 두 가드와 달리 HTTP 함수가 아니라 reverse_geocode 를 통째로 바꾼다.
+    geocode 모듈은 requests 를 모듈째 참조하므로 services.geocode.requests.get 을
+    덮으면 requests.get 이 프로세스 전역에서 바뀌어, 진짜 HTTP 를 쓰는 다른
+    테스트(mock-119 연동)까지 이 대역을 받게 된다.
+
+    대신 함수를 바꾸면 그 함수 자체를 검증하는 tests/test_geocode.py 가 자기
+    대역 대신 이 스텁을 보게 되므로 그 파일만 뺀다 — 그 파일은 이미 requests
+    단에서 스스로 막고 있어 실제 호출이 나갈 일이 없다.
+    """
+    if request.module.__name__.rsplit(".", 1)[-1] == "test_geocode":
+        yield
+        return
+
+    monkeypatch.setattr("services.geocode.reverse_geocode", lambda lat, lng: None)
+    yield
 
 
 # ---------- 인증 헬퍼 ----------
