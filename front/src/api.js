@@ -174,10 +174,11 @@ export function completeOAuthLogin() {
 }
 
 async function request(endpoint, options = {}) {
-  const token = getAccessToken();
+  const { skipAuth = false, ...requestOptions } = options;
+  const token = skipAuth ? null : getAccessToken();
   const headers = {
     'Content-Type': 'application/json',
-    ...(options.headers || {}),
+    ...(requestOptions.headers || {}),
   };
 
   if (token) {
@@ -185,7 +186,7 @@ async function request(endpoint, options = {}) {
   }
 
   const config = {
-    ...options,
+    ...requestOptions,
     headers,
   };
 
@@ -207,7 +208,7 @@ async function request(endpoint, options = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    if (response.status === 401 && endpoint !== '/auth/login') {
+    if (!skipAuth && response.status === 401 && endpoint !== '/auth/login') {
       localStorage.removeItem('access_token');
     }
     const errorMsg = data?.message || data?.error || `요청 실패 (${response.status})`;
@@ -243,6 +244,11 @@ export const authApi = {
 
   me: async () => {
     return await request('/auth/me');
+  },
+
+  checkUserId: async (user_id) => {
+    const query = new URLSearchParams({ user_id }).toString();
+    return await request(`/auth/check-id?${query}`, { skipAuth: true });
   },
 
   findId: async (user_name, user_email) => {

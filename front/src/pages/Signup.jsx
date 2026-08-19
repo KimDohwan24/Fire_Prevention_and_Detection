@@ -26,6 +26,10 @@ const Signup = () => {
   });
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isIdChecked, setIsIdChecked] = useState(false);
+  const [checkedUserId, setCheckedUserId] = useState('');
+  const [isIdChecking, setIsIdChecking] = useState(false);
+  const [idCheckMessage, setIdCheckMessage] = useState('');
   const [isEmailVerificationRequested, setIsEmailVerificationRequested] = useState(false);
   const [isEmailVerificationConfirmed, setIsEmailVerificationConfirmed] = useState(false);
   const [emailVerificationTimeLeft, setEmailVerificationTimeLeft] = useState(EMAIL_VERIFICATION_DURATION);
@@ -36,6 +40,55 @@ const Signup = () => {
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleIdChange = (e) => {
+    const { value } = e.target;
+    setFormData(prev => ({ ...prev, id: value }));
+
+    if (value.trim() !== checkedUserId) {
+      setIsIdChecked(false);
+      setCheckedUserId('');
+      setIdCheckMessage('');
+    }
+  };
+
+  const handleCheckId = async () => {
+    const userId = formData.id.trim();
+
+    setErrorMsg('');
+    setIsIdChecked(false);
+    setCheckedUserId('');
+    setIdCheckMessage('');
+
+    if (!userId) {
+      setIdCheckMessage('아이디를 입력해주세요.');
+      return;
+    }
+
+    setIsIdChecking(true);
+    try {
+      const response = await authApi.checkUserId(userId);
+
+      if (response?.available === false) {
+        setIdCheckMessage('중복된 아이디입니다.');
+        return;
+      }
+
+      if (response?.available !== true) {
+        throw new Error('아이디 중복확인 응답을 확인할 수 없습니다.');
+      }
+
+      setCheckedUserId(userId);
+      setIsIdChecked(true);
+      setIdCheckMessage('사용 가능한 아이디입니다.');
+    } catch (err) {
+      console.error('아이디 중복확인 실패:', err);
+      setCheckedUserId('');
+      setIdCheckMessage(err.message || '아이디 중복확인에 실패했습니다.');
+    } finally {
+      setIsIdChecking(false);
+    }
   };
 
   const handlePhoneChange = (e) => {
@@ -130,6 +183,11 @@ const handleRequestEmailVerification = async () => {
     e.preventDefault();
     setErrorMsg('');
 
+    if (!isIdChecked || checkedUserId !== formData.id.trim()) {
+      setErrorMsg('아이디 중복확인을 완료해주세요.');
+      return;
+    }
+
     if (formData.password !== formData.passwordConfirm) {
       setErrorMsg('비밀번호와 비밀번호 확인이 일치하지 않습니다.');
       return;
@@ -155,6 +213,11 @@ const handleRequestEmailVerification = async () => {
       navigate('/login');
     } catch (err) {
       console.error('회원가입 실패:', err);
+      if (err.status === 409 || err.code === 'DUPLICATE_USER_ID') {
+        setIsIdChecked(false);
+        setCheckedUserId('');
+        setIdCheckMessage('중복된 아이디입니다.');
+      }
       setErrorMsg(err.message || '회원가입에 실패했습니다.');
     } finally {
       setIsLoading(false);
@@ -189,15 +252,35 @@ const handleRequestEmailVerification = async () => {
 
           {/* 아이디 */}
           <div className="flex flex-col space-y-1.5">
-            <input
-              type="text"
-              name="id"
-              value={formData.id}
-              onChange={handleChange}
-              className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
-              placeholder="아이디"
-              required
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                name="id"
+                value={formData.id}
+                onChange={handleIdChange}
+                className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
+                placeholder="아이디"
+                autoComplete="username"
+                required
+              />
+              <button
+                type="button"
+                onClick={handleCheckId}
+                disabled={isIdChecking}
+                className="h-[40px] flex-shrink-0 px-4 bg-surface-soft border border-hairline text-ink rounded-full text-button-md whitespace-nowrap hover:bg-hairline active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 transition-all"
+              >
+                {isIdChecking ? '확인 중...' : '중복확인'}
+              </button>
+            </div>
+            {idCheckMessage && (
+              <p
+                className={`px-2 text-caption-sm ${isIdChecked ? 'text-emerald-600' : 'text-red-500'}`}
+                role="status"
+                aria-live="polite"
+              >
+                {idCheckMessage}
+              </p>
+            )}
           </div>
 
           {/* 비밀번호 */}
@@ -514,9 +597,10 @@ const handleRequestEmailVerification = async () => {
           <div className="pt-6 pb-2">
             <button
               type="submit"
-              className="w-full h-[48px] bg-primary text-on-primary rounded-full text-button-md text-[16px] font-medium hover:bg-ink-deep active:scale-[0.98] transition-all duration-200"
+              disabled={isLoading || isIdChecking}
+              className="w-full h-[48px] bg-primary text-on-primary rounded-full text-button-md text-[16px] font-medium hover:bg-ink-deep active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
             >
-              회원가입
+              {isLoading ? '가입 중...' : '회원가입'}
             </button>
           </div>
 
