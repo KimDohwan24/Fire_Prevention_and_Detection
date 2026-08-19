@@ -85,3 +85,4 @@ ORDER BY table_name, column_name;
 -- 인덱스 조건에 DISPATCHED 가 보여야 한다
 SELECT indexdef FROM pg_indexes
 WHERE schemaname = 'fireguard' AND indexname = 'ux_report_119_active';
+COMMIT;

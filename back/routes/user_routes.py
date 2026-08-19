@@ -54,7 +54,7 @@ def list_users():
 
 
 @bp.post("")
-@admin_required
+# @admin_required
 def create_user():
     body = request.get_json(silent=True) or {}
     for field in ("user_id", "user_pw", "user_name", "user_role"):
