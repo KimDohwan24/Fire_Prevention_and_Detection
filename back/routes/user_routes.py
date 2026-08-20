@@ -15,7 +15,7 @@ from auth import admin_required, login_required
 from errors import ApiError
 from services import activity_service
 from utils.pagination import get_page_params, paged_response
-from utils.validation import validate_password, validate_phone, validate_user_id
+from utils.validation import validate_password, validate_phone, validate_user_id, validate_user_name
 
 bp = Blueprint("users", __name__)
 
@@ -65,7 +65,7 @@ def create_user():
     validate_user_id(body["user_id"])
     validate_password(body["user_pw"], user_id=body["user_id"])
     validate_phone(body, "user_phone")
-
+    validate_user_name(body["user_name"])
     if db.query_one("SELECT 1 FROM users WHERE user_id = %s", (body["user_id"],)):
         raise ApiError(409, "DUPLICATE_USER_ID", "이미 사용 중인 아이디입니다.")
 

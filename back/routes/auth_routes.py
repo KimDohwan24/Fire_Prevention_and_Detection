@@ -1,6 +1,5 @@
 """인증 API.
 
-<<<<<<< Updated upstream
 POST /api/auth/login                        로그인, JWT 발급
 POST /api/auth/logout                       로그아웃 (토큰 폐기 + 활동이력 LOGOUT)
 GET  /api/auth/me                           내 정보 (세션 복원용)
@@ -11,14 +10,6 @@ POST /api/auth/email/verify-request         회원가입 이메일 인증번호 
 POST /api/auth/email/verify-confirm         회원가입 이메일 인증번호 확인
 GET  /api/auth/<provider>                   소셜 동의화면으로 302
 GET  /api/auth/<provider>/callback          프로바이더 콜백 → 프론트로 302 (토큰은 프래그먼트)
-=======
-POST /api/auth/login                    로그인, JWT 발급
-POST /api/auth/logout                   로그아웃 (토큰 폐기 + 활동이력 LOGOUT)
-GET  /api/auth/me                       내 정보 (세션 복원용)
-POST /api/auth/find-id                  아이디 찾기 (이름 + 이메일)
-POST /api/auth/password-reset/request   재설정 인증코드 발급 → SMS
-POST /api/auth/password-reset/confirm   인증코드 확인 후 비밀번호 변경
->>>>>>> Stashed changes
 
 계정 찾기 세 개와 소셜 둘은 **비로그인 상태에서 부르는 공개 엔드포인트**다. 인증코드도
 소셜 state 도 저장하지 않고 그때그때 계산해 대조한다 — 방식과 근거는

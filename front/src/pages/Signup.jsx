@@ -20,7 +20,7 @@ const Signup = () => {
     phone: '',
     address: '',
     detailAddress: '',
-    gender: '',
+    gender: '선택안함',
     birthYear: '',
     birthMonth: '',
     birthDay: '',
@@ -87,7 +87,11 @@ const Signup = () => {
     } catch (err) {
       console.error('아이디 중복확인 실패:', err);
       setCheckedUserId('');
-      setIdCheckMessage(err.message || '아이디 중복확인에 실패했습니다.');
+      
+      // 💡 [수정] 백엔드가 400 에러와 함께 보낸 {"detail": "..."} 메시지를 꺼내오도록 변경!
+      const errorMsg = err.response?.data?.detail || err.message || '아이디 중복확인에 실패했습니다.';
+      setIdCheckMessage(errorMsg);
+      
     } finally {
       setIsIdChecking(false);
     }
