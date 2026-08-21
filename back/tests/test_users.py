@@ -91,11 +91,53 @@ def test_create_user_missing_required_field(client, admin_headers):
     assert r.get_json()["code"] == "BAD_REQUEST"
 
 
-def test_create_user_viewer_forbidden(client, viewer_headers):
-    r = client.post("/api/users", headers=viewer_headers, json={
-        "user_id": "new03", "user_pw": "no#Guard99x", "user_name": "뷰어", "user_role": "VIEWER",
+def test_create_user_is_public_for_signup(client):
+    """가입 화면이 토큰 없이 부르는 경로다 — 인증을 걸지 않는다.
+
+    원래 admin_required 였으나 자기 가입을 받으면서 공개로 바뀌었다. 그래서
+    권한 상승을 막는 책임이 아래 세 테스트로 옮겨졌다.
+    """
+    r = client.post("/api/users", json={
+        "user_id": "selfjoin", "user_pw": "no#Guard99x", "user_name": "가입자",
+        "user_role": "VIEWER",
     })
-    assert r.status_code == 403
+    assert r.status_code == 201
+
+
+def test_signup_cannot_grant_itself_admin(client):
+    """토큰 없이 user_role='ADMIN' 을 보내도 VIEWER 로 만들어진다.
+
+    이 방어가 없으면 아무나 관리자 계정을 만들 수 있다 — 2026-08-19 에 실제로
+    그 상태였다(토큰 없이 ADMIN 생성이 201 로 통과했다).
+    """
+    r = client.post("/api/users", json={
+        "user_id": "evil01", "user_pw": "Zx#9qWmb", "user_name": "침입자",
+        "user_role": "ADMIN",
+    })
+    assert r.status_code == 201
+    assert db.query_one(
+        "SELECT user_role FROM users WHERE user_id = 'evil01'")["user_role"] == "VIEWER"
+
+
+def test_viewer_token_cannot_grant_admin(client, viewer_headers):
+    """로그인한 VIEWER 가 불러도 마찬가지다 — 관리자 토큰이라야 권한을 지정할 수 있다."""
+    r = client.post("/api/users", headers=viewer_headers, json={
+        "user_id": "new03", "user_pw": "no#Guard99x", "user_name": "뷰어", "user_role": "ADMIN",
+    })
+    assert r.status_code == 201
+    assert db.query_one(
+        "SELECT user_role FROM users WHERE user_id = 'new03'")["user_role"] == "VIEWER"
+
+
+def test_admin_can_still_choose_role(client, admin_headers):
+    """관리자 토큰으로 부르면 본문의 user_role 이 그대로 반영된다."""
+    r = client.post("/api/users", headers=admin_headers, json={
+        "user_id": "byadmin1", "user_pw": "no#Guard99x", "user_name": "관리자생성",
+        "user_role": "ADMIN",
+    })
+    assert r.status_code == 201
+    assert db.query_one(
+        "SELECT user_role FROM users WHERE user_id = 'byadmin1'")["user_role"] == "ADMIN"
 
 
 # ---------- PUT /api/users/<user_no> ----------

@@ -38,36 +38,31 @@ def issue_token(user: dict) -> str:
     return jwt.encode(payload, config.JWT_SECRET, algorithm="HS256")
 
 
-# def _decode_token() -> dict:
-#     header = request.headers.get("Authorization", "")
-#     if not header.startswith("Bearer "):
-#         raise ApiError(401, "UNAUTHORIZED", "인증 토큰이 필요합니다.")
-#     token = header.removeprefix("Bearer ")
-#     try:
-#         return jwt.decode(token, config.JWT_SECRET, algorithms=["HS256"])
-#     except jwt.ExpiredSignatureError as e:
-#         print(f"토큰 만료 에러: {e}")
-#         raise ApiError(401, "TOKEN_EXPIRED", "토큰이 만료되었습니다. 다시 로그인해주세요.")
-#     except jwt.InvalidTokenError:
-#         raise ApiError(401, "INVALID_TOKEN", "유효하지 않은 토큰입니다.")
-
-import base64
 def _decode_token() -> dict:
+    """Authorization 헤더의 JWT 를 검증해 payload 를 돌려준다.
+
+    **토큰이 없는 것과 틀린 것을 구분한다.** 헤더가 아예 없으면 UNAUTHORIZED,
+    있는데 검증에 실패하면 INVALID_TOKEN 이다. 이 구분이 사라지면 프론트가
+    "로그인하러 보내야 하는 상황"과 "토큰이 상해서 다시 받아야 하는 상황"을
+    가릴 수 없고, 명세서(401 UNAUTHORIZED)와도 어긋난다.
+
+    따옴표를 벗기는 것은 프론트가 토큰을 `Bearer "eyJ..."` 처럼 따옴표째 실어
+    보낸 적이 있어서다 — 값 자체는 멀쩡하므로 받아준다.
+
+    (이전 구현은 토큰 전체 길이로 base64 패딩을 맞추는 코드를 갖고 있었는데,
+     JWT 의 패딩은 header.payload.signature 조각별이라 전체 길이로 계산하는 것은
+     의미가 없고 PyJWT 가 조각마다 알아서 처리한다. 유효 토큰 200개로 확인했다.)
+    """
     header = request.headers.get("Authorization", "")
-    token = header.replace("Bearer ", "").strip().strip('"').strip("'")
-    
-    # [핵심] JWT의 Base64 패딩 복구 로직
-    # 토큰 길이를 4의 배수로 맞추기 위해 '='을 붙여주는 작업
-    missing_padding = len(token) % 4
-    if missing_padding:
-        token += '=' * (4 - missing_padding)
+    if not header.startswith("Bearer "):
+        raise ApiError(401, "UNAUTHORIZED", "인증 토큰이 필요합니다.")
+    token = header.removeprefix("Bearer ").strip().strip('"').strip("'")
 
     try:
         return jwt.decode(token, config.JWT_SECRET, algorithms=["HS256"])
     except jwt.ExpiredSignatureError:
         raise ApiError(401, "TOKEN_EXPIRED", "토큰이 만료되었습니다.")
-    except Exception as e:
-        print(f"디코딩 실패 원인: {e}") # 여기서 상세 에러 확인
+    except jwt.InvalidTokenError:
         raise ApiError(401, "INVALID_TOKEN", "유효하지 않은 토큰입니다.")
 
 def _assert_not_revoked(payload: dict) -> None:
@@ -105,6 +100,25 @@ def _assert_not_revoked(payload: dict) -> None:
     if row["revoked"]:  # 기준선이 NULL 이면 비교 결과도 NULL → 거짓으로 취급된다
         raise ApiError(401, "TOKEN_REVOKED",
                        "로그아웃되었거나 무효화된 토큰입니다. 다시 로그인해주세요.")
+
+
+def caller_role() -> str | None:
+    """요청자의 권한 등급을 돌려준다. 판별할 수 없으면 None — **예외를 던지지 않는다.**
+
+    인증을 걸 수 없는 공개 엔드포인트가 "그래도 관리자가 부른 것이라면 다르게
+    처리"해야 할 때 쓴다. 지금은 회원가입(POST /api/users)이 그렇다 — 가입 화면이
+    토큰 없이 부르는 경로라 admin_required 를 걸 수 없는데, 그렇다고 본문의
+    user_role 을 그대로 믿으면 누구나 관리자 계정을 만들 수 있다.
+
+    토큰이 없거나·깨졌거나·폐기됐으면 전부 None 이다. 인증 실패를 오류로 알리는
+    자리가 아니라 '누가 불렀는지 아는가'만 판별하는 자리이므로 조용히 넘긴다.
+    """
+    try:
+        payload = _decode_token()
+        _assert_not_revoked(payload)
+    except ApiError:
+        return None
+    return payload.get("user_role")
 
 
 def login_required(f):

@@ -118,15 +118,19 @@ import smtplib
 from utils.validation import validate_user_name, validate_user_id, validate_password
 from email.mime.text import MIMEText
 from flask import Blueprint, request, jsonify
-from passlib.context import CryptContext
+import bcrypt
 from db import query_one, execute
 
 # Flask Blueprint 생성 (FastAPI의 APIRouter 역할)
 # url_prefix를 '/api'로 설정하여 아래 라우트들은 자동으로 /api로 시작함
 signup_bp = Blueprint('signup', __name__, url_prefix='/api')
 
-# 비밀번호 암호화 설정
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# 비밀번호는 bcrypt 로 직접 해시한다.
+# passlib(CryptContext)을 쓰고 있었으나 requirements.txt 에 없는 패키지라,
+# app.py 가 이 모듈을 import 하는 순간 앱 자체가 뜨지 않았다(ModuleNotFoundError).
+# 저장소의 나머지(auth_routes·user_routes·account_recovery)가 전부 bcrypt 를 직접
+# 쓰므로 여기도 같은 방식으로 맞춘다 — 같은 일을 하는 해시 라이브러리를 둘로 두면
+# 가입과 로그인(bcrypt.checkpw)이 서로 다른 코드를 타게 된다.
 
 # 임시 저장소
 email_storage = {}  
@@ -218,8 +222,11 @@ def confirm_email_verification():
 @signup_bp.route("/users", methods=["POST"], strict_slashes=False)
 def signup():
     data = request.get_json()
-    print("🚨 [확인용] 진짜 signup 함수 진입함! 받은 데이터:", data)
-    
+    # 디버그 출력은 남기지 않는다. 이모지가 섞인 print 는 윈도우 기본 콘솔(cp949)에서
+    # UnicodeEncodeError 로 요청 자체를 500 으로 만든다 — start.bat 은 chcp 65001 을
+    # 하지만 `cd back && python app.py` 로 직접 띄우면 그렇지 않다.
+    # 그리고 받은 데이터에는 평문 비밀번호가 들어 있어 콘솔에 찍으면 안 된다.
+
     # 1. 공통 도구함에서 가져온 함수들로 안전하게 검증 및 데이터 추출
     user_name = validate_user_name(data.get("user_name"))
     user_id = validate_user_id(data.get("user_id"))
@@ -247,11 +254,18 @@ def signup():
         return jsonify({"detail": "이미 존재하는 아이디입니다."}), 400
     
     # 6. 비밀번호 암호화
-    hashed_password = pwd_context.hash(user_pw)
-    
-    # 7. DB 저장 (💡 누락되었던 user_name 컬럼과 값 추가 완료!)
+    hashed_password = bcrypt.hashpw(user_pw.encode(), bcrypt.gensalt()).decode()
+
+    # 7. DB 저장
+    # user_role·user_status 를 함께 넣는다. 두 컬럼은 NULL 을 허용하지만 기본값이
+    # 없어서, 안 넣으면 권한도 상태도 비어 있는 계정이 만들어진다. 로그인은
+    # SUSPENDED·WITHDRAWN 만 막으므로 그대로 로그인은 되고, 권한만 없는 상태로
+    # 화면에서 무엇을 보여줄지 판단할 근거가 사라진다.
+    # 스스로 가입한 계정은 조회 전용(VIEWER)으로 시작한다 — 관리자 승격은
+    # request_role 경로로 따로 신청한다.
     execute(
-        "INSERT INTO users (user_id, user_pw, user_email, user_address, user_gender, user_name) VALUES (%s, %s, %s, %s, %s, %s)",
+        "INSERT INTO users (user_id, user_pw, user_email, user_address, user_gender, user_name,"
+        " user_role, user_status) VALUES (%s, %s, %s, %s, %s, %s, 'VIEWER', 'ACTIVE')",
         (user_id, hashed_password, user_email, user_address.strip(), user_gender, user_name)
     )
     

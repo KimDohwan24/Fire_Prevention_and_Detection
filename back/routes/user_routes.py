@@ -1,7 +1,9 @@
 """관리자 계정 API — 명세서 3번 섹션.
 
 GET  /api/users                        목록 (ADMIN)
-POST /api/users                        등록 (ADMIN)
+POST /api/users                        등록 (공개 — 가입 화면이 토큰 없이 부른다)
+                                       ADMIN 토큰으로 부르면 user_role 을 지정할 수
+                                       있고, 그 외에는 VIEWER 로 고정된다
 PUT  /api/users/<user_no>              수정 · 정지 · 탈퇴 (ADMIN 전체 / 일반 사용자는 본인만)
 PUT  /api/users/password               본인 비밀번호 변경 (로그인 필요)
 GET  /api/users/<user_no>/activities   활동이력 (ADMIN 전체 / 일반 사용자는 본인만)
@@ -11,7 +13,7 @@ import bcrypt
 from flask import Blueprint, g, jsonify, request
 
 import db
-from auth import admin_required, login_required
+from auth import admin_required, caller_role, login_required
 from errors import ApiError
 from services import activity_service
 from utils.pagination import get_page_params, paged_response
@@ -69,6 +71,16 @@ def create_user():
     if db.query_one("SELECT 1 FROM users WHERE user_id = %s", (body["user_id"],)):
         raise ApiError(409, "DUPLICATE_USER_ID", "이미 사용 중인 아이디입니다.")
 
+    # 권한은 요청자가 스스로 정할 수 없다.
+    #
+    # 이 엔드포인트는 원래 admin_required 였는데, 가입 화면이 토큰 없이 부르게 되면서
+    # 데코레이터가 제거됐다. 그 상태로는 아무나 user_role='ADMIN' 을 실어 보내
+    # **인증 없이 관리자 계정을 만들 수 있다** (2026-08-19 실측: 토큰 없이 201).
+    # 인증을 다시 걸면 가입이 막히므로, 대신 관리자 토큰으로 부른 경우에만 본문의
+    # user_role 을 받아들이고 그 외에는 VIEWER 로 고정한다.
+    # 관리자가 남을 승격시키는 경로는 PUT /api/users/<user_no> 로 따로 있다.
+    user_role = body["user_role"] if caller_role() == "ADMIN" else "VIEWER"
+
     pw_hash = bcrypt.hashpw(body["user_pw"].encode(), bcrypt.gensalt()).decode()
     row = db.execute_returning(
         """
@@ -79,7 +91,7 @@ def create_user():
         """,
         (
             body["user_id"], pw_hash, body["user_name"],
-            body.get("user_email"), body.get("user_phone"), body["user_role"],
+            body.get("user_email"), body.get("user_phone"), user_role,
             body.get("user_gender"), body.get("user_address"),
         ),
     )
