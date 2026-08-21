@@ -643,15 +643,21 @@ paths:
           $ref: "#/components/responses/Forbidden"
     post:
       tags: [users]
-      summary: 계정 등록 (ADMIN)
+      summary: 계정 등록 (공개 — 가입 화면이 토큰 없이 부른다)
       description: |
+        **인증이 없는 경로다.** 가입 화면이 토큰을 갖기 전에 부르기 때문이다.
+
+        그래서 `user_role` 은 요청자가 정할 수 없다 — **ADMIN 토큰을 실어 보낸
+        경우에만** 본문의 값이 반영되고, 그 외에는 무엇을 보내든 `VIEWER` 로
+        고정된다. 이 방어가 없으면 누구나 `user_role: "ADMIN"` 을 보내 관리자
+        계정을 만들 수 있다. 남을 승격시키는 것은 `PUT /api/users/{user_no}` 다.
+
         아이디·비밀번호 작성규칙을 여기서만 검사한다.
         - `user_id`: 5~20자, 영문 소문자 시작, 소문자·숫자·`_`·`-`
         - `user_pw`: 영문+숫자+특수문자 3종 포함 8~64자.
           같은 문자 3연속·연속 문자열(1234, abcd)·키보드 배열(qwer)·아이디 포함 금지
         - `user_phone`: 하이픈 없이 숫자만 (`01012345678`)
-      security:
-        - bearerAuth: []
+      security: []
       requestBody:
         required: true
         content:

@@ -218,7 +218,8 @@ async function request(endpoint, options = {}) {
     if (!skipAuth && response.status === 401 && endpoint !== '/auth/login') {
       localStorage.removeItem('access_token');
     }
-    const errorMsg = data?.message || data?.error || `요청 실패 (${response.status})`;
+    // 💡 data?.detail을 가장 먼저 확인하도록 추가!
+    const errorMsg = data?.detail || data?.message || data?.error || `요청 실패 (${response.status})`;
     const error = new Error(errorMsg);
     error.status = response.status;
     error.code = data?.code;
@@ -255,7 +256,12 @@ export const authApi = {
 
   checkUserId: async (user_id) => {
     const query = new URLSearchParams({ user_id }).toString();
-    return await request(`/auth/check-id?${query}`, { skipAuth: true });
+    try {
+      return await request(`/auth/check-id?${query}`, { skipAuth: true });
+    } catch (error) {
+      // 백엔드가 400 에러와 함께 보낸 detail 메시지를 에러 객체에 담아 던짐
+      throw new Error(error.message || '아이디 중복확인에 실패했습니다.');
+    }
   },
 
   findId: async (user_name, user_email) => {

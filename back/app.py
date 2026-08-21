@@ -63,13 +63,12 @@ def _print_effective_config():
 
 
 def create_app(start_scheduler: bool = False) -> Flask:
-    """앱 팩토리.
-
-    start_scheduler: 에스컬레이션 스케줄러 기동 여부. 기본 False —
-    테스트/임포트 경로에서는 백그라운드 스레드가 뜨지 않는다.
-    `python app.py` 실행 경로(__main__)만 True 로 켠다.
-    """
+    """앱 팩토리."""
     app = Flask(__name__)
+    
+    # 💡 1. 302 리다이렉트 문제 해결을 위해 전역 설정 추가
+    app.url_map.strict_slashes = False
+
     app.json = ApiJSONProvider(app)
     app.json.ensure_ascii = False  # 한글 메시지를 그대로 내보낸다
 
@@ -79,8 +78,15 @@ def create_app(start_scheduler: bool = False) -> Flask:
     os.makedirs(config.MEDIA_ROOT, exist_ok=True)
 
     register_error_handlers(app)
+    
+    # 기존 블루프린트들 등록
     register_blueprints(app)
     app.register_blueprint(request_role_bp)
+    
+    # 💡 2. 방금 만든 signup_bp 등록 추가
+    from Signup import signup_bp
+    app.register_blueprint(signup_bp)
+
     @app.get("/api/health")
     def health():
         return {"status": "ok"}

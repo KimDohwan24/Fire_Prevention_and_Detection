@@ -5,6 +5,7 @@ import { useDaumPostcodePopup } from 'react-daum-postcode';
 import { userApi, authApi } from '../api';
 
 const EMAIL_VERIFICATION_DURATION = 5 * 60;
+const ADDRESS_REQUIRED_MESSAGE = '주소 검색을 완료해주세요.';
 
 const Signup = () => {
   const navigate = useNavigate();
@@ -19,7 +20,7 @@ const Signup = () => {
     phone: '',
     address: '',
     detailAddress: '',
-    gender: '',
+    gender: '선택안함',
     birthYear: '',
     birthMonth: '',
     birthDay: '',
@@ -34,6 +35,7 @@ const Signup = () => {
   const [isEmailVerificationConfirmed, setIsEmailVerificationConfirmed] = useState(false);
   const [emailVerificationTimeLeft, setEmailVerificationTimeLeft] = useState(EMAIL_VERIFICATION_DURATION);
   const [emailVerificationCode, setEmailVerificationCode] = useState('');
+  const [addressErrorMsg, setAddressErrorMsg] = useState('');
 
   const openPostcode = useDaumPostcodePopup();
 
@@ -85,7 +87,11 @@ const Signup = () => {
     } catch (err) {
       console.error('아이디 중복확인 실패:', err);
       setCheckedUserId('');
-      setIdCheckMessage(err.message || '아이디 중복확인에 실패했습니다.');
+      
+      // 💡 [수정] 백엔드가 400 에러와 함께 보낸 {"detail": "..."} 메시지를 꺼내오도록 변경!
+      const errorMsg = err.response?.data?.detail || err.message || '아이디 중복확인에 실패했습니다.';
+      setIdCheckMessage(errorMsg);
+      
     } finally {
       setIsIdChecking(false);
     }
@@ -202,6 +208,10 @@ const handleRequestEmailVerification = async () => {
       fullAddress += extraAddress !== '' ? ` (${extraAddress})` : '';
     }
 
+    setAddressErrorMsg('');
+    setErrorMsg((previousMessage) => (
+      previousMessage === ADDRESS_REQUIRED_MESSAGE ? '' : previousMessage
+    ));
     setFormData(prev => ({ ...prev, address: fullAddress }));
   };
 
@@ -209,9 +219,24 @@ const handleRequestEmailVerification = async () => {
     openPostcode({ onComplete: handleCompletePostcode });
   };
 
+  const validateAddress = () => {
+    if (formData.address.trim()) {
+      setAddressErrorMsg('');
+      return true;
+    }
+
+    setAddressErrorMsg(ADDRESS_REQUIRED_MESSAGE);
+    setErrorMsg(ADDRESS_REQUIRED_MESSAGE);
+    return false;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
+
+    if (!validateAddress()) {
+      return;
+    }
 
     if (!isIdChecked || checkedUserId !== formData.id.trim()) {
       setErrorMsg('아이디 중복확인을 완료해주세요.');
@@ -226,9 +251,12 @@ const handleRequestEmailVerification = async () => {
       setErrorMsg('이메일 인증을 완료해주세요.');
       return;
     }
+
+    const address = formData.address.trim();
     const emailDomainStr = formData.emailDomain === 'type' ? formData.customDomain : formData.emailDomain;
     const fullEmail = formData.emailId && emailDomainStr ? `${formData.emailId}@${emailDomainStr}` : null;
     const rawPhone = formData.phone.replace(/[^0-9]/g, '');
+    const detailAddress = formData.detailAddress.trim();
 
     setIsLoading(true);
     try {
@@ -240,7 +268,7 @@ const handleRequestEmailVerification = async () => {
         user_email: fullEmail,
         user_phone: rawPhone || null,
         user_gender: formData.gender || null,
-        user_address: formData.address ? `${formData.address} ${formData.detailAddress}`.trim() : null,
+        user_address: [address, detailAddress].filter(Boolean).join(' '),
       });
       alert('회원가입이 완료되었습니다. 로그인 해주세요.');
       navigate('/login');
@@ -278,7 +306,7 @@ const handleRequestEmailVerification = async () => {
       <div className="w-full max-w-[420px]">
         <form className="space-y-5" onSubmit={handleSubmit}>
           {errorMsg && (
-            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-500 text-xs font-semibold text-center">
+            <div role="alert" aria-live="assertive" className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-500 text-xs font-semibold text-center">
               {errorMsg}
             </div>
           )}
@@ -379,7 +407,6 @@ const handleRequestEmailVerification = async () => {
                     className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
                     placeholder="도메인 (예: kakao.com)"
                     required
-                    autoFocus
                   />
                   <div className="relative w-[40px] h-[40px] flex-shrink-0">
                     <div className="w-full h-full rounded-full border border-hairline bg-surface-soft text-ink flex items-center justify-center pointer-events-none hover:bg-hairline transition-all">
@@ -516,9 +543,11 @@ const handleRequestEmailVerification = async () => {
                 name="address"
                 value={formData.address}
                 readOnly
-                className="flex-1 h-[40px] px-4 bg-surface-soft border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none transition-all cursor-not-allowed w-0"
+                className={`flex-1 h-[40px] px-4 bg-surface-soft border rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none transition-all cursor-not-allowed w-0 ${addressErrorMsg ? 'border-red-500' : 'border-hairline'}`}
                 placeholder="주소 검색 버튼을 눌러주세요"
                 required
+                aria-required="true"
+                aria-invalid={Boolean(addressErrorMsg)}
               />
               <button
                 type="button"
@@ -539,9 +568,13 @@ const handleRequestEmailVerification = async () => {
                   onChange={handleChange}
                   className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
                   placeholder="상세 주소를 입력해주세요 (예: 101동 202호)"
-                  autoFocus
                 />
               </div>
+            )}
+            {addressErrorMsg && (
+              <p role="alert" aria-live="polite" className="px-2 text-caption-sm font-semibold text-red-500">
+                {addressErrorMsg}
+              </p>
             )}
           </div>
 
@@ -630,6 +663,11 @@ const handleRequestEmailVerification = async () => {
           <div className="pt-6 pb-2">
             <button
               type="submit"
+              onClick={(event) => {
+                if (!validateAddress()) {
+                  event.preventDefault();
+                }
+              }}
               disabled={isLoading || isIdChecking}
               className="w-full h-[48px] bg-primary text-on-primary rounded-full text-button-md text-[16px] font-medium hover:bg-ink-deep active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
             >
