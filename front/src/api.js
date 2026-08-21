@@ -6,7 +6,14 @@ import { appendLocalActivityLog } from './utils/activityLog';
  */
 
 export const API_BASE_URL = '/api';
+export const BACKEND_ORIGIN = import.meta.env.VITE_BACKEND_ORIGIN || '';
 export const SUPER_ADMIN_USER_NO = 1;
+
+export function resolveMediaUrl(mediaUrl) {
+  if (!mediaUrl) return '';
+  if (/^https?:\/\//i.test(mediaUrl)) return mediaUrl;
+  return `${BACKEND_ORIGIN}${mediaUrl}`;
+}
 
 // OAuth2 로그인 시작 엔드포인트. 각 백엔드 엔드포인트는 OAuth 제공자 인증 화면으로 리다이렉트해야 합니다.
 export const OAUTH_PROVIDER_PATHS = Object.freeze({
@@ -407,6 +414,31 @@ export const eventApi = {
 
   get: async (event_no) => {
     return await request(`/events/${event_no}`);
+  },
+};
+
+// 관리자용 샘플 영상 판정 테스트 API
+export const videoTestApi = {
+  listSamples: async () => {
+    return await request('/video-tests/samples');
+  },
+
+  runSample: async ({ sample_name, cctv_no }) => {
+    return await request('/video-tests/run-sample', {
+      method: 'POST',
+      body: JSON.stringify({ sample_name, cctv_no }),
+    });
+  },
+
+  getJob: async (jobId) => {
+    return await request(`/video-tests/jobs/${jobId}`);
+  },
+
+  decide: async (jobId, decision, reason = '') => {
+    return await request(`/video-tests/jobs/${jobId}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ decision, reason }),
+    });
   },
 };
 
