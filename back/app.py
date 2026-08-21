@@ -1,3 +1,4 @@
+import fireguard_ci_trial_missing_module  # CI 검증용 의도적 import 에러 — 이 브랜치는 머지하지 않는다
 """파이어가드 백엔드 진입점.
 
 실행:
