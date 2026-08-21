@@ -148,6 +148,10 @@ export const createDashboardMetrics = ({
   now = new Date(),
 }) => {
   const productionEvents = events.filter((event) => !isTestEvent(event));
+  const sortedAllEvents = sortByDateDesc(
+    events,
+    (event) => event.event_first_detected_at || event.event_detected_at,
+  );
   const sortedEvents = sortByDateDesc(
     productionEvents,
     (event) => event.event_first_detected_at || event.event_detected_at,
@@ -190,7 +194,7 @@ export const createDashboardMetrics = ({
     if (key && !reportByEvent.has(key)) reportByEvent.set(key, report);
   });
 
-  const recentEvents = sortedEvents.slice(0, 5).map((event) => ({
+  const recentEvents = sortedAllEvents.slice(0, 5).map((event) => ({
     ...event,
     alert: alertByEvent.get(String(event.event_no)) || null,
     report: reportByEvent.get(String(event.event_no)) || null,

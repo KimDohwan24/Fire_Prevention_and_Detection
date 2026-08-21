@@ -8,25 +8,30 @@ import Monitoring from './pages/Monitoring';
 import AdminPage from './pages/AdminPage';
 import MyPage from './pages/MyPage';
 import DarkModeToggle from './components/DarkModeToggle';
+import GlobalFireAlertOverlay from './components/GlobalFireAlertOverlay';
+import FireAlertProvider from './context/FireAlertContext';
 
 function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Login />} />
-        <Route path="/login" element={<Navigate to="/" replace />} />
-        <Route path="/signup" element={<Signup />} />
-        <Route path="/forgot-password" element={<FindAccount />} />
-        <Route path="/find-account" element={<FindAccount />} />
-        <Route path="/find-id-pw" element={<FindAccount />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/monitoring" element={<Monitoring />} />
-        <Route path="/admin" element={<AdminPage />} />
-        <Route path="/mypage" element={<MyPage />} />
-        {/* Placeholder for other routes */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-      <DarkModeToggle />
+      <FireAlertProvider>
+        <Routes>
+          <Route path="/" element={<Login />} />
+          <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/forgot-password" element={<FindAccount />} />
+          <Route path="/find-account" element={<FindAccount />} />
+          <Route path="/find-id-pw" element={<FindAccount />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/monitoring" element={<Monitoring />} />
+          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/mypage" element={<MyPage />} />
+          {/* Placeholder for other routes */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+        <GlobalFireAlertOverlay />
+        <DarkModeToggle />
+      </FireAlertProvider>
     </BrowserRouter>
   );
 }

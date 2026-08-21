@@ -1,39 +1,33 @@
 import React, { useEffect, useState } from 'react';
 import {
+  CheckCircle2,
   Clock3,
-  FileText,
   Flame,
   Image as ImageIcon,
   Loader2,
   MapPin,
-  PhoneCall,
+  ShieldAlert,
   X,
+  XCircle,
 } from 'lucide-react';
-import { eventApi } from '../../api';
+import { eventApi, resolveMediaUrl } from '../../api';
 import {
-  ALERT_STATUS_LABELS,
   EVENT_CLASS_LABELS,
-  EVENT_STATUS_LABELS,
-  REPORT_STATUS_LABELS,
   formatDateTime,
 } from '../../utils/dashboardMetrics';
+import {
+  buildDetectionTimeline,
+  buildSituationActions,
+  getEventStage,
+  getEventStatusLabel,
+} from '../../utils/eventTimeline';
+import { useFireAlert } from '../../context/FireAlertContext';
 import { StatusPill } from './DashboardWidgets';
 
-const getEventStatusTone = (status) => (
-  status === 'CONFIRMED' ? 'critical' : status === 'DISMISSED' ? 'neutral' : 'warning'
-);
-
-const getAlertStatusTone = (status) => {
-  if (status === 'SENT' || status === 'NO_RESPONSE') return 'critical';
-  if (status === 'READ') return 'success';
-  return 'neutral';
-};
-
-const getReportStatusTone = (status) => {
-  if (status === 'FAILED') return 'critical';
-  if (status === 'DISPATCHED' || status === 'ACCEPTED') return 'success';
-  if (status === 'SENDING' || status === 'NO_RESPONSE') return 'warning';
-  return 'neutral';
+const getEventStatusTone = (stage) => {
+  if (stage === 'CONFIRMED') return 'critical';
+  if (stage === 'DISMISSED') return 'neutral';
+  return 'warning';
 };
 
 const mergeEventDetail = (summary, response) => {
@@ -48,7 +42,35 @@ const mergeEventDetail = (summary, response) => {
   };
 };
 
-const getMediaUrl = (media) => media?.media_url || media?.thumbnail_url || '';
+const getMediaUrl = (media) => resolveMediaUrl(
+  media?.media_url || media?.thumbnail_url || '',
+);
+
+const getConfidencePercent = (value) => {
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence)) return null;
+  return Math.round((confidence <= 1 ? confidence : confidence / 100) * 100);
+};
+
+const getStageClass = (stage) => {
+  if (stage === 'CONFIRMED') return 'border-red-500/30 bg-red-500/10 text-red-600';
+  if (stage === 'DISMISSED') return 'border-slate-400/40 bg-slate-500/10 text-slate-600';
+  return 'border-amber-500/40 bg-amber-500/10 text-amber-700';
+};
+
+const getTimelineToneClass = (tone) => {
+  if (tone === 'confirmed') return 'border-red-500 bg-red-500';
+  if (tone === 'dismissed') return 'border-slate-500 bg-slate-500';
+  if (tone === 'detecting') return 'border-amber-500 bg-amber-500';
+  return 'border-hairline bg-canvas';
+};
+
+const getMediaRoleLabel = (media) => {
+  if (media?.media_is_confirmation) return '확정 시점';
+  if (media?.media_is_first) return '최초 감지';
+  if (media?.media_is_primary) return '대표 증거';
+  return 'AI 증거';
+};
 
 function DetailRow({ label, children }) {
   return (
@@ -59,11 +81,41 @@ function DetailRow({ label, children }) {
   );
 }
 
-function EmptyHistory({ children }) {
-  return <p className="rounded-lg border border-dashed border-hairline px-3 py-4 text-center text-caption-sm text-mute">{children}</p>;
+function TimelineList({ items, title, icon: Icon, tone = 'neutral' }) {
+  if (items.length === 0) return null;
+
+  return (
+    <section className="space-y-3 rounded-xl border border-hairline bg-surface-soft p-4">
+      <h3 className="flex items-center gap-2 text-body-sm font-bold text-ink">
+        <Icon className={`h-4 w-4 ${tone === 'action' ? 'text-red-500' : 'text-amber-500'}`} />
+        {title}
+      </h3>
+      <div className="relative space-y-4 pl-1 before:absolute before:bottom-2 before:left-[7px] before:top-2 before:w-px before:bg-hairline">
+        {items.map((item) => (
+          <div key={item.id} className="relative pl-7 text-caption-sm">
+            <span
+              className={`absolute left-1 top-1 h-3.5 w-3.5 -translate-x-1/2 rounded-full border-2 ${getTimelineToneClass(item.tone)}`}
+            />
+            <span className="block font-mono text-[11px] text-mute">
+              {formatDateTime(item.timestamp)}
+            </span>
+            <p className="mt-0.5 font-medium leading-relaxed text-ink">{item.label}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
-function EventDetailModal({ event, onClose }) {
+function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
+  const {
+    activeAlert,
+    actionNotice,
+    decideTest,
+    events,
+    isActionLoading,
+    respondRealAlert,
+  } = useFireAlert();
   const [detail, setDetail] = useState(event);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -87,7 +139,7 @@ function EventDetailModal({ event, onClose }) {
         }
       })
       .catch(() => {
-        if (!isCancelled) setLoadError('상세 정보를 불러오지 못해 목록에 표시된 정보만 보여드립니다.');
+        if (!isCancelled) setLoadError('상세 정보를 불러오지 못해 현재 감지 정보만 보여드립니다.');
       })
       .finally(() => {
         if (!isCancelled) setIsLoading(false);
@@ -115,35 +167,68 @@ function EventDetailModal({ event, onClose }) {
 
   if (!event) return null;
 
-  const visibleDetail = detail?.event_no != null
+  const loadedDetail = detail?.event_no != null
     && String(detail.event_no) === String(event.event_no)
     ? detail
     : event;
+  const contextEvent = events.find((item) => (
+    event.event_no != null
+    && String(item.event_no) === String(event.event_no)
+  ));
+  const isActiveAlertDetail = Boolean(activeAlert && (
+    event === activeAlert
+    || (activeAlert.event_no != null
+      && event.event_no != null
+      && String(activeAlert.event_no) === String(event.event_no))
+    || (activeAlert.job_id && event?.job_id && activeAlert.job_id === event.job_id)
+  ));
+  const visibleDetail = {
+    ...event,
+    ...loadedDetail,
+    ...(contextEvent || {}),
+    ...(isActiveAlertDetail ? activeAlert : {}),
+  };
   const camera = visibleDetail.cctv || {};
-  const cctvName = visibleDetail.cctv_name || camera.cctv_name || `CCTV #${visibleDetail.cctv_no || '-'}`;
-  const cctvLocation = visibleDetail.cctv_location || camera.cctv_location || '위치 정보 없음';
-  const mediaItems = Array.isArray(visibleDetail.media)
-    ? visibleDetail.media
-    : visibleDetail.thumbnail_url
-      ? [{ media_url: visibleDetail.thumbnail_url, media_is_primary: true }]
+  const cctvName = visibleDetail.cctv_name
+    || camera.cctv_name
+    || `CCTV #${visibleDetail.cctv_no || '-'}`;
+  const cctvLocation = visibleDetail.cctv_location
+    || camera.cctv_location
+    || '위치 정보 없음';
+  const stage = getEventStage(visibleDetail);
+  const isDetecting = stage === 'DETECTING';
+  const statusLabel = getEventStatusLabel(visibleDetail);
+  const confidence = getConfidencePercent(visibleDetail.event_confidence ?? visibleDetail.confidence);
+  const rawMediaItems = Array.isArray(visibleDetail.media) ? visibleDetail.media : [];
+  const fallbackMediaUrl = visibleDetail.first_detection_media_url
+    || visibleDetail.thumbnail_url
+    || visibleDetail.media_url;
+  const mediaItems = rawMediaItems.length > 0
+    ? rawMediaItems
+    : fallbackMediaUrl
+      ? [{ media_url: fallbackMediaUrl, media_is_first: isDetecting, media_is_primary: true }]
       : [];
-  const activeMedia = mediaItems[activeMediaIndex] || mediaItems[0] || null;
-  const alertItems = Array.isArray(visibleDetail.alerts)
-    ? visibleDetail.alerts
-    : visibleDetail.alert
-      ? [visibleDetail.alert]
-      : [];
-  const reportItems = Array.isArray(visibleDetail.reports)
-    ? visibleDetail.reports
-    : visibleDetail.report
-      ? [visibleDetail.report]
-      : [];
-  const confidence = Number(visibleDetail.event_confidence);
-  const hasConfidence = Number.isFinite(confidence);
+  const firstMedia = mediaItems.find((media) => media.media_is_first) || mediaItems[0] || null;
+  const displayMediaItems = isDetecting
+    ? (firstMedia ? [firstMedia] : [])
+    : mediaItems;
+  const activeMedia = displayMediaItems[activeMediaIndex] || displayMediaItems[0] || null;
+  const detectionTimeline = isDetecting ? [] : buildDetectionTimeline(visibleDetail);
+  const situationActions = isDetecting ? [] : buildSituationActions(visibleDetail);
+  const canConfirmTest = isActiveAlertDetail
+    && activeAlert.isTest
+    && activeAlert.severity === 'detecting';
+  const canRespondReal = isActiveAlertDetail
+    && !activeAlert.isTest
+    && Boolean(activeAlert.alert_no);
+  const hasActionButtons = canConfirmTest || canRespondReal;
+  const mediaTitle = isDetecting
+    ? '최초 감지 증거'
+    : stage === 'CONFIRMED' ? 'AI 판정 증거' : '오탐 판단 근거';
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+      className={`fixed inset-0 ${zIndexClassName} flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs`}
       onClick={(clickEvent) => {
         if (clickEvent.target === clickEvent.currentTarget) onClose();
       }}
@@ -152,28 +237,37 @@ function EventDetailModal({ event, onClose }) {
       <div
         role="dialog"
         aria-modal="true"
-        aria-labelledby="dashboard-event-detail-title"
+        aria-labelledby="event-detail-modal-title"
         style={{ width: '840px', minWidth: '320px', maxWidth: '95vw' }}
-        className="max-h-[calc(100vh-2rem)] bg-canvas border border-hairline rounded-2xl shadow-2xl flex flex-col shrink-0 box-border"
+        className="box-border flex max-h-[calc(100vh-2rem)] shrink-0 flex-col rounded-2xl border border-hairline bg-canvas shadow-2xl"
         onClick={(clickEvent) => clickEvent.stopPropagation()}
       >
-        <div className="p-5 border-b border-hairline flex items-center justify-between gap-4 bg-surface-soft/60 shrink-0 rounded-t-2xl">
-          <div className="min-w-0 flex items-center gap-3">
-            <div className="p-2 bg-red-500/10 text-red-500 rounded-xl border border-red-500/20 shrink-0">
-              <Flame className="w-6 h-6" />
+        <div className="flex shrink-0 items-center justify-between gap-4 rounded-t-2xl border-b border-hairline bg-surface-soft/60 p-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className={`shrink-0 rounded-xl border p-2 ${getStageClass(stage)}`}>
+              {stage === 'CONFIRMED' ? <Flame className="h-6 w-6" /> : <ShieldAlert className="h-6 w-6" />}
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="px-2 py-0.5 bg-red-600 text-white font-bold rounded text-[11px]">
-                  감지 사건 #{visibleDetail.event_no}
+                <span className={`rounded px-2 py-0.5 text-[11px] font-bold ${
+                  stage === 'CONFIRMED'
+                    ? 'bg-red-600 text-white'
+                    : stage === 'DISMISSED'
+                      ? 'bg-slate-600 text-white'
+                      : 'bg-amber-500 text-white'
+                }`}>
+                  {statusLabel}
                 </span>
-                {hasConfidence && (
-                  <span className="text-xs text-mute font-mono">
-                    신뢰도 {Math.round(confidence * 100)}%
+                {visibleDetail.isTest || visibleDetail.event_is_test ? (
+                  <span className="rounded-full border border-hairline px-2 py-0.5 text-[10px] font-bold text-mute">
+                    영상 테스트
                   </span>
+                ) : null}
+                {confidence != null && (
+                  <span className="font-mono text-xs text-mute">신뢰도 {confidence}%</span>
                 )}
               </div>
-              <h2 id="dashboard-event-detail-title" className="mt-1 text-heading-sm font-bold text-ink truncate">
+              <h2 id="event-detail-modal-title" className="mt-1 truncate text-heading-sm font-bold text-ink">
                 {cctvName} 감지 상세
               </h2>
             </div>
@@ -182,18 +276,18 @@ function EventDetailModal({ event, onClose }) {
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-mute hover:text-ink hover:bg-surface-soft transition-colors shrink-0 focus:outline-none focus-visible:outline-none"
+            className="shrink-0 rounded-lg p-1.5 text-mute transition-colors hover:bg-surface-soft hover:text-ink focus:outline-none focus-visible:outline-none"
             aria-label="상세보기 닫기"
           >
-            <X className="w-5 h-5" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="p-6 max-h-[75vh] overflow-y-auto space-y-5">
+        <div className="max-h-[75vh] space-y-5 overflow-y-auto p-6">
           {isLoading && (
             <div className="flex items-center gap-2 rounded-lg border border-hairline bg-surface-soft px-3 py-2 text-caption-sm text-body">
-              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-              상세 미디어와 처리 이력을 불러오는 중입니다.
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+              감지 정보와 AI 증거를 불러오는 중입니다.
             </div>
           )}
 
@@ -203,39 +297,53 @@ function EventDetailModal({ event, onClose }) {
             </p>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
-            <div className="md:col-span-7 space-y-3">
-              <div className="aspect-video bg-black rounded-xl overflow-hidden border border-hairline relative">
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-12">
+            <div className="space-y-3 md:col-span-7">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="flex items-center gap-2 text-body-sm font-bold text-ink">
+                  <ImageIcon className="h-4 w-4 text-red-500" />
+                  {mediaTitle}
+                </h3>
+                {activeMedia && (
+                  <span className="rounded-full border border-hairline px-2 py-0.5 text-[10px] font-semibold text-mute">
+                    {getMediaRoleLabel(activeMedia)}
+                  </span>
+                )}
+              </div>
+
+              <div className="relative aspect-video overflow-hidden rounded-xl border border-hairline bg-black">
                 {getMediaUrl(activeMedia) ? (
                   <img
                     src={getMediaUrl(activeMedia)}
-                    alt={`${cctvName} 감지 이미지`}
-                    className="w-full h-full object-contain"
+                    alt={`${cctvName} ${mediaTitle}`}
+                    className="h-full w-full object-contain"
                   />
                 ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center text-mute gap-2">
-                    <ImageIcon className="w-10 h-10" />
-                    <span className="text-caption-sm">저장된 감지 이미지가 없습니다.</span>
+                  <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-mute">
+                    <ImageIcon className="h-10 w-10" />
+                    <span className="text-caption-sm">
+                      {isDetecting ? '최초 감지 이미지를 준비 중입니다.' : '저장된 AI 증거 이미지가 없습니다.'}
+                    </span>
                   </div>
                 )}
               </div>
 
-              {mediaItems.length > 1 && (
-                <div className="flex gap-2 overflow-x-auto pb-1" aria-label="감지 이미지 목록">
-                  {mediaItems.map((media, index) => (
+              {displayMediaItems.length > 1 && (
+                <div className="flex gap-2 overflow-x-auto pb-1" aria-label="AI 증거 이미지 목록">
+                  {displayMediaItems.map((media, index) => (
                     <button
                       key={media.media_no || `${getMediaUrl(media)}-${index}`}
                       type="button"
                       onClick={() => setActiveMediaIndex(index)}
-                      className={`w-16 h-12 shrink-0 overflow-hidden rounded-lg border bg-black focus:outline-none focus-visible:outline-none ${
+                      className={`h-12 w-16 shrink-0 overflow-hidden rounded-lg border bg-black focus:outline-none focus-visible:outline-none ${
                         index === activeMediaIndex ? 'border-red-500' : 'border-hairline'
                       }`}
-                      aria-label={`감지 이미지 ${index + 1} 보기`}
+                      aria-label={`${getMediaRoleLabel(media)} 이미지 보기`}
                     >
                       {getMediaUrl(media) ? (
-                        <img src={getMediaUrl(media)} alt="" className="w-full h-full object-cover" />
+                        <img src={getMediaUrl(media)} alt="" className="h-full w-full object-cover" />
                       ) : (
-                        <ImageIcon className="w-4 h-4 mx-auto text-mute" />
+                        <ImageIcon className="mx-auto h-4 w-4 text-mute" />
                       )}
                     </button>
                   ))}
@@ -243,10 +351,10 @@ function EventDetailModal({ event, onClose }) {
               )}
             </div>
 
-            <div className="md:col-span-5 space-y-3">
-              <div className="p-4 bg-surface-soft border border-hairline rounded-xl space-y-3">
+            <div className="space-y-3 md:col-span-5">
+              <div className="space-y-3 rounded-xl border border-hairline bg-surface-soft p-4">
                 <div className="flex items-center gap-2 text-caption-sm font-bold text-ink">
-                  <MapPin className="w-4 h-4 text-red-500" />
+                  <MapPin className="h-4 w-4 text-red-500" />
                   카메라 위치
                 </div>
                 <div>
@@ -255,15 +363,13 @@ function EventDetailModal({ event, onClose }) {
                 </div>
               </div>
 
-              <div className="p-4 bg-surface-soft border border-hairline rounded-xl space-y-3">
+              <div className="space-y-3 rounded-xl border border-hairline bg-surface-soft p-4">
                 <div className="flex items-center gap-2 text-caption-sm font-bold text-ink">
-                  <Clock3 className="w-4 h-4 text-red-500" />
+                  <Clock3 className="h-4 w-4 text-red-500" />
                   감지 정보
                 </div>
-                <DetailRow label="이벤트 상태">
-                  <StatusPill tone={getEventStatusTone(visibleDetail.event_status)}>
-                    {EVENT_STATUS_LABELS[visibleDetail.event_status] || visibleDetail.event_status || '확인 중'}
-                  </StatusPill>
+                <DetailRow label="현재 상태">
+                  <StatusPill tone={getEventStatusTone(stage)}>{statusLabel}</StatusPill>
                 </DetailRow>
                 <DetailRow label="감지 클래스">
                   {EVENT_CLASS_LABELS[visibleDetail.event_class] || visibleDetail.event_class || '-'}
@@ -271,6 +377,11 @@ function EventDetailModal({ event, onClose }) {
                 <DetailRow label="최초 감지">
                   {formatDateTime(visibleDetail.event_first_detected_at || visibleDetail.event_detected_at)}
                 </DetailRow>
+                {visibleDetail.event_detected_at && stage === 'CONFIRMED' && (
+                  <DetailRow label="화재 확정">
+                    {formatDateTime(visibleDetail.event_detected_at)}
+                  </DetailRow>
+                )}
                 {visibleDetail.event_detected_frames != null && (
                   <DetailRow label="감지 프레임">
                     {visibleDetail.event_detected_frames} / {visibleDetail.event_threshold_frames || '-'}
@@ -280,60 +391,87 @@ function EventDetailModal({ event, onClose }) {
             </div>
           </div>
 
-          <section className="p-4 bg-surface-soft border border-hairline rounded-xl space-y-3">
-            <h3 className="flex items-center gap-2 text-body-sm font-bold text-ink">
-              <PhoneCall className="w-4 h-4 text-red-500" />
-              알림 이력
-            </h3>
-            {alertItems.length === 0 ? (
-              <EmptyHistory>연결된 알림 이력이 없습니다.</EmptyHistory>
-            ) : (
-              <div className="space-y-2">
-                {alertItems.map((alert, index) => (
-                  <div key={alert.alert_no || `${alert.alert_sent_at}-${index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-canvas px-3 py-3">
-                    <div className="flex items-center gap-2 text-caption-sm">
-                      <span className="font-semibold text-ink">{alert.alert_channel || '알림'}</span>
-                      <span className="text-mute">{formatDateTime(alert.alert_sent_at)}</span>
-                    </div>
-                    <StatusPill tone={getAlertStatusTone(alert.alert_status)}>
-                      {ALERT_STATUS_LABELS[alert.alert_status] || alert.alert_status || '상태 없음'}
-                    </StatusPill>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="p-4 bg-surface-soft border border-hairline rounded-xl space-y-3">
-            <h3 className="flex items-center gap-2 text-body-sm font-bold text-ink">
-              <FileText className="w-4 h-4 text-red-500" />
-              119 신고 이력
-            </h3>
-            {reportItems.length === 0 ? (
-              <EmptyHistory>연결된 119 신고 이력이 없습니다.</EmptyHistory>
-            ) : (
-              <div className="space-y-2">
-                {reportItems.map((report, index) => (
-                  <div key={report.report_no || `${report.reported_at}-${index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-canvas px-3 py-3">
-                    <div className="min-w-0 text-caption-sm">
-                      <p className="font-semibold text-ink truncate">{report.agency_name || '119 관할 기관'}</p>
-                      <p className="mt-1 text-mute">신고 {formatDateTime(report.reported_at)}</p>
-                    </div>
-                    <StatusPill tone={getReportStatusTone(report.report_status)}>
-                      {REPORT_STATUS_LABELS[report.report_status] || report.report_status || '상태 없음'}
-                    </StatusPill>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
+          {isDetecting ? (
+            <section className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-amber-800">
+              <h3 className="flex items-center gap-2 text-body-sm font-bold">
+                <ShieldAlert className="h-4 w-4" />
+                관제자 판단 필요
+              </h3>
+              <p className="text-caption-sm leading-relaxed">
+                AI가 최초 화염·연기 패턴을 감지했습니다. 확정 전 단계이므로 상단 경보의 화재 확정 또는 오탐 처리 버튼으로 판단을 반영할 수 있습니다.
+              </p>
+            </section>
+          ) : (
+            <>
+              <TimelineList
+                items={detectionTimeline}
+                title="감지 타임라인"
+                icon={Clock3}
+              />
+              <TimelineList
+                items={situationActions}
+                title="상황 조치 이력"
+                icon={stage === 'DISMISSED' ? XCircle : CheckCircle2}
+                tone="action"
+              />
+            </>
+          )}
         </div>
 
-        <div className="p-4 border-t border-hairline bg-surface-soft/60 flex justify-end shrink-0 rounded-b-2xl">
+        <div className={`flex shrink-0 flex-wrap items-center gap-3 rounded-b-2xl border-t border-hairline bg-surface-soft/60 p-4 ${hasActionButtons || actionNotice ? 'justify-between' : 'justify-end'}`}>
+          {(hasActionButtons || actionNotice) && (
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {canConfirmTest && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => decideTest('CONFIRM_FIRE')}
+                    disabled={isActionLoading}
+                    className="h-10 rounded-full bg-red-600 px-4 text-caption-sm font-bold text-white transition-colors hover:bg-red-700 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus-visible:outline-none"
+                  >
+                    119 신고 (테스트)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => decideTest('DISMISS')}
+                    disabled={isActionLoading}
+                    className="h-10 rounded-full border border-amber-600/40 bg-canvas px-4 text-caption-sm font-bold text-amber-700 transition-colors hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus-visible:outline-none"
+                  >
+                    오탐 처리
+                  </button>
+                </>
+              )}
+              {canRespondReal && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => respondRealAlert('READ')}
+                    disabled={isActionLoading}
+                    className="h-10 rounded-full bg-red-600 px-4 text-caption-sm font-bold text-white transition-colors hover:bg-red-700 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus-visible:outline-none"
+                  >
+                    119 신고
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => respondRealAlert('CANCEL')}
+                    disabled={isActionLoading}
+                    className="h-10 rounded-full border border-amber-600/40 bg-canvas px-4 text-caption-sm font-bold text-amber-700 transition-colors hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus-visible:outline-none"
+                  >
+                    오탐 취소
+                  </button>
+                </>
+              )}
+              {actionNotice && (
+                <span role="status" className="max-w-[280px] text-caption-sm font-semibold text-amber-700">
+                  {actionNotice}
+                </span>
+              )}
+            </div>
+          )}
           <button
             type="button"
             onClick={onClose}
-            className="h-10 px-5 rounded-full bg-primary text-on-primary text-caption-sm font-semibold focus:outline-none focus-visible:outline-none"
+            className="h-10 rounded-full bg-primary px-5 text-caption-sm font-semibold text-on-primary focus:outline-none focus-visible:outline-none"
           >
             닫기
           </button>

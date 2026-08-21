@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Search, Bell, CheckCircle,
@@ -6,12 +6,14 @@ import {
   Users, PlusCircle, Settings, ShieldAlert, UserCheck, Loader2,
   Flame, Siren, PhoneCall, CheckCircle2, XCircle, Clock, ExternalLink, FileText, RefreshCw
 } from 'lucide-react';
-import { authApi, cctvApi, agencyApi, eventApi, alertApi, reportApi } from '../api';
+import { authApi, cctvApi, agencyApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 import ItsCctvModal from '../components/ItsCctvModal';
+import VideoTestModal from '../components/VideoTestModal';
 import GisMap from '../components/GisMap';
 import AppHeader from '../components/AppHeader';
-import { appendLocalActivityLog, getLocalActivityLogs, normalizeActivityRecord } from '../utils/activityLog';
+import { getLocalActivityLogs, normalizeActivityRecord } from '../utils/activityLog';
+import { useFireAlert } from '../context/FireAlertContext';
 
 const DEFAULT_AGENCIES = [];
 const INITIAL_CCTVS = [];
@@ -38,9 +40,15 @@ const isSameRegisteredCctv = (registered, incoming) => {
 };
 
 function Monitoring() {
+  const {
+    activeAlert: activeAlertBanner,
+    eventLogs,
+    openEventDetail,
+    recordTestDecision,
+    reportTestJob,
+  } = useFireAlert();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const openedQueryEventRef = useRef(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [cctvList, setCctvList] = useState(INITIAL_CCTVS);
   const [selectedCCTV, setSelectedCCTV] = useState(null);
@@ -52,7 +60,6 @@ function Monitoring() {
   const [fireStation, setFireStation] = useState(null);
   const [isAgencyLoading, setIsAgencyLoading] = useState(false);
   const [agencyLoadError, setAgencyLoadError] = useState('');
-  const [eventLogs, setEventLogs] = useState([]);
 
   // 지도 오버레이 및 탭 조작 UI State
   const [showFireStation, setShowFireStation] = useState(true);
@@ -63,12 +70,7 @@ function Monitoring() {
   const [highlightedAgencyNo, setHighlightedAgencyNo] = useState(null);
 
   // 실시간 긴급 상단 알림 배너 및 이벤트 상세 모달 상태
-  const [activeAlertBanner, setActiveAlertBanner] = useState(null);
-  const [isBannerDismissed, setIsBannerDismissed] = useState(false);
-  const [selectedEventDetail, setSelectedEventDetail] = useState(null);
-  const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
-  const [actionNotice, setActionNotice] = useState(null);
 
   // 관리자 전용 모달 상태
   const [activeAdminTab, setActiveAdminTab] = useState(null);
@@ -265,6 +267,7 @@ function Monitoring() {
     };
 
     // 3. 백엔드 REST API 실시간 폴링 (4초 주기: 실시간 알림 & 화재 이벤트만 조회)
+    /*
     const fetchPollingData = async () => {
       try {
         const [alertRes, eventRes] = await Promise.all([
@@ -284,13 +287,22 @@ function Monitoring() {
         ) : null;
 
         const confirmedEvent = Array.isArray(events) ? events.find(e =>
-          (e.event_status === 'CONFIRMED' || e.event_class === 'FLAME_SMOKE') &&
+          !e.event_is_test &&
+          e.event_status === 'CONFIRMED' &&
           e.event_status !== 'FALSE_ALARM' &&
           e.event_status !== 'RESOLVED' &&
           e.event_status !== 'CANCEL' &&
           e.alert_status !== 'CANCEL' &&
           !falseAlarmList.includes(e.event_no) &&
           !resolvedList.includes(e.event_no)
+        ) : null;
+
+        // 영상 테스트 이벤트는 실제 알림이 아니므로 일반 화재 배너와 분리한다.
+        // 페이지를 새로고침해도 PENDING/CONFIRMED 상태와 최초 증거 이미지를 복원한다.
+        const activeTestEvent = Array.isArray(events) ? events.find(e =>
+          e.event_is_test &&
+          e.event_status === 'PENDING' &&
+          !e.event_test_finished_at
         ) : null;
 
         if (activeAlert || confirmedEvent) {
@@ -309,6 +321,28 @@ function Monitoring() {
               return prev;
             }
             return bannerData;
+          });
+        } else if (activeTestEvent) {
+          const metadata = activeTestEvent.event_source_metadata || {};
+          const isTestConfirmed = activeTestEvent.event_status === 'CONFIRMED';
+          setActiveAlertBanner({
+            alert_no: null,
+            event_no: activeTestEvent.event_no,
+            job_id: metadata.job_id || null,
+            cctv_no: activeTestEvent.cctv_no,
+            cctv_name: activeTestEvent.cctv_name || `CCTV #${activeTestEvent.cctv_no}`,
+            location: activeTestEvent.cctv_location || '관제 구역',
+            confidence: activeTestEvent.event_confidence
+              ? Math.round(activeTestEvent.event_confidence * 100)
+              : 0,
+            event_class: activeTestEvent.event_class || 'FLAME_SMOKE',
+            detected_at: activeTestEvent.event_first_detected_at || new Date().toISOString(),
+            isTest: true,
+            severity: isTestConfirmed ? 'confirmed' : 'detecting',
+            event_status: activeTestEvent.event_status,
+            media_url: activeTestEvent.thumbnail_url || null,
+            first_detection_media_url: activeTestEvent.thumbnail_url || null,
+            operator_decision: metadata.operator_decision || null,
           });
         } else {
           // 사용자가 진행 중인 테스트 비상 배너는 해결 버튼을 누르기 전까지 4초 폴링이나 마커 선택 시 지우지 않는다.
@@ -335,9 +369,13 @@ function Monitoring() {
           const mappedLogs = activeEvents.map(ev => ({
             id: ev.event_no,
             event_no: ev.event_no,
+            isTest: Boolean(ev.event_is_test),
+            event_status: ev.event_status,
             time: ev.event_first_detected_at ? ev.event_first_detected_at.substring(11, 19) : '14:00:00',
             message: `${ev.cctv_name || '카메라'} ${ev.event_class === 'FLAME_SMOKE' ? '화재 및 연기 감지' : '화재 의심 감지'} (${Math.round((ev.event_confidence || 0.9) * 100)}%)`,
-            type: 'fire'
+            type: ev.event_status === 'PENDING'
+              ? 'detecting'
+              : ev.event_status === 'DISMISSED' ? 'false_alarm' : 'fire'
           }));
           setEventLogs(mappedLogs);
         }
@@ -349,15 +387,15 @@ function Monitoring() {
     };
 
     // 최초 마운트 시 1회 호출
+    */
     refreshCurrentUserFromSession().finally(fetchInitialData);
 
     // 알림 및 이벤트 데이터는 즉시 1회 호출 후 4초 간격 폴링
-    fetchPollingData();
-    const intervalId = setInterval(fetchPollingData, 4000);
-    return () => clearInterval(intervalId);
   }, []);
 
   const isAdmin = currentUser?.role === 'admin';
+  const bannerIsDetecting = activeAlertBanner?.severity === 'detecting';
+  const bannerIsDismissed = activeAlertBanner?.severity === 'dismissed';
 
   // 일반 사용자인 경우 본인이 소유/담당하는 CCTV만 필터링
   const accessibleCCTVs = cctvList.filter(cctv => {
@@ -455,12 +493,19 @@ function Monitoring() {
   };
 
   // 실시간 긴급 이벤트 상세 모달 열기
+  /*
   const handleOpenEventDetail = useCallback(async (eventNo) => {
     setIsDetailLoading(true);
     try {
       const res = await eventApi.get(eventNo).catch(() => null);
       if (res) {
-        setSelectedEventDetail(res);
+        const media = Array.isArray(res.media) ? res.media : [];
+        const firstMedia = media.find((item) => item.media_is_first) || media[0];
+        setSelectedEventDetail({
+          ...res,
+          isTest: Boolean(res.isTest ?? res.event_is_test),
+          thumbnail_url: res.thumbnail_url || firstMedia?.media_url || null,
+        });
       } else {
         setSelectedEventDetail({
           event_no: eventNo || 1,
@@ -482,6 +527,32 @@ function Monitoring() {
     }
   }, [activeAlertBanner]);
 
+  const handleOpenActiveAlertDetail = useCallback((fallbackEventNo = 1) => {
+    if (activeAlertBanner?.event_no) {
+      handleOpenEventDetail(activeAlertBanner.event_no);
+      return;
+    }
+
+    if (activeAlertBanner?.isTest) {
+      setSelectedEventDetail({
+        event_no: null,
+        cctv_name: activeAlertBanner.cctv_name,
+        cctv_location: activeAlertBanner.location,
+        event_status: activeAlertBanner.event_status || 'PENDING',
+        event_class: activeAlertBanner.event_class || 'FLAME_SMOKE',
+        event_confidence: (activeAlertBanner.confidence || 0) / 100,
+        event_first_detected_at: activeAlertBanner.detected_at,
+        isTest: true,
+        thumbnail_url: activeAlertBanner.first_detection_media_url || activeAlertBanner.media_url || null,
+        media: [],
+        reports: [],
+      });
+      return;
+    }
+
+    handleOpenEventDetail(fallbackEventNo);
+  }, [activeAlertBanner, handleOpenEventDetail]);
+
   useEffect(() => {
     const requestedEventNo = searchParams.get('event_no');
     if (!requestedEventNo || openedQueryEventRef.current === requestedEventNo) return;
@@ -491,52 +562,109 @@ function Monitoring() {
   }, [handleOpenEventDetail, searchParams]);
 
   // ⚡ 비상 배너 테스트 버튼 클릭 시 CCTV 직접 선택 모달 오픈
+  */
+  const handleOpenEventDetail = (eventNo) => openEventDetail(eventNo);
+  const handleOpenActiveAlertDetail = (fallbackEventNo = 1) => (
+    openEventDetail(activeAlertBanner?.event_no || fallbackEventNo)
+  );
+
   const triggerBannerTest = () => {
     setIsTestCctvSelectModalOpen(true);
   };
 
-  // 선택한 특정 CCTV 장비로 비상 화재 알림 배너 발령
-  const triggerBannerTestWithCctv = (cctv) => {
-    const targetCctv = cctv || cctvList[0] || {
-      cctv_no: 1,
-      name: 'A동 1층 로비 메인',
-      location: 'A동 1층 중앙 서측 관제 구역'
-    };
-    const randomConfidence = Math.floor(Math.random() * 7) + 93; // 93%~99%
-    const now = new Date();
+  /*
+  const recordVideoTestDecision = (decision, job) => {
+    const isConfirm = decision === 'CONFIRM_FIRE';
+    const targetCctv = accessibleCCTVs.find(
+      (cctv) => String(cctv.cctv_no) === String(job?.cctv_no),
+    );
+    const sameBanner = activeAlertBanner?.job_id === job?.job_id;
+    const cctvLabel = sameBanner
+      ? activeAlertBanner.cctv_name
+      : targetCctv?.name || targetCctv?.cctv_name || `CCTV #${job?.cctv_no ?? '-'}`;
+    const locationLabel = sameBanner
+      ? activeAlertBanner.location
+      : targetCctv?.location || targetCctv?.cctv_location || '관제 구역';
 
-    const testData = {
-      // 테스트 배너는 DB 알림이 아니므로 서버 alert_no를 갖지 않는다.
-      alert_no: null,
-      event_no: Date.now(),
-      cctv_no: targetCctv.cctv_no || 1,
-      cctv_name: targetCctv.name || 'A동 1층 로비 메인',
-      location: targetCctv.location || 'A동 1층 중앙 서측 관제 구역',
-      confidence: randomConfidence,
-      event_class: 'FLAME_SMOKE',
-      detected_at: now.toISOString(),
-      isTest: true
-    };
+    appendLocalActivityLog({
+      id: `${job?.event_no || job?.job_id}-${decision}`,
+      user_no: currentUser?.user_no,
+      activity_type: isConfirm ? 'FIRE_CONFIRMED' : 'FIRE_DISMISSED',
+      time: new Date().toISOString(),
+      type: isConfirm ? 'fire' : 'false_alarm',
+      title: isConfirm ? '🚨 영상 테스트 119 신고(테스트)' : '✅ 영상 테스트 오탐 처리',
+      detail: `${cctvLabel} (${locationLabel}) - ${isConfirm ? '관제자 119 신고 모의 처리' : '관제자 오탐 처리'}`,
+    });
+    if (job) handleVideoTestStatus(job);
+  };
 
-    // 해당 CCTV를 현재 선택 상태로 전환하고 지도 뷰 및 비상 배너 갱신
-    setSelectedCCTV(targetCctv);
+  const handleVideoTestDecision = async (decision) => {
+    if (!activeAlertBanner?.job_id || !bannerIsDetecting) return;
+    try {
+      const job = await videoTestApi.decide(activeAlertBanner.job_id, decision);
+      recordVideoTestDecision(decision, job);
+    } catch (error) {
+      setActionNotice(error?.message || '관제자 판단을 반영하지 못했습니다.');
+    }
+  };
+
+  // 샘플 영상 분석 중 화재 확정 기준에 도달하면 테스트 경보도 관제 배너에 표시한다.
+  // 테스트 이벤트는 실제 SMS·119 신고를 만들지 않고 화면/이력만 갱신한다.
+  const handleVideoTestStatus = (job) => {
+    const targetCctv = accessibleCCTVs.find(
+      (cctv) => String(cctv.cctv_no) === String(job.cctv_no),
+    );
+    const cctvName = targetCctv?.name || targetCctv?.cctv_name || `CCTV #${job.cctv_no}`;
+    const severity = job.phase === 'DETECTING'
+      ? 'detecting'
+      : job.phase === 'DISMISSED'
+        ? 'dismissed'
+        : 'confirmed';
+
+    if (targetCctv) setSelectedCCTV(targetCctv);
     setIsBannerDismissed(false);
     setActionNotice(null);
-    setActiveAlertBanner(testData);
-
-    // 실시간 AI 감지 로그 패널에도 해당 테스트 감지건 추가
-    setEventLogs(prev => [
-      {
-        id: testData.event_no,
-        event_no: testData.event_no,
-        time: now.toISOString().substring(11, 19),
-        message: `${testData.cctv_name} 화재 및 연기 감지 (${testData.confidence}%)`,
-        type: 'fire',
-        isTest: true
-      },
-      ...prev.filter(l => l.event_no !== testData.event_no)
-    ]);
-    showToast(`🚨 [비상 테스트] (${testData.cctv_name}) 화재 비상 배너가 동작되었습니다.`);
+    setActiveAlertBanner({
+      alert_no: null,
+      event_no: job.event_no || null,
+      job_id: job.job_id,
+      cctv_no: job.cctv_no,
+      cctv_name: cctvName,
+      location: targetCctv?.location || targetCctv?.cctv_location || '관제 구역',
+      confidence: Number.isFinite(Number(job.confidence))
+        ? Math.round(Number(job.confidence) * 100)
+        : 0,
+      event_class: job.event_class || 'FLAME_SMOKE',
+      detected_at: new Date().toISOString(),
+      isTest: true,
+      severity,
+      event_status: job.phase === 'DETECTING' ? 'PENDING' : job.phase === 'DISMISSED' ? 'DISMISSED' : 'CONFIRMED',
+      media_url: job.first_detection_media_url || job.media_url || null,
+      first_detection_media_url: job.first_detection_media_url || null,
+      operator_decision: job.operator_decision || null,
+    });
+    setEventLogs((previousLogs) => {
+      const nextLog = {
+        id: job.event_no || job.job_id,
+        event_no: job.event_no,
+        job_id: job.job_id,
+        isTest: true,
+        event_status: job.phase === 'DETECTING' ? 'PENDING' : job.phase === 'DISMISSED' ? 'DISMISSED' : 'CONFIRMED',
+        time: new Date().toLocaleTimeString('ko-KR', { hour12: false }),
+        message: `${cctvName} ${job.phase === 'DETECTING' ? '최초 화염 감지' : job.phase === 'DISMISSED' ? '오탐 처리' : '화재 확정'} (${Math.round((job.confidence || 0) * 100)}%)`,
+        type: severity === 'detecting' ? 'detecting' : severity === 'dismissed' ? 'false_alarm' : 'fire',
+      };
+      return [nextLog, ...previousLogs.filter((log) => log.id !== nextLog.id && log.job_id !== job.job_id)];
+    });
+    if (severity === 'detecting') {
+      showToast(`🟠 ${cctvName}에서 최초 화염이 감지되었습니다. 관제자 판단이 필요합니다.`);
+      return;
+    }
+    if (severity === 'dismissed') {
+      showToast(`오탐 처리되었습니다: ${cctvName}`);
+      return;
+    }
+    showToast(`🚨 ${cctvName} 샘플 영상에서 화재가 확정되어 테스트 경보가 발생했습니다.`);
   };
 
   // 테스트 알림은 서버 조치 없이 화면과 테스트 로그만 종료한다.
@@ -616,6 +744,26 @@ function Monitoring() {
   };
 
   // ui_modal_rules 수칙 100% 준수: 고정 및 제약 너비(style) 지정 + shrink-0 + box-border
+  */
+  const recordVideoTestDecision = (decision, job) => {
+    if (job) recordTestDecision(decision, job);
+  };
+
+  const handleVideoTestStatus = (job) => {
+    const targetCctv = accessibleCCTVs.find(
+      (cctv) => String(cctv.cctv_no) === String(job?.cctv_no),
+    );
+    if (targetCctv) setSelectedCCTV(targetCctv);
+    const nextAlert = reportTestJob(job);
+    if (nextAlert?.severity === 'detecting') {
+      showToast(`🟠 ${nextAlert.cctv_name}에서 최초 화염이 감지되었습니다. 관제자 판단이 필요합니다.`);
+    } else if (nextAlert?.severity === 'dismissed') {
+      showToast(`오탐 처리되었습니다: ${nextAlert.cctv_name}`);
+    } else if (nextAlert) {
+      showToast(`🚨 ${nextAlert.cctv_name} 샘플 영상에서 화재가 확정되었습니다.`);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-canvas text-ink flex flex-col items-center justify-center font-ui p-4 transition-colors duration-300">
@@ -792,7 +940,15 @@ function Monitoring() {
                     activeAlertBanner.cctv_no === cctv.cctv_no ||
                     activeAlertBanner.cctv_name === cctv.name
                   )
-                ) || cctv.status === 'fire'
+                ) || cctv.status === 'fire',
+                alertLevel: (
+                  activeAlertBanner && (
+                    activeAlertBanner.cctv_no === cctv.cctv_no ||
+                    activeAlertBanner.cctv_name === cctv.name
+                  )
+                )
+                  ? activeAlertBanner.severity
+                  : cctv.status === 'fire' ? 'confirmed' : null
               }))}
               agencyList={agencyList}
               selectedCCTV={selectedCCTV}
@@ -803,12 +959,12 @@ function Monitoring() {
                   activeAlertBanner.cctv_name === cctv.name
                 );
                 if (isFireAlert) {
-                  handleOpenEventDetail(activeAlertBanner?.event_no || cctv.cctv_no || 1);
+                  handleOpenActiveAlertDetail(cctv.cctv_no || 1);
                 }
               }}
               showFireStation={showFireStation}
-              center={fireStation ? [parseFloat(fireStation.lat || fireStation.agency_lat || 37.5665), parseFloat(fireStation.lng || fireStation.agency_lng || 126.9780)] : [37.5665, 126.9780]}
-              zoom={14}
+              center={[36.35, 127.85]}
+              zoom={7}
             />
           </div>
         </section>
@@ -848,13 +1004,17 @@ function Monitoring() {
                   <div className="flex items-center gap-2">
                     {((activeAlertBanner && (activeAlertBanner.cctv_no === selectedCCTV.cctv_no || activeAlertBanner.cctv_name === selectedCCTV.name)) || selectedCCTV.status === 'fire') && (
                       <button
-                        onClick={() => handleOpenEventDetail(activeAlertBanner?.event_no || selectedCCTV.cctv_no || 1)}
+                        onClick={() => handleOpenActiveAlertDetail(selectedCCTV.cctv_no || 1)}
                         className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white font-bold text-[10px] rounded-full shadow-xs transition-all flex items-center gap-1 cursor-pointer animate-pulse"
                       >
                         <span>🔥 긴급 팝업 보기</span>
                       </button>
                     )}
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${selectedCCTV.status === 'fire' || activeAlertBanner?.cctv_name === selectedCCTV.name
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${bannerIsDetecting && activeAlertBanner?.cctv_name === selectedCCTV.name
+                      ? 'bg-amber-500/10 text-amber-700 border border-amber-500/30'
+                      : bannerIsDismissed && activeAlertBanner?.cctv_name === selectedCCTV.name
+                      ? 'bg-slate-500/10 text-slate-500 border border-slate-500/20'
+                      : selectedCCTV.status === 'fire' || (activeAlertBanner?.cctv_name === selectedCCTV.name && !bannerIsDismissed)
                       ? 'bg-red-500/10 text-red-500 border border-red-500/20'
                       : selectedCCTV.status === 'offline'
                         ? 'bg-neutral-500/10 text-neutral-500 border border-neutral-500/20'
@@ -888,6 +1048,8 @@ function Monitoring() {
                   activeAlertBanner.cctv_name === cctv.name ||
                   cctv.status === 'fire'
                 );
+                const isDetectingAlert = isFireAlert && activeAlertBanner?.severity === 'detecting';
+                const isDismissedAlert = isFireAlert && activeAlertBanner?.severity === 'dismissed';
 
                 return (
                   <div
@@ -895,11 +1057,15 @@ function Monitoring() {
                     onClick={() => {
                       setSelectedCCTV(cctv);
                       if (isFireAlert) {
-                        handleOpenEventDetail(activeAlertBanner?.event_no || cctv.cctv_no || 1);
+                        handleOpenActiveAlertDetail(cctv.cctv_no || 1);
                       }
                     }}
                     className={`p-3 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
-                      isFireAlert
+                      isDetectingAlert
+                        ? 'border-amber-500 bg-amber-500/20 text-ink font-bold shadow-md ring-2 ring-amber-500/40'
+                        : isDismissedAlert
+                        ? 'border-slate-400 bg-slate-500/10 text-ink font-bold shadow-xs'
+                        : isFireAlert
                         ? 'border-red-500 bg-red-500/20 text-ink font-bold shadow-md ring-2 ring-red-500/40'
                         : selectedCCTV?.id === cctv.id
                         ? 'border-red-500/50 bg-red-500/10 text-ink font-bold shadow-xs'
@@ -908,7 +1074,7 @@ function Monitoring() {
                   >
                     <div className="flex items-center gap-3">
                       <div className={`w-3 h-3 rounded-full ${
-                        isFireAlert ? 'bg-red-500 animate-ping' : cctv.status === 'offline' ? 'bg-neutral-400' : 'bg-emerald-500'
+                        isDetectingAlert ? 'bg-amber-500 animate-ping' : isDismissedAlert ? 'bg-slate-400' : isFireAlert ? 'bg-red-500 animate-ping' : cctv.status === 'offline' ? 'bg-neutral-400' : 'bg-emerald-500'
                       }`} />
                       <div>
                         <div className="flex items-center gap-1.5">
@@ -946,12 +1112,12 @@ function Monitoring() {
                   <span>📋 조치 이력</span>
                 </button>
                 <button
-                  onClick={triggerBannerTest}
+                  onClick={isAdmin ? triggerBannerTest : undefined}
                   className="text-[10px] font-bold text-red-600 dark:text-red-400 bg-red-500/10 hover:bg-red-500/20 px-2 py-0.5 rounded-full border border-red-500/30 transition-all cursor-pointer shadow-xs flex items-center gap-1"
-                  title="클릭 시 CCTV 선택 긴급 화재 알림 배너 테스트 실행"
+                  title="등록 CCTV와 샘플 영상으로 AI 화재 판정 테스트 실행"
                 >
                   <Siren className="w-3 h-3 animate-pulse" />
-                  <span>⚡ 비상 배너 테스트</span>
+                  <span>⚡ AI 영상 테스트</span>
                 </button>
               </div>
             </div>
@@ -959,15 +1125,15 @@ function Monitoring() {
             <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
               {eventLogs.length === 0 ? (
                 <div
-                  onClick={triggerBannerTest}
+                  onClick={isAdmin ? triggerBannerTest : undefined}
                   className="p-3.5 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-xs cursor-pointer transition-all text-center space-y-1 group"
                 >
                   <div className="flex items-center justify-center gap-1.5 text-red-500 font-bold">
                     <Siren className="w-4 h-4 animate-pulse" />
-                    <span>[테스트] 상단 비상 배너 호출하기</span>
+                    <span>[테스트] AI 영상 판정 실행하기</span>
                   </div>
                   <p className="text-[11px] text-mute group-hover:text-ink transition-colors">
-                    이 박스를 클릭하면 등록된 CCTV 중 1곳의 화재 알림 배너가 내려옵니다.
+                    CCTV와 샘플 영상을 선택하면 전체 영상을 분석해 FIRE/NO_FIRE 결과를 보여줍니다.
                   </p>
                 </div>
               ) : (
@@ -981,7 +1147,9 @@ function Monitoring() {
                     <div className="flex items-center justify-between text-caption-sm text-mute">
                       <span className="font-mono font-semibold">{log.time}</span>
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        log.type === 'fire'
+                        log.type === 'detecting'
+                          ? 'bg-amber-500/10 text-amber-600 border border-amber-500/30'
+                          : log.type === 'fire'
                           ? 'bg-red-500/10 text-red-500 border border-red-500/20'
                           : log.type === 'false_alarm'
                           ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30'
@@ -1065,20 +1233,22 @@ function Monitoring() {
       )}
 
       {/* 실시간 긴급 상단 알림 드롭다운 배너 */}
-      {activeAlertBanner && !isBannerDismissed && (
+      {false && activeAlertBanner && !isBannerDismissed && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-4 duration-300 pointer-events-auto">
           <div
-            className="bg-red-600 text-white rounded-2xl sm:rounded-full px-5 py-3 shadow-2xl border-2 border-red-400 font-bold flex flex-wrap sm:flex-nowrap items-center gap-3 ring-4 ring-red-500/40"
+            className={`text-white rounded-2xl sm:rounded-full px-5 py-3 shadow-2xl border-2 font-bold flex flex-wrap sm:flex-nowrap items-center gap-3 ${bannerIsDetecting ? 'bg-amber-500 border-amber-300 ring-4 ring-amber-400/40' : bannerIsDismissed ? 'bg-slate-600 border-slate-400 ring-4 ring-slate-400/30' : 'bg-red-600 border-red-400 ring-4 ring-red-500/40'}`}
             style={{ minWidth: '380px', maxWidth: '95vw' }}
           >
             <div className="flex items-center gap-2 flex-1 min-w-0">
               <span className="w-3 h-3 rounded-full bg-white animate-ping shrink-0" />
               <span className="text-xl shrink-0">🚨</span>
               <div className="truncate text-xs sm:text-sm">
-                <span className="font-extrabold">
+                {bannerIsDetecting && <span className="font-extrabold">[화재 의심 감지] {activeAlertBanner.cctv_name}</span>}
+                {bannerIsDismissed && <span className="font-extrabold">[오탐 처리] {activeAlertBanner.cctv_name}</span>}
+                <span className={bannerIsDetecting || bannerIsDismissed ? 'hidden' : 'font-extrabold'}>
                   [화재 긴급 감지] {activeAlertBanner.cctv_name}
                 </span>
-                <span className="ml-2 font-mono text-red-100 text-xs font-semibold">
+                <span className={`ml-2 font-mono text-xs font-semibold ${bannerIsDetecting ? 'text-amber-100' : bannerIsDismissed ? 'text-slate-200' : 'text-red-100'}`}>
                   ({activeAlertBanner.confidence}% 신뢰도)
                 </span>
               </div>
@@ -1086,13 +1256,30 @@ function Monitoring() {
 
             <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto justify-end pt-1 sm:pt-0">
               <button
-                onClick={() => handleOpenEventDetail(activeAlertBanner.event_no)}
+                onClick={() => handleOpenActiveAlertDetail(activeAlertBanner.event_no || 1)}
                 className="h-8 px-3 bg-white text-red-600 hover:bg-red-50 font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer flex items-center gap-1"
                 title="화재 이벤트 상세 및 조치 팝업 열기"
               >
                 <span>🔥 상세보기</span>
               </button>
-              {activeAlertBanner.isTest ? (
+              {activeAlertBanner.isTest && bannerIsDetecting ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => handleVideoTestDecision('CONFIRM_FIRE')}
+                    className="h-8 px-3 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer"
+                  >
+                    119 신고 (테스트)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleVideoTestDecision('DISMISS')}
+                    className="h-8 px-3 bg-white hover:bg-amber-50 text-amber-700 font-bold text-xs rounded-full shadow-xs transition-colors cursor-pointer"
+                  >
+                    오탐 처리
+                  </button>
+                </>
+              ) : activeAlertBanner.isTest ? (
                 <button
                   type="button"
                   onClick={handleEndTestAlert}
@@ -1159,7 +1346,7 @@ function Monitoring() {
       )}
 
       {/* 팝업 모달 수칙 준수: 화재 이벤트 감지 통합 상세 다이얼로그 (Dialog Popup) */}
-      {(selectedEventDetail || isDetailLoading) && (
+      {false && (selectedEventDetail || isDetailLoading) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-200">
           <div
             style={{ width: '840px', minWidth: '320px', maxWidth: '95vw' }}
@@ -1207,13 +1394,19 @@ function Monitoring() {
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
                     <div className="md:col-span-7">
                       <div className="aspect-video bg-black rounded-xl overflow-hidden border border-hairline shadow-md relative">
-                        {selectedCCTV ? (
+                        {selectedEventDetail?.isTest && selectedEventDetail?.thumbnail_url ? (
+                          <img
+                            src={resolveMediaUrl(selectedEventDetail.thumbnail_url)}
+                            alt="영상 테스트 AI 증거 이미지"
+                            className="w-full h-full object-contain"
+                          />
+                        ) : selectedCCTV ? (
                           <CctvPlayer
                             streamUrl={selectedCCTV.stream_url || selectedCCTV.streamUrl}
                             cctvName={selectedCCTV.name || selectedCCTV.cctv_name}
                           />
                         ) : selectedEventDetail?.thumbnail_url ? (
-                          <img src={selectedEventDetail.thumbnail_url} alt="화재 스냅샷" className="w-full h-full object-cover" />
+                          <img src={resolveMediaUrl(selectedEventDetail.thumbnail_url)} alt="화재 스냅샷" className="w-full h-full object-cover" />
                         ) : (
                           <div className="w-full h-full flex flex-col items-center justify-center text-mute space-y-2">
                             <Flame className="w-12 h-12 text-red-500 animate-pulse" />
@@ -1331,90 +1524,15 @@ function Monitoring() {
         </div>
       )}
 
-      {/* 5. 비상 화재 테스트 - CCTV 직접 선택 팝업 모달 다이얼로그 (ui_modal_rules 100% 준수) */}
-      {isTestCctvSelectModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
-          <div
-            style={{ width: '520px', minWidth: '320px', maxWidth: '95vw' }}
-            className="bg-canvas border border-hairline rounded-2xl shadow-2xl overflow-hidden shrink-0 flex flex-col box-border max-h-[85vh]"
-          >
-            {/* 모달 헤더 (shrink-0) */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-hairline shrink-0 bg-surface-soft/50">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 shrink-0">
-                  <Siren className="w-5 h-5 animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="font-display text-body-lg-strong font-bold text-ink">비상 화재 테스트 - CCTV 선택</h3>
-                  <p className="text-caption-sm text-mute">화재 비상 알림 배너를 발령할 CCTV를 직접 선택하세요.</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsTestCctvSelectModalOpen(false)}
-                className="text-mute hover:text-ink transition-colors p-1.5 rounded-lg hover:bg-surface-soft cursor-pointer shrink-0"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* 관리자 전용 AI 영상 테스트 팝업 */}
+      <VideoTestModal
+        isOpen={isTestCctvSelectModalOpen}
+        onClose={() => setIsTestCctvSelectModalOpen(false)}
+        cctvs={accessibleCCTVs}
+        onStatus={handleVideoTestStatus}
+        onDecision={recordVideoTestDecision}
+      />
 
-            {/* CCTV 선택 목록 스크롤 영역 */}
-            <div className="p-6 overflow-y-auto space-y-3 shrink flex-1 max-h-[60vh]">
-              <p className="text-caption-sm font-bold text-mute uppercase tracking-wider">
-                등록된 CCTV 장비 목록 ({cctvList.length}개)
-            </p>
-
-            <div className="space-y-2">
-                {cctvList.map((cctv) => (
-                  <div
-                    key={cctv.id}
-                    onClick={() => {
-                      triggerBannerTestWithCctv(cctv);
-                      setIsTestCctvSelectModalOpen(false);
-                    }}
-                    className="p-3.5 rounded-xl border border-hairline hover:border-red-500/60 bg-surface-soft hover:bg-red-500/10 transition-all cursor-pointer flex items-center justify-between group shadow-xs box-border min-h-[64px]"
-                  >
-                    <div className="flex items-center gap-3.5 min-w-0">
-                      <div className="w-10 h-10 rounded-full bg-canvas border border-hairline flex items-center justify-center text-red-500 group-hover:scale-110 transition-transform shrink-0">
-                        <Video className="w-5 h-5" />
-                      </div>
-                      <div className="min-w-0">
-                        <h4 className="font-bold text-body-sm text-ink group-hover:text-red-500 transition-colors truncate">
-                          {cctv.name}
-                        </h4>
-                        <p className="text-caption-sm text-mute flex items-center gap-1 mt-0.5 truncate">
-                          <MapPin className="w-3.5 h-3.5 text-mute shrink-0" />
-                          <span className="truncate">{cctv.location}</span>
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0 ml-2">
-                      <span className="text-caption-sm font-mono text-mute bg-canvas px-2 py-0.5 rounded border border-hairline hidden sm:inline-block">
-                        {cctv.id}
-                      </span>
-                      <span className="px-3.5 h-9 rounded-full bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition-all flex items-center justify-center shadow-xs">
-                        선택 &rarr;
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* 모달 푸터 (shrink-0) */}
-            <div className="px-6 py-4 border-t border-hairline shrink-0 bg-surface-soft/30 flex items-center justify-end">
-              <button
-                onClick={() => setIsTestCctvSelectModalOpen(false)}
-                className="px-5 h-10 rounded-full border border-hairline hover:bg-surface-soft text-body-sm font-bold text-mute transition-colors cursor-pointer"
-              >
-                취소 / 닫기
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 6. 관제 조치 완료 이력 팝업 모달 다이얼로그 (오탐 취소 & 119 출동 승인 기록) */}
       {isActionHistoryModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
           <div
@@ -1428,8 +1546,8 @@ function Monitoring() {
                   <FileText className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-display text-body-lg-strong font-bold text-ink">관제 조치 및 활동 이력</h3>
-                  <p className="text-caption-sm text-mute">오탐지 취소 처리 및 화재 확인·119 신고 요청 내역입니다.</p>
+                  <h3 className="font-display text-body-lg-strong font-bold text-ink">상황 조치 이력</h3>
+                  <p className="text-caption-sm text-mute">화재 확정·오탐 처리·119 신고 등 상황 대응 이력입니다.</p>
                 </div>
               </div>
               <button
@@ -1443,13 +1561,15 @@ function Monitoring() {
             {/* 조치 이력 목록 스크롤 영역 */}
             <div className="p-6 overflow-y-auto space-y-3 shrink flex-1 max-h-[60vh]">
               {(() => {
-                const logs = getLocalActivityLogs(currentUser?.user_no).map(normalizeActivityRecord);
+                const logs = getLocalActivityLogs(currentUser?.user_no)
+                  .map(normalizeActivityRecord)
+                  .filter((item) => item.type === 'fire' || item.type === 'false_alarm');
                 if (logs.length === 0) {
                   return (
                     <div className="py-12 text-center text-mute space-y-2">
                       <FileText className="w-8 h-8 text-mute mx-auto opacity-50" />
-                      <p className="text-body-sm font-semibold">아직 조치 완료된 이력 기록이 없습니다.</p>
-                      <p className="text-caption-sm text-mute">비상 배너 테스트 후 [오탐지 취소] 또는 [119 승인]을 누르시면 이곳에 영구 기록됩니다.</p>
+                      <p className="text-body-sm font-semibold">아직 상황 조치 이력이 없습니다.</p>
+                      <p className="text-caption-sm text-mute">[오탐 처리] 또는 [화재 확정]을 누르면 이곳에 기록됩니다.</p>
                     </div>
                   );
                 }
