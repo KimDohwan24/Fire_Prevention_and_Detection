@@ -3,7 +3,6 @@ import {
   ArrowRight,
   CheckCircle2,
   CircleAlert,
-  VideoOff,
 } from 'lucide-react';
 import {
   ALERT_STATUS_LABELS,
@@ -226,45 +225,6 @@ export function AlertStatusSummary({ items, averageResponse, averageDispatch, lo
   );
 }
 
-export function CctvHealthList({ items, loading, error, onOpenMonitoring }) {
-  if (loading) return <SectionMessage>CCTV 상태를 확인하고 있습니다.</SectionMessage>;
-  if (error) return <SectionMessage tone="error">{error}</SectionMessage>;
-
-  if (items.length === 0) {
-    return (
-      <div className="py-8 text-center">
-        <CheckCircle2 className="w-7 h-7 mx-auto text-ink" />
-        <p className="mt-3 text-body-sm font-semibold text-ink">모든 CCTV가 정상 작동 중입니다.</p>
-        <p className="mt-1 text-caption-sm text-mute">연결 오류나 중지 장비가 없습니다.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="divide-y divide-hairline">
-      {items.slice(0, 5).map((cctv) => (
-        <button
-          key={cctv.cctv_no}
-          type="button"
-          onClick={() => onOpenMonitoring(cctv)}
-          className="w-full py-3 flex items-center justify-between gap-3 text-left focus:outline-none focus-visible:outline-none hover:bg-surface-soft"
-        >
-          <div className="min-w-0 flex items-center gap-3">
-            <VideoOff className={`w-4 h-4 shrink-0 ${cctv.cctv_status === 'ERROR' ? 'text-red-600' : 'text-mute'}`} />
-            <div className="min-w-0">
-              <p className="text-body-sm font-semibold text-ink truncate">{cctv.cctv_name || `CCTV #${cctv.cctv_no}`}</p>
-              <p className="mt-0.5 text-caption-sm text-mute truncate">{cctv.cctv_location || '위치 정보 없음'}</p>
-            </div>
-          </div>
-          <StatusPill tone={cctv.cctv_status === 'ERROR' ? 'critical' : 'neutral'}>
-            {cctv.cctv_status === 'ERROR' ? '연결 오류' : '동작 중지'}
-          </StatusPill>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export function RecentEventsTable({ events, loading, error, onOpenEvent }) {
   if (loading) return <SectionMessage>최근 사건을 불러오고 있습니다.</SectionMessage>;
   if (error) return <SectionMessage tone="error">{error}</SectionMessage>;
@@ -312,6 +272,9 @@ export function RecentEventsTable({ events, loading, error, onOpenEvent }) {
                     <StatusPill tone={getEventStatusTone(event.event_status)}>
                       {EVENT_STATUS_LABELS[event.event_status] || event.event_status || '확인 중'}
                     </StatusPill>
+                    {event.event_is_test && (
+                      <StatusPill tone="warning">테스트</StatusPill>
+                    )}
                     <span className="text-body whitespace-nowrap">
                       {EVENT_CLASS_LABELS[event.event_class] || event.event_class || '-'}
                       {Number.isFinite(confidence) ? ` · ${Math.round(confidence * 100)}%` : ''}

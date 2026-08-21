@@ -1,19 +1,92 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { authApi, cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi, isSuperAdminUser } from '../api';
+import { authApi, cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi, isSuperAdminUser, resolveMediaUrl } from '../api';
 import {
   Users, PlusCircle,
   Video, CheckCircle, Trash2,
   Activity, UserCheck, Search, ShieldAlert, X, Clock,
   Film, AlertCircle, Info, FileText, CheckCircle2, Play,
   Mail, Phone, Building, Calendar, Shield, User, ExternalLink,
-  BadgeCheck, ChevronRight, Edit3, MapPin, Loader2
+  BadgeCheck, ChevronRight, Edit3, MapPin, Loader2, RefreshCw
 } from 'lucide-react';
 import CctvPlayer from '../components/CctvPlayer';
 import AppHeader from '../components/AppHeader';
+import { buildDetectionTimeline, buildSituationActions } from '../utils/eventTimeline';
 
 // 초기 CCTV 데이터
 const INITIAL_CCTVS = [];
+
+const AUDIT_ACTIVITY_LABELS = Object.freeze({
+  LOGIN: '로그인',
+  LOGOUT: '로그아웃',
+  PASSWORD_CHANGED: '비밀번호 변경',
+  PROFILE_UPDATED: '프로필 변경',
+  FIRE_CONFIRMED: '화재 확정 및 119 신고 절차 시작',
+  FIRE_DISMISSED: '화재 오탐 처리',
+});
+
+const formatAuditTime = (value) => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ').slice(0, 16);
+  return date.toLocaleString('ko-KR', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).replace(/\.\s?/g, '-').replace(/\.$/, '');
+};
+
+const sortAuditLogs = (logs) => [...logs]
+  .sort((a, b) => {
+    const aTime = new Date(a.sortAt || a.time || 0).getTime();
+    const bTime = new Date(b.sortAt || b.time || 0).getTime();
+    return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+  })
+  .slice(0, 100);
+
+const buildEventTimeline = (event) => {
+  return [...buildDetectionTimeline(event), ...buildSituationActions(event)]
+    .sort((a, b) => {
+      const aTime = new Date(a.timestamp).getTime();
+      const bTime = new Date(b.timestamp).getTime();
+      return (Number.isNaN(aTime) ? 0 : aTime) - (Number.isNaN(bTime) ? 0 : bTime);
+    })
+    .map((item) => ({
+      timestamp: formatAuditTime(item.timestamp),
+      event: item.label,
+    }));
+};
+
+const enrichEventAuditLog = (log, event) => {
+  const media = Array.isArray(event.media) ? event.media : [];
+  const mediaWithUrl = media.filter((item) => item?.media_url);
+  const primaryMedia = mediaWithUrl.find((item) => item.media_is_primary)
+    || mediaWithUrl.find((item) => item.media_is_first)
+    || mediaWithUrl[0];
+  const videoMedia = mediaWithUrl.find((item) => (
+    String(item.media_mime_type || '').startsWith('video/')
+    || /\.(mp4|webm|ogg)(?:\?.*)?$/i.test(item.media_url)
+  ));
+  const status = event.event_status === 'CONFIRMED'
+    ? '화재 확정'
+    : event.event_status === 'DISMISSED' ? '오탐 처리' : '관측중';
+
+  return {
+    ...log,
+    sortAt: event.event_first_detected_at || log.sortAt,
+    time: formatAuditTime(event.event_first_detected_at || log.time),
+    level: event.event_status === 'CONFIRMED' ? 'error' : event.event_status === 'PENDING' ? 'warning' : 'info',
+    status,
+    videoUrl: videoMedia?.media_url || null,
+    thumbnail: primaryMedia?.media_url || log.thumbnail || null,
+    history: buildEventTimeline(event).length > 0
+      ? buildEventTimeline(event)
+      : log.history,
+  };
+};
 
 const AdminPage = () => {
   const navigate = useNavigate();
@@ -26,6 +99,8 @@ const AdminPage = () => {
   const [isAgencyLoading, setIsAgencyLoading] = useState(false);
   const [isAgencySubmitting, setIsAgencySubmitting] = useState(false);
   const [updatingUserNo, setUpdatingUserNo] = useState(null);
+  const [isAuditLoading, setIsAuditLoading] = useState(false);
+  const [isActivitiesLoading, setIsActivitiesLoading] = useState(false);
 
   // 데이터 상태 (실시간 백엔드 DB 연동)
   const [cctvList, setCctvList] = useState(INITIAL_CCTVS);
@@ -52,6 +127,7 @@ const AdminPage = () => {
 
   // 팝업 모달 상태
   const [selectedLog, setSelectedLog] = useState(null);
+  const [isSelectedLogLoading, setIsSelectedLogLoading] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [assignedCctvs, setAssignedCctvs] = useState([]);
   const [isAssignedCctvsLoading, setIsAssignedCctvsLoading] = useState(false);
@@ -65,6 +141,40 @@ const AdminPage = () => {
     if (!user || isSuperAdminUser(user)) return false;
     if (user.role === 'admin') return isCurrentUserSuperAdmin;
     return user.isAdminRequestPending;
+  };
+
+  const fetchAuditLogs = async () => {
+    setIsAuditLoading(true);
+    try {
+      const response = await eventApi.list({ size: 100, include_test: true });
+      const items = Array.isArray(response?.items) ? response.items : [];
+      const mappedLogs = items.map((event) => ({
+        id: event.event_no,
+        source: 'event',
+        event_no: event.event_no,
+        sortAt: event.event_first_detected_at,
+        time: formatAuditTime(event.event_first_detected_at || '2026-08-10 14:00:00'),
+        message: `${event.cctv_name || '카메라'} ${event.event_class === 'FLAME_SMOKE' ? '화재 및 연기 감지' : '화재 의심 감지'}`,
+        level: event.event_status === 'CONFIRMED' ? 'error' : event.event_status === 'PENDING' ? 'warning' : 'info',
+        cctvId: `CCTV-${String(event.cctv_no || 1).padStart(2, '0')}`,
+        location: event.cctv_location || '관제 구역',
+        confidence: Math.round((event.event_confidence || 0.9) * 100),
+        eventType: event.event_is_test ? 'AI 영상 테스트' : '화재/연기 감지',
+        status: event.event_status === 'CONFIRMED'
+          ? event.event_is_test ? '화재 확정 (119 신고 테스트)' : '조치중 (119 신고)'
+          : event.event_status === 'DISMISSED' ? '오탐 처리' : '관측중',
+        videoUrl: null,
+        thumbnail: event.thumbnail_url || null,
+        history: [
+          { timestamp: event.event_first_detected_at || '2026-08-10 14:00:00', event: 'AI 모듈 - 패턴 감지' },
+        ],
+      }));
+      setSystemLogs(sortAuditLogs(mappedLogs));
+    } catch (error) {
+      console.warn('감지 감사 로그 로드 오류:', error);
+    } finally {
+      setIsAuditLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -126,29 +236,8 @@ const AdminPage = () => {
       }
     }).catch(err => console.warn('사용자 목록 로드 오류:', err));
 
-    // 3. 백엔드 이벤트 및 119 신고 감사 로그 로드
-    eventApi.list({ size: 50 }).then(res => {
-      const items = res?.items || [];
-      if (Array.isArray(items)) {
-        const mappedLogs = items.map(ev => ({
-          id: ev.event_no,
-          time: ev.event_first_detected_at || '2026-08-10 14:00:00',
-          message: `${ev.cctv_name || '카메라'} ${ev.event_class === 'FLAME_SMOKE' ? '화재 및 연기 감지' : '화재 의심 감지'}`,
-          level: ev.event_status === 'CONFIRMED' ? 'error' : ev.event_status === 'PENDING' ? 'warning' : 'info',
-          cctvId: `CCTV-${String(ev.cctv_no || 1).padStart(2, '0')}`,
-          location: ev.cctv_location || '관제 구역',
-          confidence: Math.round((ev.event_confidence || 0.9) * 100),
-          eventType: '화재/연기 감지',
-          status: ev.event_status === 'CONFIRMED' ? '조치중 (119 신고)' : '관측중',
-          videoUrl: null,
-          thumbnail: ev.thumbnail_url || null,
-          history: [
-            { timestamp: ev.event_first_detected_at || '2026-08-10 14:00:00', event: 'AI 모듈 - 패턴 감지' }
-          ]
-        }));
-        setSystemLogs(mappedLogs);
-      }
-    }).catch(err => console.warn('감사 로그 로드 오류:', err));
+    // 3. 백엔드 화재 이벤트 감사 로그 로드
+    fetchAuditLogs();
   }, [navigate]);
 
   const fetchCctvList = async () => {
@@ -177,20 +266,53 @@ const AdminPage = () => {
     }
   };
 
+  const openAuditLog = async (log) => {
+    setSelectedLog(log);
+    if (!log.event_no) return;
+
+    setIsSelectedLogLoading(true);
+    try {
+      const event = await eventApi.get(log.event_no);
+      setSelectedLog((previousLog) => (
+        previousLog?.id === log.id ? enrichEventAuditLog(log, event) : previousLog
+      ));
+    } catch (error) {
+      console.warn('감지 이벤트 상세 로그 로드 오류:', error);
+    } finally {
+      setIsSelectedLogLoading(false);
+    }
+  };
+
   const openUserDetail = async (user) => {
-    setSelectedUser(user);
+    setSelectedUser({ ...user, activities: [] });
     setAssignedCctvs([]);
     setAssignedCctvsError('');
     setIsAssignedCctvsLoading(true);
+    setIsActivitiesLoading(true);
 
     try {
-      const response = await cctvApi.list({ user_no: user.user_no });
-      const items = response?.items || response || [];
-      setAssignedCctvs(Array.isArray(items) ? items : []);
+      const [cctvResponse, activityResponse] = await Promise.all([
+        cctvApi.list({ user_no: user.user_no }),
+        userApi.activities(user.user_no, { page: 1, size: 50 }),
+      ]);
+      const cctvItems = cctvResponse?.items || cctvResponse || [];
+      const activityItems = Array.isArray(activityResponse?.items) ? activityResponse.items : [];
+      setAssignedCctvs(Array.isArray(cctvItems) ? cctvItems : []);
+      setSelectedUser((previousUser) => previousUser?.user_no === user.user_no
+        ? {
+          ...previousUser,
+          activities: activityItems.map((activity) => ({
+            action: AUDIT_ACTIVITY_LABELS[activity.activity_type] || activity.activity_type || '시스템 활동',
+            detail: activity.activity_detail || '',
+            time: formatAuditTime(activity.activity_at),
+          })),
+        }
+        : previousUser);
     } catch (error) {
-      setAssignedCctvsError(error.message || '담당 CCTV 목록을 불러오지 못했습니다.');
+      setAssignedCctvsError(error.message || '회원 상세 활동 이력을 불러오지 못했습니다.');
     } finally {
       setIsAssignedCctvsLoading(false);
+      setIsActivitiesLoading(false);
     }
   };
 
@@ -927,22 +1049,37 @@ const AdminPage = () => {
               <div>
                 <h2 className="text-heading-sm font-bold text-ink flex items-center gap-2">
                   <Activity className="w-5 h-5 text-amber-500" />
-                  시스템 통합 감사 로그 & 감지 이력
+                  화재 이벤트 감사 로그 & 감지 이력
                 </h2>
                 <p className="text-xs text-mute mt-1">
                   감사 로그 항목을 클릭하면 해당 이벤트의 <strong className="text-amber-500">녹화 영상 및 감지 타임라인 이력</strong>을 확인할 수 있습니다.
                 </p>
               </div>
-              <span className="text-[11px] px-3 py-1 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-mono rounded-full border border-amber-500/20 shrink-0 self-start md:self-auto">
-                ⚡ 백엔드 REST/RTSP 연동 대기중
-              </span>
+              <div className="flex items-center gap-2 shrink-0 self-start md:self-auto">
+                <span className={`text-[11px] px-3 py-1 font-mono rounded-full border ${isAuditLoading
+                  ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+                  : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                  }`}>
+                  {isAuditLoading ? '감지 로그 불러오는 중' : '● 백엔드 미디어·타임라인 연동됨'}
+                </span>
+                <button
+                  type="button"
+                  onClick={fetchAuditLogs}
+                  disabled={isAuditLoading}
+                  className="h-8 px-3 rounded-full border border-hairline bg-canvas text-[11px] font-semibold text-ink inline-flex items-center gap-1.5 hover:border-hairline-strong disabled:text-mute disabled:cursor-wait cursor-pointer focus:outline-none focus-visible:outline-none"
+                  title="최신 감사 로그 다시 불러오기"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isAuditLoading ? 'animate-spin' : ''}`} />
+                  {isAuditLoading ? '갱신 중' : '새로고침'}
+                </button>
+              </div>
             </div>
 
             <div className="space-y-3 font-mono text-xs">
               {systemLogs.map(log => (
                 <div
                   key={log.id}
-                  onClick={() => setSelectedLog(log)}
+                  onClick={() => openAuditLog(log)}
                   className="p-4 border border-hairline rounded-xl flex flex-col md:flex-row md:items-center justify-between bg-surface-soft/30 hover:bg-amber-500/5 hover:border-amber-500/40 cursor-pointer transition-all group shadow-2xs"
                 >
                   <div className="flex items-center gap-3">
@@ -1142,12 +1279,25 @@ const AdminPage = () => {
                   최근 시스템 관제 및 활동 이력
                 </h3>
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {selectedUser.activities && selectedUser.activities.map((act, idx) => (
-                    <div key={idx} className="p-3 bg-canvas border border-hairline rounded-lg text-xs flex items-center justify-between">
-                      <span className="text-ink font-medium">{act.action}</span>
-                      <span className="text-[11px] font-mono text-mute shrink-0 ml-2">{act.time}</span>
+                  {isActivitiesLoading ? (
+                    <div className="p-3 bg-canvas border border-hairline rounded-lg text-xs text-mute flex items-center gap-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" /> 활동 이력을 조회 중입니다.
                     </div>
-                  ))}
+                  ) : selectedUser.activities?.length > 0 ? (
+                    selectedUser.activities.map((act, idx) => (
+                      <div key={`${act.time}-${idx}`} className="p-3 bg-canvas border border-hairline rounded-lg text-xs space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-ink font-medium">{act.action}</span>
+                          <span className="text-[11px] font-mono text-mute shrink-0">{act.time}</span>
+                        </div>
+                        {act.detail && <p className="text-[11px] text-mute">{act.detail}</p>}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="p-3 bg-canvas border border-hairline rounded-lg text-xs text-mute">
+                      기록된 활동 이력이 없습니다.
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -1230,29 +1380,34 @@ const AdminPage = () => {
               {/* 왼쪽: 영상 / 캡처 미디어 뷰어 */}
               <div className="lg:col-span-7 space-y-4">
                 <div className="relative aspect-video bg-black rounded-xl overflow-hidden border border-hairline shadow-md group">
-                  {selectedLog.videoUrl ? (
+                  {isSelectedLogLoading ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center text-white space-y-2">
+                      <Loader2 className="w-8 h-8 animate-spin text-amber-400" />
+                      <p className="text-xs">녹화 미디어와 감지 타임라인을 불러오는 중입니다.</p>
+                    </div>
+                  ) : selectedLog.videoUrl ? (
                     <video
                       controls
                       autoPlay
                       muted
                       loop
                       className="w-full h-full object-cover"
-                      poster={selectedLog.thumbnail}
+                      poster={resolveMediaUrl(selectedLog.thumbnail)}
                     >
-                      <source src={selectedLog.videoUrl} type="video/mp4" />
+                      <source src={resolveMediaUrl(selectedLog.videoUrl)} type="video/mp4" />
                       브라우저가 비디오 재생을 지원하지 않습니다.
                     </video>
                   ) : selectedLog.thumbnail ? (
                     <img
-                      src={selectedLog.thumbnail}
+                      src={resolveMediaUrl(selectedLog.thumbnail)}
                       alt="감지 스냅샷"
                       className="w-full h-full object-cover"
                     />
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center text-mute space-y-2 p-6 text-center">
                       <Film className="w-10 h-10 stroke-1 opacity-40 text-mute" />
-                      <p className="text-xs">이 감사 로그는 녹화 영상 미디어가 포함되어 있지 않습니다.</p>
-                      <span className="text-[11px] text-mute/60 font-mono">(시스템 행위 / 권한 관리 로그)</span>
+                      <p className="text-xs">해당 화재 이벤트에 저장된 녹화 미디어가 없습니다.</p>
+                      <span className="text-[11px] text-mute/60 font-mono">(감지 타임라인은 계속 확인할 수 있습니다.)</span>
                     </div>
                   )}
 
@@ -1320,7 +1475,7 @@ const AdminPage = () => {
                 <div className="pt-4 border-t border-hairline text-[11px] text-mute flex items-center gap-1.5 bg-surface-soft/40 p-3 rounded-xl">
                   <Info className="w-4 h-4 text-amber-500 shrink-0" />
                   <span>
-                    백엔드 연동 시 REST API 및 RTSP 녹화 서버의 상세 메타데이터와 자동 연동됩니다.
+                    화재 이벤트의 AI 감지 과정과 상황 조치 이력을 타임라인으로 표시합니다.
                   </span>
                 </div>
               </div>

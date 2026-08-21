@@ -7,8 +7,6 @@ import {
   MapPin,
   PhoneCall,
   RefreshCw,
-  Settings,
-  UserRound,
   Video,
 } from 'lucide-react';
 import { authApi } from '../api';
@@ -18,12 +16,12 @@ import EventDetailModal from '../components/dashboard/EventDetailModal';
 import TodayKpiDetailModal from '../components/dashboard/TodayKpiDetailModal';
 import {
   AlertStatusSummary,
-  CctvHealthList,
   DashboardKpiCard,
   EventTrendChart,
   RecentEventsTable,
 } from '../components/dashboard/DashboardWidgets';
 import useDashboardData from '../hooks/useDashboardData';
+import { useFireAlert } from '../context/FireAlertContext';
 import {
   buildEventTrend,
   createDashboardMetrics,
@@ -42,7 +40,7 @@ function Dashboard() {
   const navigate = useNavigate();
   const [trendDays, setTrendDays] = useState(30);
   const [selectedEvent, setSelectedEvent] = useState(null);
-  const [selectedCctv, setSelectedCctv] = useState(null);
+  const [isCctvStatusModalOpen, setIsCctvStatusModalOpen] = useState(false);
   const [selectedTodayKpi, setSelectedTodayKpi] = useState(null);
   const {
     currentUser,
@@ -53,9 +51,14 @@ function Dashboard() {
     errors,
     isLoading,
     isRefreshing,
+    isDemoData,
     lastUpdated,
     refresh,
   } = useDashboardData();
+  const {
+    activeAlert: globalActiveAlert,
+    openEventDetail,
+  } = useFireAlert();
 
   const metrics = useMemo(() => createDashboardMetrics({
     cctvs,
@@ -73,19 +76,23 @@ function Dashboard() {
   const activeAlertEvent = activeAlert
     ? events.find((event) => String(event.event_no) === String(activeAlert.event_no))
     : null;
+  const isGlobalAlertDismissed = globalActiveAlert?.severity === 'dismissed';
+  const globalAlertIsAlreadyCounted = Boolean(
+    globalActiveAlert?.event_no
+    && (metrics.activeAlerts.some((alert) => String(alert.event_no) === String(globalActiveAlert.event_no))
+      || metrics.noResponseAlerts.some((alert) => String(alert.event_no) === String(globalActiveAlert.event_no))),
+  );
+  const dashboardActiveAlert = !isGlobalAlertDismissed && globalActiveAlert && !globalAlertIsAlreadyCounted
+    ? globalActiveAlert
+    : activeAlert;
+  const dashboardActiveAlertEvent = dashboardActiveAlert?.event_no
+    ? events.find((event) => String(event.event_no) === String(dashboardActiveAlert.event_no))
+    : null;
+  const attentionAlertCount = metrics.activeAlerts.length
+    + (dashboardActiveAlert && dashboardActiveAlert !== activeAlert ? 1 : 0);
   const latestConfirmedEvent = metrics.confirmedToday[0] || null;
-  const attentionCctv = metrics.unhealthyCctvs[0] || null;
 
   const openMonitoring = (params) => navigate(createMonitoringPath(params));
-
-  const openCctvHealthDetail = (cctv) => {
-    setSelectedCctv(cctv);
-  };
-
-  const openMonitoringFromCctv = (cctv) => {
-    setSelectedCctv(null);
-    openMonitoring({ cctv_no: cctv.cctv_no });
-  };
 
   const openEventFromTodayKpi = (event) => {
     setSelectedTodayKpi(null);
@@ -106,13 +113,19 @@ function Dashboard() {
       />
 
       <main className="max-w-7xl mx-auto w-full px-4 sm:px-6 py-8 sm:py-10">
-        {(activeAlert || metrics.noResponseAlerts.length > 0) && (
+        {(dashboardActiveAlert || metrics.noResponseAlerts.length > 0) && (
           <button
             type="button"
-            onClick={() => openMonitoring({
-              event_no: activeAlert?.event_no || metrics.noResponseAlerts[0]?.event_no,
-              cctv_no: activeAlertEvent?.cctv_no,
-            })}
+            onClick={() => {
+              if (dashboardActiveAlert) {
+                openEventDetail(dashboardActiveAlert);
+                return;
+              }
+              openMonitoring({
+                event_no: metrics.noResponseAlerts[0]?.event_no,
+                cctv_no: activeAlertEvent?.cctv_no,
+              });
+            }}
             className="w-full mb-7 px-5 py-4 rounded-lg border border-red-500 bg-canvas dark:border-red-400/40 dark:bg-red-950/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left focus:outline-none focus-visible:outline-none"
           >
             <span className="flex items-start gap-3">
@@ -121,12 +134,12 @@ function Dashboard() {
               </span>
               <span>
                 <span className="block text-body-sm font-semibold text-red-700 dark:text-red-100">
-                  {activeAlert ? '즉시 확인이 필요한 화재 경보가 있습니다.' : '응답 기한을 넘긴 경보가 있습니다.'}
+                  {dashboardActiveAlert ? '즉시 확인이 필요한 화재 경보가 있습니다.' : '응답 기한을 넘긴 경보가 있습니다.'}
                 </span>
                 <span className="block mt-1 text-caption-sm text-red-700/80 dark:text-red-200/80">
-                  {activeAlert?.cctv_name || activeAlertEvent?.cctv_name || '대상 CCTV'}
+                  {dashboardActiveAlert?.cctv_name || dashboardActiveAlertEvent?.cctv_name || '대상 CCTV'}
                   {' · '}
-                  {formatDateTime(activeAlert?.alert_sent_at || metrics.noResponseAlerts[0]?.alert_sent_at)}
+                  {formatDateTime(dashboardActiveAlert?.alert_sent_at || dashboardActiveAlert?.detected_at || metrics.noResponseAlerts[0]?.alert_sent_at)}
                 </span>
               </span>
             </span>
@@ -185,16 +198,22 @@ function Dashboard() {
           <DashboardKpiCard
             icon={<Bell className="w-4 h-4" />}
             label="대응 필요 경보"
-            value={`${metrics.activeAlerts.length}건`}
+            value={`${attentionAlertCount}건`}
             helper="현재 SENT 상태 알림"
             detail={metrics.noResponseAlerts.length > 0 ? `무응답 ${metrics.noResponseAlerts.length}건` : '무응답 경보 없음'}
             error={errors.alerts}
             loading={isLoading}
-            critical={metrics.activeAlerts.length > 0 || metrics.noResponseAlerts.length > 0}
-            onClick={() => openMonitoring({
-              event_no: activeAlert?.event_no || metrics.noResponseAlerts[0]?.event_no,
-              cctv_no: activeAlertEvent?.cctv_no,
-            })}
+            critical={attentionAlertCount > 0 || metrics.noResponseAlerts.length > 0}
+            onClick={() => {
+              if (dashboardActiveAlert) {
+                openEventDetail(dashboardActiveAlert);
+                return;
+              }
+              openMonitoring({
+                event_no: metrics.noResponseAlerts[0]?.event_no,
+                cctv_no: activeAlertEvent?.cctv_no,
+              });
+            }}
           />
           <DashboardKpiCard
             icon={<Video className="w-4 h-4" />}
@@ -204,14 +223,11 @@ function Dashboard() {
             detail={metrics.unhealthyCctvs.length > 0 ? `점검 필요 ${metrics.unhealthyCctvs.length}대` : '전체 장비 정상'}
             error={errors.cctvs}
             loading={isLoading}
-            onClick={() => openMonitoring({
-              cctv_status: attentionCctv ? 'UNHEALTHY' : 'ACTIVE',
-              cctv_no: attentionCctv?.cctv_no,
-            })}
+            onClick={() => setIsCctvStatusModalOpen(true)}
           />
           <DashboardKpiCard
             icon={<Flame className="w-4 h-4" />}
-            label="오늘 화재 건수"
+            label="월 화재 건수"
             value={`${metrics.confirmedToday.length}건`}
             helper="테스트 이벤트 제외"
             detail={latestConfirmedEvent ? `${latestConfirmedEvent.cctv_name || 'CCTV'}에서 최근 감지` : '오늘 확정 이벤트 없음'}
@@ -222,7 +238,7 @@ function Dashboard() {
           />
           <DashboardKpiCard
             icon={<PhoneCall className="w-4 h-4" />}
-            label="오늘 119 신고"
+            label="월 119 신고"
             value={`${metrics.dispatchedReportsToday.length} / ${metrics.reportsToday.length}`}
             helper="접수 완료 / 전체 신고"
             detail={metrics.failedReportsToday.length > 0 ? `전송 실패 ${metrics.failedReportsToday.length}건` : '신고 전송 실패 없음'}
@@ -272,66 +288,6 @@ function Dashboard() {
           </article>
         </section>
 
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-          <article className="min-w-0 rounded-lg border border-hairline bg-canvas p-5 sm:p-6">
-            <div className="flex items-start justify-between gap-3 pb-3 border-b border-hairline">
-              <div>
-                <h2 className="text-heading-sm font-semibold text-ink">점검 필요 CCTV</h2>
-                <p className="mt-1 text-caption-sm text-mute">오류 장비를 가장 먼저 표시합니다.</p>
-              </div>
-              <span className="h-7 min-w-7 px-2 rounded-full border border-hairline bg-surface-soft text-[11px] font-mono text-ink flex items-center justify-center">
-                {metrics.unhealthyCctvs.length}
-              </span>
-            </div>
-            <CctvHealthList
-              items={metrics.unhealthyCctvs}
-              loading={isLoading}
-              error={errors.cctvs}
-              onOpenMonitoring={openCctvHealthDetail}
-            />
-          </article>
-
-          <article className="min-w-0 rounded-lg border border-hairline bg-surface-soft p-5 sm:p-6 flex flex-col justify-between min-h-[280px]">
-            <div>
-              <div className="w-10 h-10 rounded-full border border-hairline bg-canvas flex items-center justify-center">
-                {isAdmin ? <Settings className="w-4.5 h-4.5" /> : <UserRound className="w-4.5 h-4.5" />}
-              </div>
-              <h2
-                className="mt-6 text-heading-md sm:text-heading-lg font-semibold text-ink break-keep"
-                style={{ wordBreak: 'keep-all', overflowWrap: 'normal' }}
-              >
-                {isAdmin ? '전체 시스템을 기준으로 집계했습니다.' : '내 CCTV 범위만 안전하게 집계했습니다.'}
-              </h2>
-              <p
-                className="mt-3 max-w-3xl text-body-sm text-body leading-relaxed break-keep"
-                style={{ wordBreak: 'keep-all', overflowWrap: 'normal' }}
-              >
-                {isAdmin
-                  ? '전체 CCTV와 감지 이벤트를 확인하고, 장비 또는 회원 설정이 필요하면 관리자 페이지에서 관리할 수 있습니다.'
-                  : '본인이 등록하거나 담당하는 CCTV와 연결된 이벤트·알림·신고 이력만 대시보드에 표시됩니다.'}
-              </p>
-            </div>
-            <div className="mt-6 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => openMonitoring()}
-                className="h-9 px-4 rounded-full border border-hairline-strong bg-canvas text-caption-sm font-semibold text-ink focus:outline-none focus-visible:outline-none"
-              >
-                관제 화면 열기
-              </button>
-              {isAdmin && (
-                <button
-                  type="button"
-                  onClick={() => navigate('/admin')}
-                  className="h-9 px-4 rounded-full border border-hairline-strong bg-canvas text-caption-sm font-semibold text-ink focus:outline-none focus-visible:outline-none"
-                >
-                  시스템 관리
-                </button>
-              )}
-            </div>
-          </article>
-        </section>
-
         <section className="rounded-lg border border-hairline bg-canvas p-5 sm:p-6">
           <div className="mb-5 flex items-center justify-between gap-4">
             <div>
@@ -355,11 +311,14 @@ function Dashboard() {
         </section>
       </main>
 
-      {selectedCctv && (
+      {isCctvStatusModalOpen && (
         <CctvHealthDetailModal
-          cctv={selectedCctv}
-          onClose={() => setSelectedCctv(null)}
-          onOpenMonitoring={openMonitoringFromCctv}
+          cctvs={cctvs}
+          activeCount={metrics.activeCctvs.length}
+          availability={metrics.cctvAvailability}
+          loading={isLoading}
+          error={errors.cctvs}
+          onClose={() => setIsCctvStatusModalOpen(false)}
         />
       )}
 
