@@ -30,7 +30,7 @@ from fireguard_detect.detector import Detector
 pytestmark = pytest.mark.slow
 
 AI_MODEL_DIR = Path(__file__).resolve().parent.parent
-WEIGHTS = AI_MODEL_DIR / "best.pt"
+WEIGHTS = AI_MODEL_DIR / "yolo11n_best.pt"
 # 연기가 화면을 가득 채우고 창문에 불꽃이 보이는 프레임. 못 잡으면 쓸 수 없다.
 SAMPLE_VIDEO = AI_MODEL_DIR / "samples" / "house_fire.webm"
 

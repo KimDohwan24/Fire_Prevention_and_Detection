@@ -36,6 +36,15 @@ def frame_interval(source_fps, target_fps: float) -> int:
     return max(1, round(_sane_fps(source_fps) / target_fps))
 
 
+def _sane_frame_count(value) -> int | None:
+    """컨테이너가 알려 준 전체 프레임 수를 검증한다."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return count if count > 0 else None
+
+
 class VideoSource:
     """영상 파일을 열어 `Frame` 을 순서대로 내보낸다.
 
@@ -62,6 +71,8 @@ class VideoSource:
             self._capture = cv2.VideoCapture(str(self.path))
 
         self.source_fps = None
+        self.source_frame_count = None
+        self.duration_sec = None
         self.interval = None
 
     def close(self):
@@ -74,7 +85,13 @@ class VideoSource:
             raise OSError(f"영상을 열 수 없습니다: {self.path}")
 
         import_cv2_prop_fps = 5  # cv2.CAP_PROP_FPS — cv2 없이도 테스트되게 상수로 둔다
+        import_cv2_prop_frame_count = 7  # cv2.CAP_PROP_FRAME_COUNT
         self.source_fps = _sane_fps(self._capture.get(import_cv2_prop_fps))
+        self.source_frame_count = _sane_frame_count(
+            self._capture.get(import_cv2_prop_frame_count)
+        )
+        if self.source_frame_count is not None:
+            self.duration_sec = self.source_frame_count / self.source_fps
         self.interval = frame_interval(self.source_fps, self.target_fps)
 
         started_at = None

@@ -30,6 +30,8 @@ class FakeCapture:
         return self._opened
 
     def get(self, prop):
+        if prop == 7:  # CAP_PROP_FRAME_COUNT
+            return len(self._frames)
         return self._fps
 
     def grab(self):
@@ -90,6 +92,16 @@ def test_timestamp_comes_from_source_fps():
     stamps = [f.timestamp_sec for f in source]
 
     assert stamps == pytest.approx([0.0, 1.0 / 3, 2.0 / 3])
+
+
+def test_source_metadata_contains_duration():
+    cap = FakeCapture(n_frames=90, fps=30.0)
+    source = VideoSource("dummy.mp4", target_fps=3.0, capture=cap)
+
+    list(source)
+
+    assert source.source_frame_count == 90
+    assert source.duration_sec == pytest.approx(3.0)
 
 
 def test_frame_image_is_carried_through():
