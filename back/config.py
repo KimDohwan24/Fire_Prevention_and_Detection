@@ -70,6 +70,7 @@ MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
 
+
 # 역지오코딩(카카오 Local) HTTP 타임아웃(초).
 # CCTV 등록 요청 안에서 부르므로 사람이 기다리는 시간이다 — 짧게 둔다.
 # 실패해도 등록은 진행되고 주소만 NULL 로 남는다.
@@ -87,6 +88,17 @@ ITS_ROAD_TYPES = [t.strip() for t in os.getenv("ITS_ROAD_TYPES", "ex,its").split
 CCTV_URL_TTL_SEC = int(os.getenv("CCTV_URL_TTL_SEC", "300"))
 # 갱신 기능 스위치 — 끄면 DB 에 저장된 주소를 그대로 내려준다
 ITS_REFRESH_ENABLED = _env_bool("ITS_REFRESH_ENABLED", True)
+
+# ----- 생활안전지도(safemap.go.kr) 소방시설 개방 데이터 -----
+# 전국 소방서·119안전센터 목록(이름·주소·전화·좌표)을 받아 agency 테이블을 채운다.
+# 앱이 돌면서 부르는 값이 아니다 — scripts/import_agencies_safemap.py 만 이 키를 쓴다.
+# 갱신주기가 1년이라 요청마다 부를 이유가 없고, 119 신고는 동기 경로라 신고 순간에
+# 외부 API 를 부르면 그 지연이 그대로 HTTP 응답 지연이 된다 (services/geocode.py 와 같은 판단).
+# 발급: https://www.safemap.go.kr 개발자센터 → 오픈API 인증키 발급
+# .env 에서의 항목 이름은 `agency` 다. 윈도우는 환경변수 이름의 대소문자를 가리지
+# 않지만 리눅스는 가리므로, 팀원 환경이 갈려도 되게 두 표기를 모두 본다.
+SAFEMAP_SERVICE_KEY = os.getenv("agency") or os.getenv("AGENCY", "")
+SAFEMAP_API_URL = os.getenv("SAFEMAP_API_URL", "https://www.safemap.go.kr/openapi2/IF_0038")
 
 # ----- 소셜 로그인(OAuth) -----
 # 프로바이더별 앱 키. 각 개발자 콘솔에서 발급받아 .env 에 넣는다.
