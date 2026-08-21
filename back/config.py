@@ -70,6 +70,12 @@ MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
 
+# 119 신고에서 시도할 최대 기관 수 (가까운 순).
+#   1 = 가장 가까운 한 곳에만 신고하고 끝낸다 — 기관 승계 없음. **기본값**
+#   0 = 후보 전체를 가까운 순서대로 시도한다 — 원래의 승계 동작
+# 2026-08-21 시연 단순화로 기본을 1 로 두었다. 승계 코드는 그대로 남아 있어
+# .env 에 REPORT_MAX_AGENCIES=0 만 넣으면 예전 동작으로 되돌아간다.
+REPORT_MAX_AGENCIES = int(os.getenv("REPORT_MAX_AGENCIES", "1"))
 
 # 역지오코딩(카카오 Local) HTTP 타임아웃(초).
 # CCTV 등록 요청 안에서 부르므로 사람이 기다리는 시간이다 — 짧게 둔다.
