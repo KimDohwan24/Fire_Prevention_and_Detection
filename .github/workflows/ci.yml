@@ -1,0 +1,278 @@
+# 파이어가드 CI — 결정적 게이트 + 에이전트 진단
+#
+# 설계 원칙: 통과/실패 판정은 절대 LLM 이 하지 않는다.
+#   - front-check / back-check / back-test: 고정된 명령의 종료 코드로만 판정한다. 이게 게이트다.
+#   - diagnose: 위 셋 중 하나라도 깨졌을 때만 깨어나 원인을 찾아 보고한다. 절대 게이트가 아니다.
+#
+# 이유: LLM 판정은 같은 커밋에 같은 답을 준다는 보장이 없다. 재현되지 않는 게이트는
+#       게이트가 아니다. 반대로 "실패 로그 → 원인" 번역은 에이전트가 확실히 잘하는 일이고,
+#       실패했을 때만 도니까 느려도 아무도 손해 보지 않는다.
+#
+# 잡 구성 (설계 스펙 §5):
+#   front-check ─┐
+#   back-check  ─┼─→ diagnose   (needs 전부, 실패 시에만)
+#   back-test   ─┘
+#   앞의 셋은 needs 없이 동시 출발한다. back-test 는 1단계에서 비차단(continue-on-error).
+#
+# "차단" 의 실제 의미: 워크플로 자체는 아무것도 막지 않는다. 머지 차단은 branch protection 의
+#   required check 로 걸리며, 그건 2단계에서 사람이 켜는 스위치다. 1단계에서 넷 다 신호등일 뿐이다.
+#
+# 범위: 1단계는 dev-Wang push 한정. 검증되면 pull_request 로 넓힌다.
+
+name: ci
+
+on:
+  push:
+    # ci-trial/** 은 검증 시나리오(의도적 실패 주입 — lint 에러, import 에러, 테스트 깨기)용
+    # 일회용 브랜치 패턴이다. 깨진 커밋으로 dev-Wang 히스토리를 더럽히지 않으려고 따로 둔다.
+    # 검증이 끝나면 브랜치를 지운다.
+    branches: [dev-Wang, 'ci-trial/**']
+
+# 같은 브랜치의 이전 실행은 취소한다 — 하루 20커밋씩 들어가는 브랜치라 없으면 러너가 밀린다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# 읽기 전용 토큰. 커밋도 푸시도 코멘트도 없다 — 진단 에이전트가 폭주해도 토큰으로는 아무것도 못 쓴다.
+permissions:
+  contents: read
+
+env:
+  # agent-trial 로 승자를 정한 뒤 이 줄만 바꾼다
+  AGENT_MODEL: ornith:9b
+
+defaults:
+  run:
+    # 명시적 `shell: bash` 는 `bash --noprofile --norc -eo pipefail {0}` 로 실행된다.
+    # (shell 을 안 적으면 `bash -e {0}` 라 pipefail 이 빠져서 `명령 | tee` 에서 명령의 실패가
+    #  tee 의 종료 코드 0 에 가려진다. 모든 검사 잡이 tee 로 로그를 받으므로 반드시 필요하다.)
+    shell: bash
+
+jobs:
+  # ---------- 결정적 게이트 1: 프론트 (차단) ----------
+  front-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      # 설치 · lint · build 를 별도 스텝으로 나눈다 — 런 페이지에서 어느 단계가 깨졌는지 바로 보이게.
+      # 로그는 한 파일에 이어 붙여(tee -a) 진단 에이전트가 한 번에 읽게 한다.
+      - name: npm ci
+        working-directory: front
+        run: npm ci 2>&1 | tee -a ../ci-front-check.log
+
+      - name: lint
+        working-directory: front
+        run: npm run lint 2>&1 | tee -a ../ci-front-check.log
+
+      - name: build
+        working-directory: front
+        run: npm run build 2>&1 | tee -a ../ci-front-check.log
+
+      # 성공한 잡은 로그를 올리지 않는다 — 에이전트가 보는 것은 깨진 것뿐이어야 한다.
+      - name: 실패 로그 넘기기
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-front-check
+          path: ci-front-check.log
+
+  # ---------- 결정적 게이트 2: 백엔드 부팅 (차단) ----------
+  back-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: back/requirements*.txt
+
+      - name: 의존성 설치
+        run: pip install -r back/requirements.txt 2>&1 | tee -a ci-back-check.log
+
+      # DB 불필요 — db.py 의 커넥션 풀이 첫 쿼리 때 lazy 로 생성되고, config.py 는 전 항목에
+      # 기본값이 있다. 앱이 뜨는지(import · 블루프린트 등록)만 본다.
+      # start_scheduler=False 필수 — True 면 APScheduler 가 백그라운드 스레드를 띄워 프로세스가
+      # 안 끝나고 잡이 타임아웃까지 매달린다.
+      - name: 부팅 스모크
+        working-directory: back
+        run: |
+          python -c "
+          from app import create_app
+          app = create_app(start_scheduler=False)
+          print('부팅 OK — 라우트', len(list(app.url_map.iter_rules())), '개')
+          " 2>&1 | tee -a ../ci-back-check.log
+
+      - name: 실패 로그 넘기기
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-back-check
+          path: ci-back-check.log
+
+  # ---------- 게이트 3: pytest (1단계에서는 비차단) ----------
+  back-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # 비차단: CI 환경에서 493개가 실제로 통과하는지 첫날에 알아야 하지만, 첫날 빨강이
+    # 게이트를 오염시키면 안 된다. 2단계에서 차단으로 승격한다.
+    continue-on-error: true
+    outputs:
+      # pip 설치 등 앞 스텝에서 죽어 pytest 스텝이 스킵되면 출력이 비는데, 그 경우도 실패로 본다.
+      result: "${{ steps.pytest.outputs.result || 'failed' }}"
+
+    # conftest 가 요구하는 조건 넷 (스펙 §6):
+    #   1. postgis 이미지 — db/schema.sql 에 CREATE EXTENSION postgis 가 있다. 평범한 postgres:16 은 실패.
+    #   2. superuser     — CREATE EXTENSION 에 필요. 컨테이너 기본 postgres 계정이 superuser 라 충족.
+    #   3. PG 13 이상    — conftest 가 DROP DATABASE ... WITH (FORCE) 를 쓴다. PG16 이라 통과.
+    #   4. 접속 정보를 env 로 — CI 엔 .env 가 없다. config.py 의 load_dotenv 는 파일을 못 찾고
+    #      os.getenv 기본값으로 떨어지므로 아래 잡 env 가 그대로 먹는다.
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5432'
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      # DB_NAME 은 절대 넣지 마라 — conftest 가 import 전에 fireguard_test 로 직접 덮어쓰고,
+      # 개발 DB 를 바라보면 assert 로 죽게 되어 있다.
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: back/requirements*.txt
+
+      - name: 의존성 설치
+        run: pip install -r back/requirements.txt -r back/requirements-dev.txt
+
+      # 종료 코드를 직접 잡아 출력으로 뺀다. 스텝이 실패로 끝나면 잡 레벨 continue-on-error 때문에
+      # 잡 결과가 success 로 보고되어 diagnose 가 실패를 알 방법이 없기 때문이다.
+      - name: pytest
+        id: pytest
+        working-directory: back
+        run: |
+          set -o pipefail
+          if python -m pytest tests -q --tb=short 2>&1 | tee ../ci-back-test.log; then
+            echo "result=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+            echo "::warning::back-test 실패 (1단계에서는 비차단)"
+          fi
+
+      # 통과하면 안 올린다 — 에이전트가 깨진 로그만 보게.
+      # (pytest 스텝이 실패로 끝나지 않으므로 failure() 대신 출력값으로 거른다)
+      - name: 실패 로그 넘기기
+        if: always() && steps.pytest.outputs.result != 'passed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-back-test
+          path: ci-back-test.log
+
+  # ---------- 에이전트 진단 (실패했을 때만, 읽기 전용) ----------
+  #
+  # 읽기 전용 보장 두 층 (스펙 §7):
+  #   1. 구조적 — 일회용 러너 + permissions: contents: read. 커밋도 푸시도 없다. 이게 진짜 보장.
+  #   2. 도구 수준 — opencode.json 의 permission.edit/webfetch/websearch = deny. 심층 방어.
+  #      (bash 를 허용하는 한 `echo > file` 로 우회 가능하므로 보조일 뿐이다)
+  diagnose:
+    needs: [front-check, back-check, back-test]
+    # continue-on-error 잡은 failure() 를 발동시키지 않아서 두 번째 절이 필요하다.
+    # !cancelled() 는 concurrency 취소 때 진단 러너까지 뜨는 것을 막는다.
+    if: ${{ !cancelled() && (failure() || needs.back-test.outputs.result == 'failed') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 에이전트가 죽든 헛소리를 하든 CI 결론에 영향이 없다.
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      # 실패한 잡의 로그만 ci-logs/ 에 모은다 (성공한 잡은 올리지 않았으므로).
+      # setup 단계(checkout·setup-node 등)에서 죽으면 로그가 하나도 없을 수 있다 — 그래도 진단은 시도한다.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*
+          merge-multiple: true
+          path: ci-logs
+        continue-on-error: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 캐시 미스면 매 실행 5.6GB 재다운로드. 느려질 뿐 틀리지 않는다. 5.6GB 는 리포 캐시 한도 10GB 안.
+      - name: Ollama 모델 캐시
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-${{ env.AGENT_MODEL }}
+
+      # Ollama 가 가중치를 받아 :11434 에서 추론을 돌리고, OpenCode 는 거기 붙어 툴 루프만 돈다.
+      # OpenCode 는 가중치를 갖지 않으므로 이 스텝이 반드시 먼저다.
+      - name: Ollama 설치 · 기동
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          # install.sh 는 systemd 서비스를 'ollama' 유저로 등록·기동한다. 그 서비스의 모델 경로는
+          # /usr/share/ollama/.ollama/models 라서 위 actions/cache 의 ~/.ollama/models 와 어긋난다.
+          # 서비스를 내리고 러너 유저로 직접 띄워 캐시 경로와 맞춘다.
+          sudo systemctl disable --now ollama 2>/dev/null || true
+          nohup ollama serve > ollama-server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:11434/api/tags >/dev/null && break
+            sleep 1
+          done
+          ollama pull "$AGENT_MODEL"
+          # 기본 num_ctx(보통 4k)로는 에이전트가 파일조차 못 읽는다. OpenCode 문서 권장 16k~32k.
+          printf 'FROM %s\nPARAMETER num_ctx 32768\n' "$AGENT_MODEL" > Modelfile
+          ollama create agent-ci -f Modelfile
+          ollama list
+
+      - name: OpenCode 설치
+        run: npm install -g opencode-ai
+
+      # 하네스는 언제나 ollama/agent-ci 라는 고정 이름만 본다 (모델 슬롯). 프롬프트는 파일로 분리 —
+      # 출력 계약(4섹션)을 워크플로 수정 없이 다듬을 수 있게.
+      # STEP_SUMMARY 에 붙이면 아티팩트를 안 받아도 런 페이지에서 바로 보인다.
+      - name: 진단
+        run: |
+          opencode run --auto --model ollama/agent-ci \
+            "$(cat .github/diagnose-prompt.txt)" > diagnosis.md 2> opencode.err \
+            || echo "에이전트 실패 RC=$?" >> diagnosis.md
+          echo "## 에이전트 진단" >> "$GITHUB_STEP_SUMMARY"
+          cat diagnosis.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 진단 결과 저장
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnosis
+          path: |
+            diagnosis.md
+            opencode.err
+            ollama-server.log
+          if-no-files-found: warn

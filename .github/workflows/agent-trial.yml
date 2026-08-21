@@ -1,0 +1,128 @@
+# 에이전틱 코딩 후보 비교 (트라이얼)
+#
+# 목적: "이 저장소에서 에이전트 루프가 실제로 도느냐"를 실측한다.
+#       하네스 2종 × 모델 2종을 같은 과제로 돌려 결과·소요시간·도구 호출 횟수를 비교한다.
+#
+# 과제(.github/agent-task.txt)는 일부러 다단계로 짰다 — 명령 실행 → 파일 읽기 → 진단.
+# 툴 호출이 무너지는 모델은 여기서 바로 드러난다.
+#
+# 범위: dev-Wang push 에서만 돈다.
+#       (workflow_dispatch 는 기본 브랜치(dev)에 파일이 있어야 버튼이 생기므로 못 쓴다)
+# 결과: PR 코멘트가 아니라 아티팩트. 트라이얼 단계에서 남의 PR 을 어지럽히지 않는다.
+
+name: agent-trial
+
+on:
+  push:
+    branches: [dev-Wang]
+
+concurrency:
+  group: agent-trial-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false          # 하나 터져도 나머지 후보는 끝까지 본다
+      matrix:
+        include:
+          # ornith:9b — 에이전틱 코딩 전용 모델(MIT), 5.6GB, 256K ctx
+          - harness: opencode
+            model: ornith:9b
+          - harness: codex
+            model: ornith:9b
+          # lfm2.5:8b — 활성 1B MoE. 툴 호출 특화 엣지 모델, 5.2GB, 125K ctx.
+          # CPU 러너에서 속도가 붙는지 보는 대조군.
+          - harness: opencode
+            model: lfm2.5:8b
+          - harness: codex
+            model: lfm2.5:8b
+
+    name: ${{ matrix.harness }} × ${{ matrix.model }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Node 준비
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Ollama 모델 캐시
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-${{ matrix.model }}
+
+      - name: Ollama 설치 · 기동 · 모델 준비
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          # install.sh 는 systemd 서비스를 'ollama' 유저로 등록·기동한다. 그 서비스의 모델 경로는
+          # /usr/share/ollama/.ollama/models 라서 위 actions/cache 의 ~/.ollama/models 와 어긋난다.
+          # 서비스를 내리고 러너 유저로 직접 띄워 캐시 경로와 맞춘다.
+          sudo systemctl disable --now ollama 2>/dev/null || true
+          nohup ollama serve > ollama-server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:11434/api/tags >/dev/null && break
+            sleep 1
+          done
+          ollama pull "$MODEL"
+          # 기본 num_ctx(보통 4k)로는 에이전트가 파일조차 못 읽는다. OpenCode 문서 권장 16k~32k.
+          printf 'FROM %s\nPARAMETER num_ctx 32768\n' "$MODEL" > Modelfile
+          ollama create agent-ci -f Modelfile
+          ollama list
+          df -h / | tail -1          # 디스크 여유 확인 (14GB 밖에 없다)
+          free -g | head -2          # RAM 확인
+
+      - name: (A) OpenCode
+        if: matrix.harness == 'opencode'
+        run: |
+          set -euo pipefail
+          npm install -g opencode-ai
+          start=$SECONDS
+          opencode run --auto --model ollama/agent-ci \
+            "$(cat .github/agent-task.txt)" > out.md 2> err.log || echo "RC=$? (실패)" >> out.md
+          echo "elapsed_sec=$((SECONDS-start))" > timing.txt
+
+      - name: (B) Codex CLI
+        if: matrix.harness == 'codex'
+        env:
+          OLLAMA_API_KEY: dummy      # Ollama 는 키를 안 보지만 클라이언트가 요구한다
+        run: |
+          set -euo pipefail
+          npm install -g @openai/codex
+          mkdir -p ~/.codex
+          cat > ~/.codex/config.toml <<TOML
+          model_provider = "ollama"
+          model = "agent-ci"
+          approval_policy = "never"
+          sandbox_mode = "workspace-write"
+
+          [model_providers.ollama]
+          name = "Ollama (local)"
+          base_url = "http://localhost:11434/v1"
+          env_key = "OLLAMA_API_KEY"
+          wire_api = "chat"
+          TOML
+          start=$SECONDS
+          codex exec "$(cat .github/agent-task.txt)" > out.md 2> err.log || echo "RC=$? (실패)" >> out.md
+          echo "elapsed_sec=$((SECONDS-start))" > timing.txt
+
+      - name: 결과 수집
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trial-${{ matrix.harness }}-${{ matrix.model }}
+          path: |
+            out.md
+            err.log
+            timing.txt
+          if-no-files-found: warn

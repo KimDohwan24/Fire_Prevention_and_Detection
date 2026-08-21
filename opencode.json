@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md"],
+  "permission": {
+    "edit": "deny",
+    "webfetch": "deny",
+    "websearch": "deny"
+  },
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": { "baseURL": "http://localhost:11434/v1" },
+      "models": {
+        "agent-ci":     { "name": "CI 파생 모델 (num_ctx 32k)" },
+        "ornith:9b":    { "name": "Ornith 9B — 에이전틱 코딩 전용, 256K ctx" },
+        "ornith:35b":   { "name": "Ornith 35B — GPU 있을 때" },
+        "lfm2.5:8b":    { "name": "LFM2.5 8B-A1B — 툴 호출 특화, 활성 1B" },
+        "devstral:24b": { "name": "Devstral 24B — GPU 있을 때, SWE-Bench 46.8%" },
+        "qwen3-coder:30b": { "name": "Qwen3-Coder 30B-A3B — 활성 3.3B, RAM 넉넉할 때" }
+      }
+    },
+    "llamacpp": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "llama.cpp (local)",
+      "options": { "baseURL": "http://localhost:8080/v1" },
+      "models": { "local": { "name": "llama-server --jinja 로 띄운 모델" } }
+    }
+  }
+}
