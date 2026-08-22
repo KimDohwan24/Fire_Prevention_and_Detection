@@ -108,8 +108,13 @@ export function DashboardKpiCard({
   const content = (
     <>
       <div className="flex items-start justify-between gap-3">
-        <div className={`w-9 h-9 rounded-full border flex items-center justify-center ${styles.icon}`}>
-          {icon}
+        <div className="flex min-w-0 items-center gap-2">
+          <div className={`w-9 h-9 shrink-0 rounded-full border flex items-center justify-center ${styles.icon}`}>
+            {icon}
+          </div>
+          <p className={`min-w-0 truncate text-body-sm font-bold tracking-tight ${styles.label}`}>
+            {label}
+          </p>
         </div>
         <div className="flex items-center gap-1.5">
           {tooltip && (
@@ -128,9 +133,6 @@ export function DashboardKpiCard({
       </div>
 
       <div className="mt-3">
-        <p className={`text-caption-sm font-bold tracking-tight ${styles.label}`}>
-          {label}
-        </p>
         {loading ? (
           <p className="mt-1 text-caption-sm text-body font-medium">집계 중...</p>
         ) : error ? (
