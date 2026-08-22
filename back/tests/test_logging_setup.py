@@ -113,12 +113,20 @@ def test_레벨을_올리면_INFO_는_걸러진다(tmp_path):
     assert "이건 남아야 한다" in written
 
 
-def test_알림_로거_이름이_라우트와_서비스에서_같다():
-    """alert_routes 만 fireguard.alerts(복수)라 알림 로그가 두 이름으로 갈렸다."""
-    import routes.alert_routes as alert_routes
+def test_알림_로거_이름이_응답과_발송에서_같다():
+    """알림 경로가 fireguard.alerts(복수)/fireguard.alert 두 이름으로 갈려 있었다.
+
+    이름이 갈리면 레벨을 한 번에 조절할 수 없다 — 한쪽만 조용해진다.
+
+    응답 쪽 로거는 원래 routes/alert_routes.py 에 있었는데, 텔레그램 버튼도 같은
+    처리를 부르게 되면서 본체가 services/alert_respond.py 로 옮겨갔다(라우트는
+    이제 그 함수를 부르기만 해서 자기 로거가 없다). 그래서 여기서 보는 대상도
+    옮겨간 모듈이다.
+    """
+    import services.alert_respond as alert_respond
     import services.alert_service as alert_service
 
-    assert alert_routes.logger.name == alert_service.logger.name == "fireguard.alert"
+    assert alert_respond.logger.name == alert_service.logger.name == "fireguard.alert"
 
 
 def test_색상_이스케이프는_파일에_들어가지_않는다(tmp_path):
