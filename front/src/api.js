@@ -475,20 +475,6 @@ export const agencyApi = {
   list: async () => {
     return await request('/agencies');
   },
-
-  create: async (agencyData) => {
-    return await request('/agencies', {
-      method: 'POST',
-      body: JSON.stringify(agencyData),
-    });
-  },
-
-  update: async (agency_no, agencyData) => {
-    return await request(`/agencies/${agency_no}`, {
-      method: 'PUT',
-      body: JSON.stringify(agencyData),
-    });
-  },
 };
 
 // 7. 119 신고 이력 API
