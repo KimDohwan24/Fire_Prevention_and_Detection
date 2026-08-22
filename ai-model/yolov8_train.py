@@ -9,30 +9,32 @@ from yolo11_test import (
     evaluate_background_test as evaluate_background_test_common,
 )
 
-# ============================================================
+# ==========================================
 # 1. 기본 설정 (런팟 및 모델 충돌 방지 독립 경로 지정)
-# ============================================================
-BASE_DIR = Path(__file__).resolve().parent
+# ==========================================
+BASE_DIR = Path(__file__).resolve().parent 
 DATA_YAML = (BASE_DIR / ".." / "data" / "data.yaml").resolve()
 
-# ★ [교수 첨삭] 조원들과 파일 오염을 방지하기 위한 v8 독립 폴더 지정
-OUTPUT_PROJECT_DIR = "run_v8_0814"
-TRAIN_RUN_NAME = "train_v8_compare"
+# ★ [교수 첨삭] 오늘 날짜(0818) 기준으로 독립 폴더명 변경
+OUTPUT_PROJECT_DIR = "run_v8_0818" 
+TRAIN_RUN_NAME = "train_v8_compare" 
 TEST_RUN_NAME = "train_v8_compare_test_evaluation"
-# ============================================================
-# 2. 클래스 및 환경 상수 (AI 통일 피드백 규격 주입)
-# ============================================================
-CLASS_NAMES = ["fire", "smoke"]
-EPOCHS = 10
-IMAGE_SIZE = 640
-BATCH_SIZE = 16  # 메모리 OOM 발생 시 8로 낮추어 실행하세요.
-WORKERS = 2      # 런팟 환경 병목 및 RAM 오버플로우 방지 최적화 값
+
+# ==========================================
+# 2. 클래스 및 환경 상수
+# ==========================================
+CLASS_NAMES = ["fire", "smoke"] 
+IMAGE_SIZE = 640 
+BATCH_SIZE = 16  # 메모리 OOM 발생 시 8로 낮추어 실행하세요. 
+WORKERS = 2      # 런팟 환경 병목 및 RAM 오버플로우 방지 최적화 값 
 SEED = 42
 
-CONF_THRESHOLD = 0.25
-IOU_THRESHOLD = 0.7
-MATCH_IOU_THRESHOLD = 0.5
+# ★ 학습 횟수를 50으로 상향 조정
+EPOCHS = 50 
 
+CONF_THRESHOLD = 0.25 
+IOU_THRESHOLD = 0.7 
+MATCH_IOU_THRESHOLD = 0.5
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 # ============================================================
@@ -123,15 +125,15 @@ def read_label_boxes(label_path):
 
 def get_device():
     return 0 if torch.cuda.is_available() else "cpu"
-# ============================================================
+# ==========================================
 # 18. YOLOv8 대조군 실험 진행 (AI 통일 규격 주입)
-# ============================================================
-def train_model(device):
-    print("\n" + "=" * 70)
-    print("🚀 [RESEARCH] YOLOv8n 피드백 반영 대조군 학습 시작")
+# ==========================================
+def train_model(device): 
+    print("\n" + "=" * 70) 
+    print(" [RESEARCH] YOLOv8n 피드백 반영 대조군 학습 시작") 
     print("=" * 70)
     
-    # ★ [교수 첨삭] 수강생의 개별 배정 모델인 v8 가중치 선언
+    # 수강생의 개별 배정 모델인 v8 가중치 선언
     model = YOLO("yolov8n.pt")
     
     results = model.train(
@@ -141,14 +143,18 @@ def train_model(device):
         imgsz=IMAGE_SIZE,
         batch=BATCH_SIZE,
         
-        # [AI 피드백 지침 준수] 오토 옵티마이저 가동 및 초기 하이퍼파라미터 인자 제거
+        # [AI 피드백 지침 준수] 오토 옵티마이저 가동
         optimizer="auto",
         seed=SEED,
         deterministic=True,
         
+        # ★ [비용 절감 핵심] 조기 종료 로직 추가 
+        # 10번의 Epoch 동안 최고 성능(mAP) 갱신이 없으면 자동 종료하여 런팟 비용을 아낍니다.
+        patience=10, 
+        
         device=device,
         workers=WORKERS,
-        cache=False,  # VRAM/RAM 부족으로 인한 런팟 에러를 원천 차단합니다.
+        cache=False, # VRAM/RAM 부족으로 인한 런팟 에러 원천 차단
         
         # [AI 피드백 지침 준수] YOLO 자체 내장 가변 증강 변동성 강제 OFF 
         fliplr=0.0,
@@ -176,6 +182,7 @@ def train_model(device):
         verbose=True,
     )
     return Path(model.trainer.best).resolve()
+
 
 # ============================================================
 # 20. 최종 TEST 평가 (AI 피드백 지침 준수: split="test")
