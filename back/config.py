@@ -156,3 +156,17 @@ APP_PORT = int(os.getenv("APP_PORT", "5000"))
 # (event_media.media_url 의 "/media/events/12/frame_001.jpg" 가 곧 이 아래 경로).
 # 실행 위치(cwd)에 따라 달라지지 않도록 임포트 시점에 절대경로로 확정한다.
 MEDIA_ROOT = str(Path(os.getenv("MEDIA_ROOT") or (PROJECT_ROOT / "media")).resolve())
+
+# ── 로깅 ────────────────────────────────────────────────────────────────────
+# 서비스 코드는 logging.getLogger("fireguard.*") 로 로그를 남기기만 하고,
+# 어디에 어떤 모양으로 쓸지는 app.setup_logging() 이 한 곳에서 정한다.
+# 남기는 쪽 44곳은 이 값들과 무관하게 그대로다.
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# 로그 파일이 쌓이는 곳. 기본은 back/logs/ 이고 .gitignore 의 logs/ 에 걸린다.
+# MEDIA_ROOT 와 달리 프로젝트 루트가 아니라 back/ 아래인 이유는 이게 백엔드
+# 서버의 산출물이라서다 (ai-model 은 자기 로그를 따로 남긴다).
+LOG_DIR = str(Path(os.getenv("LOG_DIR") or (Path(__file__).resolve().parent / "logs")))
+
+# 하루치씩 끊어 며칠분을 남길지. 자정마다 fireguard.log.2026-08-22 로 넘어간다.
+LOG_BACKUP_DAYS = int(os.getenv("LOG_BACKUP_DAYS", "14"))

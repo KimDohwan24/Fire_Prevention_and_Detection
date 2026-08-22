@@ -4,9 +4,13 @@
     cd back
     python app.py        # http://localhost:5000
 """
+import logging
 import os
+import re
 from datetime import date, datetime
 from decimal import Decimal
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 
 from flask import Flask
 from flask.json.provider import DefaultJSONProvider
@@ -26,6 +30,73 @@ class ApiJSONProvider(DefaultJSONProvider):
         if isinstance(obj, Decimal):
             return float(obj)
         return DefaultJSONProvider.default(obj)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _PlainFormatter(logging.Formatter):
+    """파일에 쓸 때만 색상 이스케이프를 벗긴다.
+
+    werkzeug 는 접근 로그의 메서드·상태코드에 색을 입혀 보낸다. 콘솔에서는
+    그게 도움이 되지만 파일에는 색상 이스케이프가 글자로 박혀 grep 이 어긋난다.
+    콘솔 핸들러는 색을 그대로 두고 파일 쪽만 이 포매터를 쓴다.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _ANSI.sub("", super().format(record))
+
+
+# 우리가 붙인 핸들러임을 표시한다. 다시 부를 때 이것만 골라 걷어내면
+# 남(Flask·APScheduler 등)이 붙여 놓은 핸들러를 건드리지 않는다.
+_HANDLER_MARK = "_fireguard_handler"
+
+
+def setup_logging(log_dir=None, level: str | None = None) -> None:
+    """서비스 코드가 남기는 로그를 콘솔과 파일 양쪽에 받는다.
+
+    `logging.getLogger("fireguard.*")` 로 접수된 로그는 부모를 타고 루트까지
+    올라오므로, 루트에 핸들러를 붙이면 12개 로거 44곳이 한꺼번에 살아난다.
+    남기는 쪽 코드는 한 줄도 고치지 않는다 — 그게 print 가 아니라 logging 을
+    쓰는 이유다.
+
+    create_app() 안이 아니라 밖에 둔 이유: 테스트가 create_app() 을 여러 번
+    부르는데(conftest.py, test_escalation.py), 그때마다 핸들러가 붙으면 같은
+    로그가 N 줄씩 찍힌다. 그래서 진입점에서 딱 한 번 부르고, 실수로 두 번
+    불려도 기존 것을 걷어내고 다시 깔아 결과가 같게 만든다.
+    """
+    LAYOUT = "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+    DATEFMT = "%Y-%m-%d %H:%M:%S"
+    fmt = logging.Formatter(LAYOUT, datefmt=DATEFMT)
+
+    root = logging.getLogger()
+    for old in [h for h in root.handlers if getattr(h, _HANDLER_MARK, False)]:
+        root.removeHandler(old)
+        old.close()   # 윈도우는 파일을 연 채로 두면 이름 변경·삭제가 막힌다
+
+    console = logging.StreamHandler()          # 개발 중 눈으로 본다
+    console.setFormatter(fmt)
+
+    # 자정마다 fireguard.log.2026-08-22 로 넘기고 LOG_BACKUP_DAYS 일치만 남긴다.
+    # 크기 기준(RotatingFileHandler)이 아니라 날짜 기준인 이유는 "그날 밤에
+    # 무슨 일이 있었나"로 찾는 일이 대부분이라서다.
+    directory = Path(log_dir or config.LOG_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    daily = TimedRotatingFileHandler(
+        directory / "fireguard.log", when="midnight",
+        backupCount=config.LOG_BACKUP_DAYS, encoding="utf-8",
+    )
+    daily.setFormatter(_PlainFormatter(LAYOUT, datefmt=DATEFMT))
+
+    for h in (console, daily):
+        setattr(h, _HANDLER_MARK, True)
+        root.addHandler(h)
+    root.setLevel(level or config.LOG_LEVEL)
+
+    # APScheduler 는 잡을 돌릴 때마다 INFO 2줄을 남긴다. 에스컬레이션 스윕은
+    # ESCALATION_INTERVAL_SEC(기본 5초)마다 도니 하루 3만 줄이 넘고, 실제
+    # 화재 로그가 그 밑에 묻힌다. 성공한 틱은 버리고 사고(WARNING 이상)만 남긴다.
+    logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
 
 
 def _start_escalation_scheduler():
@@ -96,6 +167,7 @@ def create_app(start_scheduler: bool = False) -> Flask:
 
 
 if __name__ == "__main__":
+    setup_logging()
     _print_effective_config()
     # 디버그 리로더는 프로세스를 2개 띄워 create_app 이 두 번 불리고
     # 스케줄러도 이중으로 돌게 되므로 리로더를 끈다 (WERKZEUG_RUN_MAIN 가드 대신).

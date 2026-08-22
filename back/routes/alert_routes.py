@@ -14,7 +14,7 @@ from services import activity_service, report_service
 from utils.pagination import get_page_params, paged_response
 
 bp = Blueprint("alerts", __name__)
-logger = logging.getLogger("fireguard.alerts")
+logger = logging.getLogger("fireguard.alert")
 
 
 @bp.get("")
