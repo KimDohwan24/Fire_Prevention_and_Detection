@@ -90,7 +90,6 @@ function Dashboard() {
   const attentionAlertCount = metrics.activeAlerts.length
     + metrics.noResponseAlerts.length
     + (dashboardActiveAlert && dashboardActiveAlert !== activeAlert ? 1 : 0);
-  const latestConfirmedEvent = metrics.confirmedThisMonth[0] || null;
 
   const reportAcceptedCount = metrics.dispatchedReportsThisMonth.length;
   const reportTotalCount = metrics.reportsThisMonth.length;
@@ -230,8 +229,7 @@ function Dashboard() {
             label="대응 필요 경보"
             value={attentionAlertCount}
             unit="건"
-            tooltip="관제사의 확인이 필요한 실시간 활성 경보 건수입니다. (0건이면 정상)"
-            subtext={metrics.noResponseAlerts.length > 0 ? `무응답 ${metrics.noResponseAlerts.length}건 발생` : '무응답 경보 없음'}
+            tooltip="관제사의 확인이 필요한 실시간 활성 경보 건수입니다."
             error={errors.alerts}
             loading={isLoading}
             tone={attentionAlertCount > 0 || metrics.noResponseAlerts.length > 0 ? 'critical' : 'neutral'}
@@ -252,7 +250,6 @@ function Dashboard() {
             value={metrics.cctvAvailability}
             unit={`% (${metrics.activeCctvs.length}/${cctvs.length}대)`}
             tooltip="전체 등록 카메라 중 실시간 영상 스트림이 정상 연결된 비율입니다."
-            subtext={metrics.unhealthyCctvs.length > 0 ? `점검 필요 ${metrics.unhealthyCctvs.length}대` : '전체 장비 정상 가동'}
             error={errors.cctvs}
             loading={isLoading}
             tone={metrics.unhealthyCctvs.length > 0 ? 'warning' : 'neutral'}
@@ -264,7 +261,6 @@ function Dashboard() {
             value={metrics.confirmedThisMonth.length}
             unit="건"
             tooltip="AI 및 관제사에 의해 화재로 확정된 실제 사건 수(테스트 제외)입니다."
-            subtext={latestConfirmedEvent ? `${latestConfirmedEvent.cctv_name || 'CCTV'}에서 최근 감지` : '확정 사건 없음'}
             error={errors.events}
             loading={isLoading}
             tone="neutral"
@@ -276,7 +272,6 @@ function Dashboard() {
             value={reportRate}
             unit={`% (${reportAcceptedCount}/${reportTotalCount}건)`}
             tooltip="119 상황실로 전송된 신고 건수 및 소방서 출동 접수 완료율입니다."
-            subtext={metrics.failedReportsThisMonth.length > 0 ? `전송 실패 ${metrics.failedReportsThisMonth.length}건` : '신고 지연 없음'}
             error={errors.reports}
             loading={isLoading}
             tone={metrics.failedReportsThisMonth.length > 0 ? 'critical' : 'neutral'}
