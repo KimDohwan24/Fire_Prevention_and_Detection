@@ -4,9 +4,13 @@
     cd back
     python app.py        # http://localhost:5000
 """
+import logging
 import os
+import re
 from datetime import date, datetime
 from decimal import Decimal
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 
 from flask import Flask
 from flask.json.provider import DefaultJSONProvider
@@ -28,11 +32,125 @@ class ApiJSONProvider(DefaultJSONProvider):
         return DefaultJSONProvider.default(obj)
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _PlainFormatter(logging.Formatter):
+    """파일에 쓸 때만 색상 이스케이프를 벗긴다.
+
+    werkzeug 는 접근 로그의 메서드·상태코드에 색을 입혀 보낸다. 콘솔에서는
+    그게 도움이 되지만 파일에는 색상 이스케이프가 글자로 박혀 grep 이 어긋난다.
+    콘솔 핸들러는 색을 그대로 두고 파일 쪽만 이 포매터를 쓴다.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _ANSI.sub("", super().format(record))
+
+
+# 우리가 붙인 핸들러임을 표시한다. 다시 부를 때 이것만 골라 걷어내면
+# 남(Flask·APScheduler 등)이 붙여 놓은 핸들러를 건드리지 않는다.
+_HANDLER_MARK = "_fireguard_handler"
+
+
+def setup_logging(log_dir=None, level: str | None = None) -> None:
+    """서비스 코드가 남기는 로그를 콘솔과 파일 양쪽에 받는다.
+
+    `logging.getLogger("fireguard.*")` 로 접수된 로그는 부모를 타고 루트까지
+    올라오므로, 루트에 핸들러를 붙이면 12개 로거 44곳이 한꺼번에 살아난다.
+    남기는 쪽 코드는 한 줄도 고치지 않는다 — 그게 print 가 아니라 logging 을
+    쓰는 이유다.
+
+    create_app() 안이 아니라 밖에 둔 이유: 테스트가 create_app() 을 여러 번
+    부르는데(conftest.py, test_escalation.py), 그때마다 핸들러가 붙으면 같은
+    로그가 N 줄씩 찍힌다. 그래서 진입점에서 딱 한 번 부르고, 실수로 두 번
+    불려도 기존 것을 걷어내고 다시 깔아 결과가 같게 만든다.
+    """
+    LAYOUT = "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+    DATEFMT = "%Y-%m-%d %H:%M:%S"
+    fmt = logging.Formatter(LAYOUT, datefmt=DATEFMT)
+
+    root = logging.getLogger()
+    for old in [h for h in root.handlers if getattr(h, _HANDLER_MARK, False)]:
+        root.removeHandler(old)
+        old.close()   # 윈도우는 파일을 연 채로 두면 이름 변경·삭제가 막힌다
+
+    console = logging.StreamHandler()          # 개발 중 눈으로 본다
+    console.setFormatter(fmt)
+
+    # 자정마다 fireguard.log.2026-08-22 로 넘기고 LOG_BACKUP_DAYS 일치만 남긴다.
+    # 크기 기준(RotatingFileHandler)이 아니라 날짜 기준인 이유는 "그날 밤에
+    # 무슨 일이 있었나"로 찾는 일이 대부분이라서다.
+    directory = Path(log_dir or config.LOG_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    daily = TimedRotatingFileHandler(
+        directory / "fireguard.log", when="midnight",
+        backupCount=config.LOG_BACKUP_DAYS, encoding="utf-8",
+    )
+    daily.setFormatter(_PlainFormatter(LAYOUT, datefmt=DATEFMT))
+
+    for h in (console, daily):
+        setattr(h, _HANDLER_MARK, True)
+        root.addHandler(h)
+    root.setLevel(level or config.LOG_LEVEL)
+
+    # APScheduler 는 잡을 돌릴 때마다 INFO 2줄을 남긴다. 에스컬레이션 스윕은
+    # ESCALATION_INTERVAL_SEC(기본 5초)마다 도니 하루 3만 줄이 넘고, 실제
+    # 화재 로그가 그 밑에 묻힌다. 성공한 틱은 버리고 사고(WARNING 이상)만 남긴다.
+    logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
+
+
+# 이 프로세스에서 돌고 있는 스케줄러. _start_escalation_scheduler 주석 참고.
+_scheduler = None
+
+
 def _start_escalation_scheduler():
-    """무응답 에스컬레이션 스윕을 ESCALATION_INTERVAL_SEC 간격으로 돌린다."""
+    """백그라운드 작업을 띄운다. **프로세스당 하나씩.**
+
+    1) 무응답 에스컬레이션 스윕 — APScheduler 잡, ESCALATION_INTERVAL_SEC 간격 (항상)
+    2) 텔레그램 버튼 응답 폴링 — **전용 데몬 스레드**, 롱폴링 (봇 토큰이 있을 때만)
+
+    이름이 escalation_scheduler 인 채로 남아 있는 것은 app.escalation_scheduler 를
+    보는 기존 코드·테스트를 깨지 않기 위해서다. 반환값도 스케줄러 그대로다.
+
+    **왜 텔레그램만 스케줄러 밖으로 나갔나** (2026-08-22, 실측 후 교체).
+    getUpdates 는 직전 요청과 3초 안에 붙으면 서버가 정확히 3초를 붙잡는다. 그래서
+    2초 간격 잡은 매번 자기 주기를 넘겨 `skipped: maximum number of running
+    instances reached (1)` 를 찍었다 — 코드로 고칠 수 있는 값이 아니었다. 지금은
+    롱폴링(timeout=25)을 전용 스레드에서 돌린다. 25초를 붙잡는 호출을 간격 잡에
+    얹으면 같은 병이 더 크게 재발하므로 잡으로는 둘 수 없다.
+    선택 근거와 실측값은 services/telegram_bot.py 의 '폴링 루프' 주석에 있다.
+
+    **왜 여기서 이중 기동을 막나.** 이중 기동은 느려지는 문제가 아니라 기능이
+    깨지는 문제다 — 텔레그램은 getUpdates 를 한 소비자에게만 온전히 주므로 폴링이
+    두 벌 돌면 업데이트가 둘로 갈리거나 서로를
+    `Conflict: terminated by other getUpdates request` 로 끊는다.
+    그러면 버튼 응답이 사라져 유예 안에 '오탐 취소'를 받을 수 없고,
+    취소를 못 받는다는 건 오탐에도 119 가 나간다는 뜻이다.
+    그런데 앱 팩토리는 누구나 다시 부를 수 있다(WSGI 진입점, 테스트, 실수로 끼어든
+    임포트). '한 번만' 을 호출부 규율에 맡기지 않고 직접 건다.
+
+    기준을 '이미 띄웠나'가 아니라 **'지금 돌고 있나'**로 잡은 이유: 전자로 잡으면
+    내려간 스케줄러를 그대로 물려주게 되어 잡이 하나도 안 도는데 앱은 멀쩡해 보인다.
+    띄웠다 내리기를 반복하는 테스트가 서로를 오염시키지 않는 것도 같은 이유다.
+    폴링 스레드도 같은 기준을 쓴다 (telegram_bot.start_polling).
+
+    ⚠️ 가드가 막는 건 **같은 프로세스 안의** 중복이다. 프로세스가 갈리면(디버그
+    리로더 등) 서로를 볼 수 없으므로 아래 __main__ 의 use_reloader=False 가 함께
+    있어야 '한 번' 이 성립한다.
+    """
+    global _scheduler
     from apscheduler.schedulers.background import BackgroundScheduler
 
-    from services import escalation
+    from services import escalation, telegram_bot
+
+    # 스케줄러 가드보다 **먼저**, 조건 없이 부른다. 둘은 이제 수명이 따로라
+    # 스케줄러는 살아 있는데 폴링만 죽은 상태가 가능한데, 여기서 early return 하면
+    # 그 상태에서 create_app 을 다시 불러도 폴링이 되살아나지 않는다.
+    # start_polling 자체가 '지금 살아 있나' 가드를 갖고 있어 중복 기동은 안 된다.
+    telegram_bot.start_polling()
+
+    if _scheduler is not None and _scheduler.running:
+        return _scheduler
 
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
@@ -42,6 +160,7 @@ def _start_escalation_scheduler():
         max_instances=1, coalesce=True,  # 틱이 밀려도 겹쳐 돌거나 몰아서 돌지 않게
     )
     scheduler.start()
+    _scheduler = scheduler
     return scheduler
 
 
@@ -58,6 +177,10 @@ def _print_effective_config():
           f"에스컬레이션 스윕 {config.ESCALATION_INTERVAL_SEC}초 / "
           f"119 최대 {config.MAX_REPORT_ATTEMPTS}회, 타임아웃 "
           f"{config.REPORT_HTTP_TIMEOUT_SEC}초")
+    from services import telegram
+    print(f"텔레그램  : " + (f"롱폴링 {config.TELEGRAM_LONG_POLL_SEC}초 (전용 스레드)"
+                             if telegram.is_enabled()
+                             else "꺼짐 (TELEGRAM_BOT_TOKEN 없음 — 모의 SMS 로만 발송)"))
     print(f"DB · 미디어: {config.DB_NAME}@{config.DB_HOST}:{config.DB_PORT} · "
           f"{config.MEDIA_ROOT}")
 
@@ -96,9 +219,23 @@ def create_app(start_scheduler: bool = False) -> Flask:
 
 
 if __name__ == "__main__":
+    setup_logging()
     _print_effective_config()
-    # 디버그 리로더는 프로세스를 2개 띄워 create_app 이 두 번 불리고
-    # 스케줄러도 이중으로 돌게 되므로 리로더를 끈다 (WERKZEUG_RUN_MAIN 가드 대신).
+    # 리로더를 끄는 이유: 리로더를 켜면 감시 부모와 작업 자식이 **각각 다른
+    # 프로세스로** app.py 를 처음부터 실행한다. 아래 create_app(...) 은 .run() 보다
+    # 먼저 평가되므로 양쪽에서 스케줄러가 뜨고, 프로세스가 갈렸으니
+    # _start_escalation_scheduler 의 가드도 서로를 보지 못한다.
+    # (2026-08-22 실측: use_reloader=True 로 두면 스케줄러 기동이 2회 — 한 번은
+    #  WERKZEUG_RUN_MAIN 없이, 한 번은 =true 로 찍힌다. False 면 1회.)
+    #
+    # ⚠️ 작업관리자에 python.exe 가 2개 보이는 건 **이것과 무관하다.** 윈도우
+    # venv 의 Scripts\python.exe 는 기반 인터프리터를 자식으로 띄우고 기다리는
+    # 실행기(redirector)라, 파이썬 코드는 자식에서 한 번만 도는데도 프로세스는
+    # 늘 2개로 보인다 (파이어가드를 하나도 임포트하지 않는 빈 Flask 앱도 똑같다).
+    # 이걸 리로더 탓으로 읽고 여기를 건드리면 엉뚱한 곳을 고치게 된다.
+    #
+    # WERKZEUG_RUN_MAIN 가드로 리로더를 되살리는 선택지도 있으나 택하지 않았다 —
+    # 119 신고가 진행 중인데 파일 저장 한 번으로 서버가 갈아끼워지는 편이 더 나쁘다.
     create_app(start_scheduler=True).run(
         host="0.0.0.0", port=config.APP_PORT, debug=True, use_reloader=False,
     )

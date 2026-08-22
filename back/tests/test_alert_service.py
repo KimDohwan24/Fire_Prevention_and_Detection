@@ -231,3 +231,87 @@ def test_sent_alerts_visible_in_owner_alert_list(client, admin_headers, monkeypa
     assert {i["alert_channel"] for i in body["items"]} == {"PUSH", "SMS"}
     assert all(i["event_no"] == event_no for i in body["items"])
     assert all(i["cctv_name"] == "정문 카메라" for i in body["items"])
+
+
+# ---------- 전달 채널 (텔레그램 연동 시) ----------
+# 연동한 사용자에게는 문자 대신 텔레그램으로 나간다. 이유는 services/notify.py 주석 참고
+# — 우리 알림은 유예 안에 '확인/취소'를 되받아야 하는데 문자는 회신을 받을 수 없다.
+
+def spy_telegram(monkeypatch):
+    """telegram.send_message 를 기록용 스파이로 바꾼다."""
+    from services import telegram
+
+    calls = []
+    monkeypatch.setattr(telegram, "send_message",
+                        lambda chat_id, text, buttons=None:
+                            calls.append((chat_id, text, buttons)) or True)
+    return calls
+
+
+def link_telegram(user_no=1, chat_id=555):
+    db.execute("UPDATE users SET user_telegram_chat_id = %s WHERE user_no = %s",
+               (chat_id, user_no))
+
+
+def test_linked_owner_gets_the_alert_on_telegram(monkeypatch):
+    tg = spy_telegram(monkeypatch)
+    sms_calls = spy_send_sms(monkeypatch)
+    link_telegram(1, 555)
+
+    alert_service.send_alerts(make_event(cctv_no=1))
+
+    assert len(tg) == 1
+    chat_id, message, _ = tg[0]
+    assert chat_id == 555
+    assert "정문 카메라" in message
+    assert sms_calls == [], "텔레그램으로 나갔으면 문자는 보내지 않는다"
+
+
+def test_telegram_alert_carries_the_response_buttons(monkeypatch):
+    """알림에 붙은 버튼이 곧 응답 경로다 — 그 버튼으로 유예 안에 확인/취소를 한다."""
+    tg = spy_telegram(monkeypatch)
+    link_telegram(1, 555)
+    event_no = make_event(cctv_no=1)
+
+    alert_service.send_alerts(event_no)
+
+    _, _, buttons = tg[0]
+    data = [b["callback_data"] for row in buttons for b in row]
+    # 버튼은 이 이벤트의 실제 알림 번호를 가리켜야 한다
+    alert_nos = {r["alert_no"] for r in get_alert_rows(event_no)}
+    assert {int(d.split(":")[1]) for d in data} <= alert_nos
+    assert any(d.endswith(":READ") for d in data)
+    assert any(d.endswith(":CANCEL") for d in data)
+
+
+def test_the_telegram_button_actually_closes_the_alert(monkeypatch):
+    """버튼을 누르면 웹 화면과 같은 처리를 지나 알림이 닫힌다 (앱 조작의 핵심 경로)."""
+    from services import telegram_bot
+
+    tg = spy_telegram(monkeypatch)
+    link_telegram(1, 555)
+    event_no = make_event(cctv_no=1)
+    alert_service.send_alerts(event_no)
+    _, _, buttons = tg[0]
+    cancel = next(b for row in buttons for b in row
+                  if b["callback_data"].endswith(":CANCEL"))
+
+    telegram_bot.handle_update({
+        "update_id": 1,
+        "callback_query": {"id": "q-1", "data": cancel["callback_data"],
+                           "message": {"chat": {"id": 555}, "message_id": 7}},
+    })
+
+    statuses = {r["alert_status"] for r in get_alert_rows(event_no)}
+    assert statuses == {"CANCELED"}, "PUSH·SMS 두 행 모두 닫혀야 한다"
+
+
+def test_unlinked_owner_still_gets_sms(monkeypatch):
+    """연동하지 않은 사용자는 기존 경로 그대로다."""
+    tg = spy_telegram(monkeypatch)
+    sms_calls = spy_send_sms(monkeypatch)
+
+    alert_service.send_alerts(make_event(cctv_no=1))
+
+    assert tg == []
+    assert len(sms_calls) == 1

@@ -5,7 +5,8 @@
 - 이벤트가 확정되면 PUSH 와 SMS 를 **한 트랜잭션에서 동시에** 만든다.
   두 채널 모두 같은 사람의 같은 휴대폰으로 가므로 단계를 나눠 승격시키면
   화재 상황에서 유예 시간만 두 배로 낭비된다 (단계 승격 개념 폐기).
-- 전달: SMS 는 여기서 실제로 보내고, PUSH 는 프론트 폴링이 알림 목록에서 가져간다.
+- 전달: 바깥으로 나가는 한 건은 services/notify.py 가 채널을 정해 여기서 실제로
+  보내고(연동한 사용자는 텔레그램, 아니면 문자), PUSH 는 프론트 폴링이 가져간다.
 - 마감: alert_deadline_at = alert_sent_at + ALERT_DEADLINE_SEC 초. 두 행이 동일하다.
   이 유예까지 무응답이면 에스컬레이션이 두 알림을 NO_RESPONSE 로 닫고 119 로 넘긴다.
 - 승격 단계는 폐기됐고 alert_level 컬럼도 2026-08-10 삭제됐다.
@@ -15,14 +16,17 @@ import logging
 
 import config
 import db
-from services import sms
+from services import notify
 
 logger = logging.getLogger("fireguard.alert")
 
-# 확정 시 동시에 나가는 채널 (PUSH = 프론트 폴링, SMS = 실제 발송)
+# 확정 시 동시에 나가는 채널 (PUSH = 프론트 폴링, SMS = 바깥 전달용 행)
+# 'SMS' 는 alert_channel 컬럼 값(=행 이름)일 뿐 실제 전달 수단이 아니다 — 연동한
+# 사용자에게는 이 행에 대해 텔레그램으로 나간다(services/notify.py). 컬럼 값을 바꾸면
+# 기존 데이터와 프론트 표시가 함께 깨지므로 이름은 그대로 둔다.
 CHANNELS = ("PUSH", "SMS")
 
-# 이벤트 클래스 → SMS 문구용 한글 표기
+# 이벤트 클래스 → 알림 문구용 한글 표기
 CLASS_LABEL = {"FLAME": "불꽃", "SMOKE": "연기", "FLAME_SMOKE": "불꽃·연기"}
 
 
@@ -37,7 +41,7 @@ def send_alerts(event_no: int) -> list[int] | None:
         """
         SELECT e.event_class, e.event_is_test,
                c.cctv_name, c.cctv_location,
-               u.user_no, u.user_phone
+               u.user_no, u.user_phone, u.user_telegram_chat_id
         FROM fire_event e
         JOIN cctv c ON c.cctv_no = e.cctv_no
         LEFT JOIN users u ON u.user_no = c.user_no
@@ -72,17 +76,28 @@ def send_alerts(event_no: int) -> list[int] | None:
                     now(), now() + make_interval(secs => %(secs)s)),
                    (%(event_no)s, %(user_no)s, 'SMS', 'SENT',
                     now(), now() + make_interval(secs => %(secs)s))
-            RETURNING alert_no
+            RETURNING alert_no, alert_channel
             """,
             {"event_no": event_no, "user_no": row["user_no"],
              "secs": config.ALERT_DEADLINE_SEC},
         )
-        alert_nos = sorted(r["alert_no"] for r in cur.fetchall())
+        created = cur.fetchall()
+        alert_nos = sorted(r["alert_no"] for r in created)
+        # 버튼을 붙일 대상은 SMS 행이다 — 텔레그램은 그 자리를 대신하는 채널이고,
+        # PUSH 행은 프론트 폴링이 따로 가져간다.
+        # (응답은 어차피 이벤트 단위로 형제 알림까지 함께 닫는다 — alert_respond.py)
+        outbound_no = next(r["alert_no"] for r in created if r["alert_channel"] == "SMS")
 
-    # SMS 만 실제 발송 (PUSH 는 프론트가 폴링으로 가져간다)
+    # 바깥으로 실제 전달 (PUSH 는 프론트가 폴링으로 가져가므로 여기서 다루지 않는다).
+    # 어느 채널로 나갈지는 notify 가 정한다 — 연동한 사용자는 텔레그램, 아니면 문자.
     label = CLASS_LABEL.get(row["event_class"], row["event_class"] or "화재")
     message = (f"[파이어가드] {row['cctv_name']}({row['cctv_location']}) "
                f"{label} 감지! 앱에서 확인해주세요.")
-    sms.send_sms(row["user_phone"], message)
+    channel = notify.send_fire_alert(
+        chat_id=row["user_telegram_chat_id"], phone=row["user_phone"],
+        message=message, alert_no=outbound_no,
+    )
+    logger.info("알림 전달 (event_no=%s, alert_no=%s, 채널=%s)",
+                event_no, outbound_no, channel)
 
     return alert_nos

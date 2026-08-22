@@ -339,3 +339,31 @@ def make_report(event_no, agency_no=1, sequence=1, status="ACCEPTED"):
         (event_no, agency_no, sequence, status),
     )
     return row["report_no"]
+
+
+@pytest.fixture(autouse=True)
+def _no_real_telegram_http(monkeypatch):
+    """전역 가드: 어떤 테스트도 실제 텔레그램 Bot API 를 부르지 않는다.
+
+    .env 에 봇 토큰이 들어 있는 환경에서 돌리면(시연 준비된 PC 가 그렇다) 알림 발송
+    경로를 지나는 무관한 테스트가 진짜 메시지를 쏴 버린다. 기본은 '성공했다고 답하는'
+    대역 — 발송 여부나 본문을 검증하는 테스트는 자기 monkeypatch 로 덮어쓴다
+    (테스트 본문의 setattr 가 나중에 적용되므로 이 대역을 이긴다).
+
+    폴링 오프셋은 모듈 전역이라 테스트 간에 새로 비운다.
+
+    폴링 **스레드**도 마찬가지로 프로세스 전역이라 여기서 거둔다. 스레드를 띄운 채로
+    테스트가 끝나면 위 대역이 풀린 뒤 진짜 api.telegram.org 로 나가서, 무관한
+    테스트와 getUpdates 소비권을 다투고 Conflict 를 만든다. 스레드를 띄우는 테스트가
+    스스로 정리하는 것이 원칙이고 이건 마지막 그물이다.
+    """
+    from services import telegram, telegram_bot
+
+    monkeypatch.setattr(
+        telegram, "_api",
+        lambda method, payload: {"ok": True, "result": {"message_id": 1}},
+    )
+    telegram_bot.reset_offset()
+    yield
+    telegram_bot.stop_polling()
+    telegram_bot.reset_offset()
