@@ -60,6 +60,9 @@ CREATE TABLE fireguard.users (
     user_address       varchar(255)  NULL,
     user_provider      varchar(20)   NOT NULL  DEFAULT 'LOCAL',
     user_provider_id   varchar(191)  NULL,
+    -- 화재 알림을 받을 텔레그램 대화방. NULL 이면 미연동(알림은 모의 SMS 로만 나간다).
+    -- 텔레그램 chat_id 는 int32 를 넘을 수 있어 bigint 다.
+    user_telegram_chat_id bigint     NULL,
     user_token_valid_from timestamp  NULL,
     user_created_at    timestamp     NULL  DEFAULT now(),
     user_updated_at    timestamp     NULL,
@@ -341,6 +344,12 @@ CREATE INDEX IX_agency_geog    ON fireguard.agency USING GIST (agency_geog);
 -- 출처 고유번호는 기관을 가리키는 열쇠다. 손으로 등록한 행(NULL)은 제외한다.
 CREATE UNIQUE INDEX UX_agency_source_id ON fireguard.agency (agency_source_id)
     WHERE agency_source_id IS NOT NULL;
+
+-- 텔레그램 대화방 하나는 사용자 한 명에게만 묶인다. 미연동(NULL)은 제외한다.
+-- 봇이 받는 것은 chat_id 뿐이라, 이 값이 두 사용자에 걸쳐 있으면 버튼을 누른 사람이
+-- 누구인지 결정할 수 없다 (services/telegram_bot.py 가 이 값으로 사용자를 찾는다).
+CREATE UNIQUE INDEX UX_users_telegram_chat_id ON fireguard.users (user_telegram_chat_id)
+    WHERE user_telegram_chat_id IS NOT NULL;
 CREATE INDEX IX_cctv_geog      ON fireguard.cctv   USING GIST (cctv_geog);
 
 -- 진행 중인 신고가 이벤트당 하나만 있도록 DB 에서 강제한다

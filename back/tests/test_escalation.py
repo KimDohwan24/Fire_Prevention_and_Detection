@@ -226,13 +226,17 @@ def test_create_app_default_does_not_start_scheduler():
     assert getattr(test_app, "escalation_scheduler", None) is None
 
 
-def test_create_app_start_scheduler_registers_interval_job():
+def test_create_app_start_scheduler_registers_interval_job(monkeypatch):
     """create_app(start_scheduler=True) 는 ESCALATION_INTERVAL_SEC 간격 잡을 등록한다."""
+    # 토큰을 비워 폴링 스레드를 뺀다 — .env 에 진짜 토큰이 들어 있는 PC(시연 준비된
+    # 환경이 그렇다)에서 이 테스트가 실제 텔레그램으로 나가지 않게.
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "")
     test_app = create_app(start_scheduler=True)
     scheduler = getattr(test_app, "escalation_scheduler", None)
     try:
         assert scheduler is not None
         assert scheduler.running
+        # 스케줄러에 얹는 잡은 이제 에스컬레이션 하나뿐이다 (아래 텔레그램 절 참고)
         jobs = scheduler.get_jobs()
         assert len(jobs) == 1
         job = jobs[0]
@@ -241,3 +245,121 @@ def test_create_app_start_scheduler_registers_interval_job():
     finally:
         if scheduler is not None:
             scheduler.shutdown(wait=False)
+
+
+# ---------- 텔레그램 폴링 배선 ----------
+# 텔레그램만 스케줄러 밖의 **전용 데몬 스레드**에서 롱폴링으로 돈다 (2026-08-22 교체).
+# 실측: getUpdates 는 직전 요청과 3.0초 안에 붙으면 서버가 정확히 3.000초 붙잡았다가
+# 빈 배열을 준다. 그래서 2초 간격 잡은 매 틱이 자기 주기를 넘겨 APScheduler 가
+# `skipped: maximum number of running instances reached (1)` 를 계속 찍었고, 이건
+# 주기를 어떻게 짜도 코드로 맞출 수 있는 값이 아니었다. 25초를 붙잡는 롱폴링을 간격
+# 잡에 얹으면 같은 병이 더 크게 재발하므로 잡으로는 둘 수 없다.
+# 토큰이 없으면 아예 띄우지 않는다 — 돌려 봐야 실패 로그만 쌓인다.
+
+def _stub_polling(monkeypatch):
+    """폴링 스레드가 떠도 밖으로 나가지 않게 틱을 대역으로 바꾼다."""
+    from services import telegram_bot
+
+    monkeypatch.setattr(telegram_bot, "run_telegram_tick",
+                        lambda timeout_sec=0: {"received": 0, "failed": 0})
+    monkeypatch.setattr(telegram_bot, "MIN_POLL_GAP_SEC", 0.02)
+    return telegram_bot
+
+
+def test_scheduler_start_also_starts_the_telegram_poller_thread(monkeypatch):
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "12345:TESTTOKEN")
+    # 에스컬레이션 주기를 길게 잡아 관찰 중에 실제 틱이 뜨지 않게 한다 —
+    # 백그라운드 틱이 DB 커넥션을 물면 뒤따르는 테스트가 흔들린다.
+    monkeypatch.setattr(config, "ESCALATION_INTERVAL_SEC", 3600)
+    telegram_bot = _stub_polling(monkeypatch)
+
+    test_app = create_app(start_scheduler=True)
+    scheduler = getattr(test_app, "escalation_scheduler", None)
+    try:
+        assert telegram_bot.is_polling(), "폴링 스레드가 안 떴다"
+        # 잡으로 되돌아가면 skipped 로그가 그대로 다시 시작된다
+        assert scheduler.get_job("telegram_poll") is None
+        assert len(scheduler.get_jobs()) == 1
+    finally:
+        telegram_bot.stop_polling()
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+
+
+def test_scheduler_skips_the_telegram_poller_without_a_token(monkeypatch):
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "")
+    telegram_bot = _stub_polling(monkeypatch)
+
+    test_app = create_app(start_scheduler=True)
+    scheduler = getattr(test_app, "escalation_scheduler", None)
+    try:
+        assert telegram_bot.is_polling() is False
+        assert scheduler.get_job("escalation_tick") is not None, "신고 스윕은 그대로 돈다"
+    finally:
+        telegram_bot.stop_polling()
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+
+
+# ---------- 백그라운드 작업은 프로세스당 하나 ----------
+# 이중 기동은 성능 문제가 아니라 **기능이 깨지는** 문제다.
+#   - 텔레그램은 getUpdates 를 한 소비자에게만 온전히 준다. 두 벌이 돌면 업데이트가
+#     둘로 갈리거나 서로를 Conflict 로 끊어 버튼 응답이 사라진다 — 유예 안에 '취소'를
+#     못 받는다는 뜻이고, 그러면 오탐에도 119 가 나간다.
+#   - 에스컬레이션 스윕도 두 벌이 같은 이벤트를 동시에 집는다.
+# 그래서 '한 번만' 을 실행 방법(app.py 의 use_reloader=False)에만 기대지 않고
+# 스케줄러는 _start_escalation_scheduler 가, 폴링 스레드는 telegram_bot.start_polling
+# 이 각자 직접 건다. 아래 두 테스트가 그 가드를 잡는다.
+
+def test_scheduler_starts_only_once_per_process(monkeypatch):
+    """같은 프로세스에서 create_app(start_scheduler=True) 을 두 번 불러도 한 벌이다.
+
+    앱 팩토리는 누구나 다시 부를 수 있다 — WSGI 진입점, 테스트, 실수로 끼어든
+    임포트. 부를 때마다 폴링이 한 벌씩 늘어나면 안 된다.
+    """
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "12345:TESTTOKEN")
+    # 관찰 중에 실제 틱이 뜨지 않게 주기를 길게 잡는다 (위 테스트들과 같은 이유)
+    monkeypatch.setattr(config, "ESCALATION_INTERVAL_SEC", 3600)
+    telegram_bot = _stub_polling(monkeypatch)
+
+    first = create_app(start_scheduler=True)
+    poller = telegram_bot._poll_thread
+    second = create_app(start_scheduler=True)
+    schedulers = {id(a.escalation_scheduler): a.escalation_scheduler
+                  for a in (first, second)}
+    try:
+        assert second.escalation_scheduler is first.escalation_scheduler
+        assert len(first.escalation_scheduler.get_jobs()) == 1
+        # 폴링 스레드도 한 벌뿐이어야 한다 — 두 벌이면 버튼 응답이 갈린다
+        assert telegram_bot._poll_thread is poller
+        assert telegram_bot.is_polling()
+    finally:
+        telegram_bot.stop_polling()
+        # 가드가 없으면 스케줄러가 둘 뜬다 — 뒤따르는 테스트로 새지 않게 전부 내린다
+        for scheduler in schedulers.values():
+            if scheduler is not None and scheduler.running:
+                scheduler.shutdown(wait=False)
+
+
+def test_scheduler_starts_again_after_the_previous_one_stopped(monkeypatch):
+    """앞서 뜬 스케줄러가 이미 내려갔으면 다음 create_app 은 새로 띄운다.
+
+    가드를 '이 프로세스에서 한 번이라도 띄웠나'로 잡으면 내려간 스케줄러를 그대로
+    물려주게 된다 — 잡이 하나도 돌지 않는데 앱은 멀쩡해 보이는 최악의 상태다.
+    기준은 '지금 돌고 있나'여야 한다. 스케줄러를 띄웠다 내리는 이 파일의 다른
+    테스트들이 서로를 오염시키지 않는 것도 같은 이유로 성립한다.
+    """
+    monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setattr(config, "ESCALATION_INTERVAL_SEC", 3600)
+
+    first = create_app(start_scheduler=True).escalation_scheduler
+    first.shutdown(wait=False)
+
+    second = create_app(start_scheduler=True).escalation_scheduler
+    try:
+        assert second is not first
+        assert second.running
+        assert second.get_job("escalation_tick") is not None
+    finally:
+        if second is not None and second.running:
+            second.shutdown(wait=False)
