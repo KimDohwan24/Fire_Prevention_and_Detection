@@ -54,9 +54,15 @@ const isTestEvent = (event) => (
   || event.event_is_test === 'true'
 );
 
-const isToday = (value, now) => {
+const isCurrentMonthToDate = (value, now) => {
   const date = getDate(value);
-  return date ? toDateKey(date) === toDateKey(now) : false;
+  if (!date) return false;
+
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  monthStart.setHours(0, 0, 0, 0);
+
+  const timestamp = date.getTime();
+  return timestamp >= monthStart.getTime() && timestamp <= now.getTime();
 };
 
 const isWithinDays = (value, days, now) => {
@@ -140,6 +146,25 @@ export const buildEventTrend = (events, days = 7, now = new Date()) => {
   return points;
 };
 
+export const calculateTrendSummary = (points = []) => {
+  const total = points.reduce((sum, point) => sum + (point.total || 0), 0);
+  const average = points.length > 0 ? (total / points.length).toFixed(1) : '0.0';
+  let peak = { label: '-', count: 0 };
+
+  points.forEach((point) => {
+    if (point.total > peak.count) {
+      peak = { label: point.label, count: point.total };
+    }
+  });
+
+  return {
+    total,
+    average,
+    peakLabel: peak.count > 0 ? `${peak.label} (${peak.count}건)` : '발생 없음',
+    peakCount: peak.count,
+  };
+};
+
 export const createDashboardMetrics = ({
   cctvs = [],
   events = [],
@@ -172,15 +197,19 @@ export const createDashboardMetrics = ({
       }
       return left.cctv_status === 'ERROR' ? -1 : 1;
     });
-  const confirmedToday = sortedEvents.filter((event) => (
+  const confirmedThisMonth = sortedEvents.filter((event) => (
     event.event_status === 'CONFIRMED'
-    && isToday(event.event_first_detected_at || event.event_detected_at, now)
+    && isCurrentMonthToDate(event.event_first_detected_at || event.event_detected_at, now)
   ));
-  const reportsToday = sortedReports.filter((report) => isToday(report.reported_at, now));
-  const dispatchedReportsToday = reportsToday.filter((report) => (
+  const reportsThisMonth = sortedReports.filter((report) => (
+    isCurrentMonthToDate(report.reported_at, now)
+  ));
+  const dispatchedReportsThisMonth = reportsThisMonth.filter((report) => (
     report.report_status === 'DISPATCHED' || report.report_status === 'ACCEPTED'
   ));
-  const failedReportsToday = reportsToday.filter((report) => report.report_status === 'FAILED');
+  const failedReportsThisMonth = reportsThisMonth.filter((report) => (
+    report.report_status === 'FAILED'
+  ));
 
   const alertByEvent = new Map();
   sortedAlerts.forEach((alert) => {
@@ -215,10 +244,10 @@ export const createDashboardMetrics = ({
     noResponseAlerts,
     activeCctvs,
     unhealthyCctvs,
-    confirmedToday,
-    reportsToday,
-    dispatchedReportsToday,
-    failedReportsToday,
+    confirmedThisMonth,
+    reportsThisMonth,
+    dispatchedReportsThisMonth,
+    failedReportsThisMonth,
     recentEvents,
     alertBreakdown,
     averageAlertResponseSeconds: averageSecondsBetween(

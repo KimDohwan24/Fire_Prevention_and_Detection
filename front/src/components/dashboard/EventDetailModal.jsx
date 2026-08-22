@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Building2,
   CheckCircle2,
   Clock3,
   Flame,
   Image as ImageIcon,
   Loader2,
   MapPin,
+  PhoneCall,
   ShieldAlert,
   X,
   XCircle,
@@ -13,6 +15,7 @@ import {
 import { eventApi, resolveMediaUrl } from '../../api';
 import {
   EVENT_CLASS_LABELS,
+  REPORT_STATUS_LABELS,
   formatDateTime,
 } from '../../utils/dashboardMetrics';
 import {
@@ -24,6 +27,40 @@ import {
 import { useFireAlert } from '../../context/FireAlertContext';
 import { StatusPill } from './DashboardWidgets';
 
+const REPORT_REFRESH_INTERVAL_MS = 4_000;
+const REPORT_POLL_MAX_MS = 60_000;
+const REPORT_IN_PROGRESS_STATUSES = new Set(['SENDING', 'ACCEPTED']);
+
+const readReports = (source) => {
+  if (Array.isArray(source?.reports)) return source.reports;
+  if (source?.report && typeof source.report === 'object') return [source.report];
+  return null;
+};
+
+const isTestEvent = (event) => (
+  event?.isTest === true
+  || event?.event_is_test === true
+  || event?.event_is_test === 1
+  || event?.event_is_test === '1'
+  || event?.event_is_test === 'true'
+);
+
+const getReportStatusTone = (status) => {
+  if (status === 'FAILED') return 'critical';
+  if (status === 'DISPATCHED' || status === 'ACCEPTED') return 'success';
+  if (status === 'SENDING' || status === 'NO_RESPONSE') return 'warning';
+  return 'neutral';
+};
+
+const formatReportDistance = (value) => {
+  const distance = Number(value);
+  return Number.isFinite(distance) ? `${distance.toFixed(3)} km` : '거리 정보 없음';
+};
+
+const getReportKey = (report, index) => (
+  report?.report_no || `${report?.agency_no || 'agency'}-${report?.report_sequence || index}`
+);
+
 const getEventStatusTone = (stage) => {
   if (stage === 'CONFIRMED') return 'critical';
   if (stage === 'DISMISSED') return 'neutral';
@@ -32,11 +69,13 @@ const getEventStatusTone = (stage) => {
 
 const mergeEventDetail = (summary, response) => {
   const camera = response?.cctv || summary?.cctv || {};
+  const reports = readReports(response) ?? readReports(summary) ?? [];
 
   return {
     ...summary,
     ...response,
     cctv: camera,
+    reports,
     cctv_name: response?.cctv_name || camera.cctv_name || summary?.cctv_name,
     cctv_location: response?.cctv_location || camera.cctv_location || summary?.cctv_location,
   };
@@ -107,6 +146,87 @@ function TimelineList({ items, title, icon: Icon, tone = 'neutral' }) {
   );
 }
 
+function ReportAssignmentSection({ reports, isDetecting, isTest, stage }) {
+  return (
+    <section
+      className="space-y-3 rounded-xl border border-hairline bg-surface-soft p-4"
+      aria-label="119 신고 및 소방서 배정"
+    >
+      <div className="flex items-start gap-2">
+        <PhoneCall className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+        <div className="min-w-0">
+          <h3 className="text-body-sm font-bold text-ink">119 신고·소방서 배정</h3>
+          <p className="mt-0.5 text-caption-sm text-mute">
+            CCTV 위치를 기준으로 백엔드가 결정한 실제 신고 대상입니다.
+          </p>
+        </div>
+      </div>
+
+      {isTest ? (
+        <div className="rounded-lg border border-hairline bg-canvas px-3 py-3 text-caption-sm text-mute">
+          영상 테스트 이벤트는 실제 119 신고와 소방서 배정을 생성하지 않습니다.
+        </div>
+      ) : reports.length === 0 ? (
+        <div className={`rounded-lg border px-3 py-3 text-caption-sm ${
+          isDetecting
+            ? 'border-amber-500/30 bg-amber-500/10 text-amber-700'
+            : stage === 'DISMISSED'
+              ? 'border-slate-400/40 bg-slate-500/10 text-slate-600'
+              : 'border-red-500/30 bg-red-500/10 text-red-700'
+        }`}>
+          {isDetecting
+            ? '화재 확정 전입니다. 화재 확인 후 CCTV와 가장 가까운 활성 소방서로 신고합니다.'
+            : stage === 'DISMISSED'
+              ? '오탐 처리되어 119 신고가 생성되지 않았습니다.'
+              : '아직 생성된 119 신고 이력이 없습니다. CCTV 좌표와 활성 소방서 상태를 확인해 주세요.'}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {reports.map((report, index) => {
+            const reportStatus = report?.report_status;
+            const sequence = Number(report?.report_sequence);
+            const hasSequence = Number.isFinite(sequence) && sequence > 0;
+
+            return (
+              <div
+                key={getReportKey(report, index)}
+                className="rounded-lg border border-hairline bg-canvas p-3.5"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-2">
+                    <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold text-mute">신고 대상 소방서</p>
+                      <p className="truncate text-body-sm font-bold text-ink">
+                        {report?.agency_name || `소방서 #${report?.agency_no || '-'}`}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption-sm text-mute">
+                        {hasSequence && <span>{sequence}차 신고</span>}
+                        <span>거리 {formatReportDistance(report?.report_distance_km)}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <StatusPill tone={getReportStatusTone(reportStatus)}>
+                    {REPORT_STATUS_LABELS[reportStatus] || reportStatus || '상태 없음'}
+                  </StatusPill>
+                </div>
+
+                {(report?.reported_at || report?.report_accepted_at || report?.report_dispatched_at) && (
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-hairline pt-2.5 text-[11px] text-mute">
+                    {report?.reported_at && <span>신고 {formatDateTime(report.reported_at)}</span>}
+                    {report?.report_accepted_at && <span>접수 {formatDateTime(report.report_accepted_at)}</span>}
+                    {report?.report_dispatched_at && <span>출동 {formatDateTime(report.report_dispatched_at)}</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
   const {
     activeAlert,
@@ -120,35 +240,48 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  const detailRequestVersionRef = useRef(0);
+
+  const fetchDetail = useCallback(async ({ silent = false } = {}) => {
+    if (event?.event_no == null) return null;
+
+    const requestVersion = detailRequestVersionRef.current + 1;
+    detailRequestVersionRef.current = requestVersion;
+    if (!silent) {
+      setIsLoading(true);
+      setLoadError('');
+    }
+
+    try {
+      const response = await eventApi.get(event.event_no);
+      if (requestVersion !== detailRequestVersionRef.current) return null;
+      if (response) setDetail(mergeEventDetail(event, response));
+      return response;
+    } catch {
+      if (requestVersion === detailRequestVersionRef.current && !silent) {
+        setLoadError('상세 정보를 불러오지 못해 현재 감지 정보만 보여드립니다.');
+      }
+      return null;
+    } finally {
+      if (requestVersion === detailRequestVersionRef.current && !silent) {
+        setIsLoading(false);
+      }
+    }
+  }, [event]);
 
   useEffect(() => {
-    let isCancelled = false;
-
+    detailRequestVersionRef.current += 1;
     setDetail(event);
     setIsLoading(false);
     setLoadError('');
     setActiveMediaIndex(0);
 
-    if (event?.event_no == null) return undefined;
-
-    setIsLoading(true);
-    eventApi.get(event.event_no)
-      .then((response) => {
-        if (!isCancelled && response) {
-          setDetail(mergeEventDetail(event, response));
-        }
-      })
-      .catch(() => {
-        if (!isCancelled) setLoadError('상세 정보를 불러오지 못해 현재 감지 정보만 보여드립니다.');
-      })
-      .finally(() => {
-        if (!isCancelled) setIsLoading(false);
-      });
+    if (event?.event_no != null) fetchDetail();
 
     return () => {
-      isCancelled = true;
+      detailRequestVersionRef.current += 1;
     };
-  }, [event]);
+  }, [event, fetchDetail]);
 
   useEffect(() => {
     const handleEscape = (keyboardEvent) => {
@@ -165,17 +298,16 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
     };
   }, [onClose]);
 
-  if (!event) return null;
-
   const loadedDetail = detail?.event_no != null
+    && event?.event_no != null
     && String(detail.event_no) === String(event.event_no)
     ? detail
     : event;
   const contextEvent = events.find((item) => (
-    event.event_no != null
+    event?.event_no != null
     && String(item.event_no) === String(event.event_no)
   ));
-  const isActiveAlertDetail = Boolean(activeAlert && (
+  const isActiveAlertDetail = Boolean(event && activeAlert && (
     event === activeAlert
     || (activeAlert.event_no != null
       && event.event_no != null
@@ -183,8 +315,8 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
     || (activeAlert.job_id && event?.job_id && activeAlert.job_id === event.job_id)
   ));
   const visibleDetail = {
-    ...event,
-    ...loadedDetail,
+    ...(event || {}),
+    ...(loadedDetail || {}),
     ...(contextEvent || {}),
     ...(isActiveAlertDetail ? activeAlert : {}),
   };
@@ -197,6 +329,8 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
     || '위치 정보 없음';
   const stage = getEventStage(visibleDetail);
   const isDetecting = stage === 'DETECTING';
+  const reports = readReports(visibleDetail) || [];
+  const isTest = isTestEvent(visibleDetail);
   const statusLabel = getEventStatusLabel(visibleDetail);
   const confidence = getConfidencePercent(visibleDetail.event_confidence ?? visibleDetail.confidence);
   const rawMediaItems = Array.isArray(visibleDetail.media) ? visibleDetail.media : [];
@@ -225,6 +359,37 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
   const mediaTitle = isDetecting
     ? '최초 감지 증거'
     : stage === 'CONFIRMED' ? 'AI 판정 증거' : '오탐 판단 근거';
+
+  const shouldPollReports = Boolean(
+    event?.event_no != null
+    && !isTest
+    && stage !== 'DISMISSED'
+    && (reports.length === 0 || reports.some((report) => (
+      REPORT_IN_PROGRESS_STATUSES.has(report?.report_status)
+    )))
+  );
+
+  useEffect(() => {
+    if (!shouldPollReports) return undefined;
+
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      if (Date.now() - startedAt >= REPORT_POLL_MAX_MS) {
+        window.clearInterval(timer);
+        return;
+      }
+      fetchDetail({ silent: true });
+    }, REPORT_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [fetchDetail, shouldPollReports]);
+
+  const handleRealAlertAction = useCallback(async (action) => {
+    await respondRealAlert(action);
+    await fetchDetail();
+  }, [fetchDetail, respondRealAlert]);
+
+  if (!event) return null;
 
   return (
     <div
@@ -391,6 +556,13 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
             </div>
           </div>
 
+          <ReportAssignmentSection
+            reports={reports}
+            isDetecting={isDetecting}
+            isTest={isTest}
+            stage={stage}
+          />
+
           {isDetecting ? (
             <section className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-amber-800">
               <h3 className="flex items-center gap-2 text-body-sm font-bold">
@@ -445,7 +617,7 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
                 <>
                   <button
                     type="button"
-                    onClick={() => respondRealAlert('READ')}
+                    onClick={() => handleRealAlertAction('READ')}
                     disabled={isActionLoading}
                     className="h-10 rounded-full bg-red-600 px-4 text-caption-sm font-bold text-white transition-colors hover:bg-red-700 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus-visible:outline-none"
                   >
@@ -453,7 +625,7 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => respondRealAlert('CANCEL')}
+                    onClick={() => handleRealAlertAction('CANCEL')}
                     disabled={isActionLoading}
                     className="h-10 rounded-full border border-amber-600/40 bg-canvas px-4 text-caption-sm font-bold text-amber-700 transition-colors hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus-visible:outline-none"
                   >

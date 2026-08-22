@@ -65,8 +65,11 @@ const toDateParam = (date) => {
 
 const getHistoryParams = () => {
   const dateTo = new Date();
-  const dateFrom = new Date(dateTo);
-  dateFrom.setDate(dateFrom.getDate() - (HISTORY_DAYS - 1));
+  const rollingDateFrom = new Date(dateTo);
+  rollingDateFrom.setDate(rollingDateFrom.getDate() - (HISTORY_DAYS - 1));
+
+  const monthDateFrom = new Date(dateTo.getFullYear(), dateTo.getMonth(), 1);
+  const dateFrom = monthDateFrom < rollingDateFrom ? monthDateFrom : rollingDateFrom;
 
   return {
     date_from: toDateParam(dateFrom),
