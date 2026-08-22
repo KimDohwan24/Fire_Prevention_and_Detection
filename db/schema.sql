@@ -178,6 +178,12 @@ CREATE TABLE fireguard.agency (
     agency_lng      numeric(10,7)  NULL,
     agency_endpoint varchar(255)   NULL,
     agency_is_active boolean       NOT NULL  DEFAULT true,
+    -- 출처(생활안전지도 IF_0038)의 고유번호 objt_id. 손으로 등록한 행은 NULL.
+    -- 같은 이름의 소방서가 전국에 여럿 있어(중부소방서 5곳 등) 이름으로는 기관을
+    -- 가릴 수 없다 — 적재 스크립트는 이 값으로 기존 행을 찾는다.
+    agency_source_id varchar(40)  NULL,
+    agency_address  varchar(255)  NULL,
+    agency_phone    varchar(30)   NULL,
     -- 최근접 소방서 탐색의 대상 좌표점 (cctv_geog 와 같은 방식의 생성 컬럼)
     agency_geog     public.geography(Point,4326)
         GENERATED ALWAYS AS (
@@ -345,6 +351,10 @@ CREATE INDEX IX_user_activity_01 ON fireguard.user_activity (user_no, activity_a
 -- 공간 인덱스 — 최근접 탐색(`<->` KNN)이 이걸 탄다.
 -- B-tree 로는 거리 정렬을 색인할 수 없어 GiST 를 쓴다.
 CREATE INDEX IX_agency_geog    ON fireguard.agency USING GIST (agency_geog);
+
+-- 출처 고유번호는 기관을 가리키는 열쇠다. 손으로 등록한 행(NULL)은 제외한다.
+CREATE UNIQUE INDEX UX_agency_source_id ON fireguard.agency (agency_source_id)
+    WHERE agency_source_id IS NOT NULL;
 CREATE INDEX IX_cctv_geog      ON fireguard.cctv   USING GIST (cctv_geog);
 
 -- 진행 중인 신고가 이벤트당 하나만 있도록 DB 에서 강제한다
@@ -455,6 +465,9 @@ COMMENT ON COLUMN fireguard.agency.agency_lat      IS '위도';
 COMMENT ON COLUMN fireguard.agency.agency_lng      IS '경도';
 COMMENT ON COLUMN fireguard.agency.agency_endpoint IS '신고 전송 주소';
 COMMENT ON COLUMN fireguard.agency.agency_is_active IS '기관 사용 여부';
+COMMENT ON COLUMN fireguard.agency.agency_source_id IS '출처 고유번호 (생활안전지도 IF_0038 objt_id). 손으로 등록한 행은 NULL';
+COMMENT ON COLUMN fireguard.agency.agency_address  IS '주소 (도로명 우선, 없으면 지번)';
+COMMENT ON COLUMN fireguard.agency.agency_phone    IS '대표 전화번호';
 COMMENT ON COLUMN fireguard.agency.agency_geog     IS '좌표점 (위경도에서 자동 생성, 최근접 탐색용)';
 
 COMMENT ON COLUMN fireguard.report_119.report_no             IS '신고 번호';

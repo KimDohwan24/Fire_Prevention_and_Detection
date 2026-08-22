@@ -494,7 +494,15 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
                        event_no)
         return None
 
+    # 시도 대상 자르기. 기본(REPORT_MAX_AGENCIES=1)은 가장 가까운 한 곳뿐이라
+    # 아래 루프가 한 바퀴만 돌고 끝난다 — 기관 승계가 일어나지 않는다.
+    # 0 이면 자르지 않고 후보 전체를 순서대로 시도한다(원래 승계 동작).
+    if config.REPORT_MAX_AGENCIES:
+        agencies = agencies[:config.REPORT_MAX_AGENCIES]
+
     # 바깥 루프: 기관 승계 (sequence 1, 2, ...)
+    # 후보가 한 곳뿐이면 is_last 가 곧바로 True 라, 그 기관이 재시도를 소진하면
+    # NO_RESPONSE(승계 예정)가 아니라 FAILED(전송 실패)로 닫힌다. 의도된 동작이다.
     result = None
     for sequence, agency in enumerate(agencies, start=1):
         is_last = sequence == len(agencies)

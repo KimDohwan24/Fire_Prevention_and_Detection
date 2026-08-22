@@ -17,8 +17,11 @@ UPDATABLE = ["agency_name", "agency_lat", "agency_lng", "agency_endpoint", "agen
 
 # 응답에 내보내는 컬럼을 명시한다 — SELECT * 를 쓰면 나중에 컬럼이 추가될 때
 # 의도치 않은 값이 조용히 API 응답에 섞여 나간다 (명세서 7번 섹션 기준)
+# agency_source_id·agency_address·agency_phone 은 마이그레이션 008 에서 늘어난 열이다
+# (생활안전지도 IF_0038 적재, back/services/agencies_safemap.py). 손으로 등록한 행은 NULL.
 COLUMNS = """agency_no, agency_name, agency_lat, agency_lng,
-             agency_endpoint, agency_is_active"""
+             agency_endpoint, agency_is_active,
+             agency_source_id, agency_address, agency_phone"""
 
 
 @bp.get("")

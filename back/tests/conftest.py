@@ -119,6 +119,21 @@ class _FakeReportResponse:
 
 
 @pytest.fixture(autouse=True)
+def _agency_takeover_on(monkeypatch):
+    """테스트는 기관 승계가 켜진 상태를 기본으로 한다.
+
+    운영 기본값은 REPORT_MAX_AGENCIES=1 이다 — 가장 가까운 한 곳에만 신고하고
+    끝낸다(2026-08-21 시연 단순화). 하지만 승계 구현은 그대로 살아 있고 .env 한
+    줄(REPORT_MAX_AGENCIES=0)로 되살아나므로, 그 경로가 썩지 않게 하려면 테스트는
+    승계가 도는 상태를 봐야 한다.
+
+    운영 기본값 자체(승계 없음)는 test_report_service.py 의 전용 테스트 두 개가
+    REPORT_MAX_AGENCIES 를 1 로 되돌려 따로 검증한다.
+    """
+    monkeypatch.setattr(config, "REPORT_MAX_AGENCIES", 0)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_report_http(monkeypatch):
     """전역 가드: 어떤 테스트도 실제 119 신고 HTTP 를 보내지 않는다.
 

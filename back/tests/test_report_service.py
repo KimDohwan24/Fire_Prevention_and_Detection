@@ -505,6 +505,48 @@ def test_takeover_to_second_agency(monkeypatch):
     assert result["agency_no"] == 2
 
 
+# ---------- 운영 기본값: 가장 가까운 한 곳만 (승계 없음) ----------
+
+def test_default_reports_only_to_nearest_agency(monkeypatch):
+    """REPORT_MAX_AGENCIES=1(운영 기본값): 가장 가까운 기관 한 곳으로 끝난다."""
+    monkeypatch.setattr(config, "REPORT_MAX_AGENCIES", 1)
+    set_distinct_endpoints()
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(200, {"external_id": "R-NEAREST"}))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    rows = get_report_rows(event_no)
+    assert len(rows) == 1
+    assert rows[0]["agency_no"] == 1
+    assert rows[0]["report_status"] == "ACCEPTED"
+    assert result["report_external_id"] == "R-NEAREST"
+    # 2순위 기관에는 아예 가지 않는다
+    assert [ep for ep, _ in calls] == ["http://a1/report"]
+
+
+def test_default_does_not_take_over_when_nearest_fails(monkeypatch):
+    """REPORT_MAX_AGENCIES=1: 1순위가 소진돼도 2순위로 넘어가지 않는다.
+
+    행은 하나뿐이고 상태는 NO_RESPONSE(승계 예정)가 아니라 FAILED 다 —
+    넘어갈 다음 기관이 없으므로 '전송 실패'로 닫는 것이 맞다.
+    """
+    monkeypatch.setattr(config, "REPORT_MAX_AGENCIES", 1)
+    set_distinct_endpoints()
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(503))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "NO_RESPONSE_TIMEOUT")
+
+    rows = get_report_rows(event_no)
+    assert len(rows) == 1
+    assert rows[0]["agency_no"] == 1
+    assert rows[0]["report_status"] == "FAILED"
+    assert rows[0]["report_attempt_count"] == config.MAX_REPORT_ATTEMPTS
+    assert result["report_status"] == "FAILED"
+    assert {ep for ep, _ in calls} == {"http://a1/report"}
+
+
 def test_all_agencies_fail(monkeypatch):
     """모든 기관 소진 → 앞 기관은 NO_RESPONSE, 마지막 기관 행만 FAILED(전송실패)."""
     calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(503))

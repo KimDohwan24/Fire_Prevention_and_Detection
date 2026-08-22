@@ -70,6 +70,13 @@ MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
 
+# 119 신고에서 시도할 최대 기관 수 (가까운 순).
+#   1 = 가장 가까운 한 곳에만 신고하고 끝낸다 — 기관 승계 없음. **기본값**
+#   0 = 후보 전체를 가까운 순서대로 시도한다 — 원래의 승계 동작
+# 2026-08-21 시연 단순화로 기본을 1 로 두었다. 승계 코드는 그대로 남아 있어
+# .env 에 REPORT_MAX_AGENCIES=0 만 넣으면 예전 동작으로 되돌아간다.
+REPORT_MAX_AGENCIES = int(os.getenv("REPORT_MAX_AGENCIES", "1"))
+
 # 역지오코딩(카카오 Local) HTTP 타임아웃(초).
 # CCTV 등록 요청 안에서 부르므로 사람이 기다리는 시간이다 — 짧게 둔다.
 # 실패해도 등록은 진행되고 주소만 NULL 로 남는다.
@@ -87,6 +94,16 @@ ITS_ROAD_TYPES = [t.strip() for t in os.getenv("ITS_ROAD_TYPES", "ex,its").split
 CCTV_URL_TTL_SEC = int(os.getenv("CCTV_URL_TTL_SEC", "300"))
 # 갱신 기능 스위치 — 끄면 DB 에 저장된 주소를 그대로 내려준다
 ITS_REFRESH_ENABLED = _env_bool("ITS_REFRESH_ENABLED", True)
+
+# ----- 생활안전지도(safemap.go.kr) 소방시설 개방 데이터 -----
+# 전국 소방서·119안전센터 목록(이름·주소·전화·좌표)을 받아 agency 테이블을 채운다.
+# 앱이 돌면서 부르는 값이 아니다 — services/agencies_safemap.py 만 이 키를 쓴다.
+# 갱신주기가 1년이라 요청마다 부를 이유가 없고, 119 신고는 동기 경로라 신고 순간에
+# 외부 API 를 부르면 그 지연이 그대로 HTTP 응답 지연이 된다 (services/geocode.py 와 같은 판단).
+# 발급: https://www.safemap.go.kr 개발자센터 → 오픈API 인증키 발급
+# .env 에서의 항목 이름은 `AGENCY` 다 (.env.example 과 같은 이름).
+SAFEMAP_SERVICE_KEY = os.getenv("AGENCY", "")
+SAFEMAP_API_URL = os.getenv("SAFEMAP_API_URL", "https://www.safemap.go.kr/openapi2/IF_0038")
 
 # ----- 소셜 로그인(OAuth) -----
 # 프로바이더별 앱 키. 각 개발자 콘솔에서 발급받아 .env 에 넣는다.
