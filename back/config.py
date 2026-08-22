@@ -29,6 +29,10 @@ JWT_EXPIRES_HOURS = int(os.getenv("JWT_EXPIRES_HOURS", "12"))
 # AI 모델 → 백엔드 내부 API 인증 키 (X-Internal-Key 헤더로 비교)
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key")
 
+# 소방서(119) → 백엔드 출동 통지 인증 키 (X-Agency-Key 헤더로 비교)
+# INTERNAL_API_KEY 와 나눠 쓴다 — 하나가 새면 AI 검출 수집 경로까지 함께 열린다.
+AGENCY_CALLBACK_KEY = os.getenv("AGENCY_CALLBACK_KEY", "dev-agency-key")
+
 # 화재 확정 기준: 관측 창 안에서 이 프레임 수만큼 검출이 쌓이면 CONFIRMED
 #
 # 이 값은 EVENT_WINDOW_SEC 와 독립이 아니다 — **검출 프레임 레이트에 묶여 있다.**
@@ -66,6 +70,18 @@ MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
 
+# 119 신고에서 시도할 최대 기관 수 (가까운 순).
+#   1 = 가장 가까운 한 곳에만 신고하고 끝낸다 — 기관 승계 없음. **기본값**
+#   0 = 후보 전체를 가까운 순서대로 시도한다 — 원래의 승계 동작
+# 2026-08-21 시연 단순화로 기본을 1 로 두었다. 승계 코드는 그대로 남아 있어
+# .env 에 REPORT_MAX_AGENCIES=0 만 넣으면 예전 동작으로 되돌아간다.
+REPORT_MAX_AGENCIES = int(os.getenv("REPORT_MAX_AGENCIES", "1"))
+
+# 역지오코딩(카카오 Local) HTTP 타임아웃(초).
+# CCTV 등록 요청 안에서 부르므로 사람이 기다리는 시간이다 — 짧게 둔다.
+# 실패해도 등록은 진행되고 주소만 NULL 로 남는다.
+GEOCODE_HTTP_TIMEOUT_SEC = float(os.getenv("GEOCODE_HTTP_TIMEOUT_SEC", "3"))
+
 # ----- 국가교통정보센터(ITS) CCTV 개방 데이터 -----
 # ITS 가 주는 스트림 주소에는 시간 제한 토큰이 박혀 있어 저장해 두면 만료된다.
 # 그래서 카메라 조회 시마다 최신 주소를 받아 이름이 같은 행을 갈아끼운다.
@@ -78,6 +94,59 @@ ITS_ROAD_TYPES = [t.strip() for t in os.getenv("ITS_ROAD_TYPES", "ex,its").split
 CCTV_URL_TTL_SEC = int(os.getenv("CCTV_URL_TTL_SEC", "300"))
 # 갱신 기능 스위치 — 끄면 DB 에 저장된 주소를 그대로 내려준다
 ITS_REFRESH_ENABLED = _env_bool("ITS_REFRESH_ENABLED", True)
+
+# ----- 생활안전지도(safemap.go.kr) 소방시설 개방 데이터 -----
+# 전국 소방서·119안전센터 목록(이름·주소·전화·좌표)을 받아 agency 테이블을 채운다.
+# 앱이 돌면서 부르는 값이 아니다 — services/agencies_safemap.py 만 이 키를 쓴다.
+# 갱신주기가 1년이라 요청마다 부를 이유가 없고, 119 신고는 동기 경로라 신고 순간에
+# 외부 API 를 부르면 그 지연이 그대로 HTTP 응답 지연이 된다 (services/geocode.py 와 같은 판단).
+# 발급: https://www.safemap.go.kr 개발자센터 → 오픈API 인증키 발급
+# .env 에서의 항목 이름은 `AGENCY` 다 (.env.example 과 같은 이름).
+SAFEMAP_SERVICE_KEY = os.getenv("AGENCY", "")
+SAFEMAP_API_URL = os.getenv("SAFEMAP_API_URL", "https://www.safemap.go.kr/openapi2/IF_0038")
+
+# ----- 소셜 로그인(OAuth) -----
+# 프로바이더별 앱 키. 각 개발자 콘솔에서 발급받아 .env 에 넣는다.
+# **키가 없으면 그 프로바이더만 503 OAUTH_NOT_CONFIGURED 로 막힌다** — 서버는 그대로
+# 뜨고 나머지 로그인 경로도 살아 있다. 하나도 안 넣은 상태로 배포해도 무방하다.
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+KAKAO_CLIENT_ID = os.getenv("KAKAO_CLIENT_ID", "")
+KAKAO_CLIENT_SECRET = os.getenv("KAKAO_CLIENT_SECRET", "")
+NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+
+# ⚠️ 아래 두 주소는 **역할이 다르다.** 이름이 비슷해 자주 헷갈리는데, 바꿔 쓰면
+#    증상이 프로바이더의 redirect_uri_mismatch 로만 나타나 원인을 찾기 어렵다.
+#      OAUTH_CALLBACK_BASE — 프로바이더가 브라우저를 **되돌려보낼 백엔드 주소**
+#                            (프로바이더 콘솔에 등록하는 값이 여기서 나온다)
+#      OAUTH_REDIRECT_BASE — 로그인을 끝낸 뒤 **사용자를 보낼 프론트 주소**
+#                            (콘솔과는 아무 상관이 없다)
+
+# 프론트 주소. 콜백이 로그인을 마친 브라우저를 여기로 302 한다 —
+#   {OAUTH_REDIRECT_BASE}/#access_token=...  또는  /#oauth_error=...
+# 프로바이더 콘솔에 등록할 값이 **아니다** (그것은 아래 OAUTH_CALLBACK_BASE 쪽이다).
+OAUTH_REDIRECT_BASE = os.getenv("OAUTH_REDIRECT_BASE", "http://localhost:5173")
+
+# 백엔드 자신의 주소. 프로바이더에게 알려줄 콜백 주소를 서버가 여기에 붙여 만든다 —
+#   {OAUTH_CALLBACK_BASE}/api/auth/{provider소문자}/callback
+# 프로바이더는 브라우저를 프론트가 아니라 **백엔드로** 되돌려보낸다 (프론트는
+# window.location.assign('/api/auth/kakao') 로 시작만 시킨다). 그래서 위
+# OAUTH_REDIRECT_BASE 와 값이 다르다.
+# **여기를 바꾸면 세 콘솔의 등록 URI 도 함께 고쳐야 한다** — 서버가 보내는 값과
+# 글자 하나라도 다르면 프로바이더가 redirect_uri_mismatch 로 돌려보낸다.
+OAUTH_CALLBACK_BASE = os.getenv("OAUTH_CALLBACK_BASE", "http://localhost:5000")
+
+# 프로바이더 API 호출 타임아웃(초). 사람이 로그인 버튼을 누르고 기다리는 중이라
+# 짧게 둔다. 119 신고(REPORT_HTTP_TIMEOUT_SEC)와 값을 나눠 쓰지 않는 이유는
+# 저쪽이 사람이 기다리지 않는 백그라운드 전송이라 조정 기준이 다르기 때문이다.
+OAUTH_HTTP_TIMEOUT_SEC = float(os.getenv("OAUTH_HTTP_TIMEOUT_SEC", "5"))
+
+# 이 백엔드의 외부 공개 주소. 119 신고 페이로드의 callback_url 을 여기에 붙여 만든다 —
+#   {PUBLIC_BASE_URL}/api/reports/dispatch
+# 소방서가 출동 통지를 되쏘는 곳이라, 상대가 닿을 수 있는 주소여야 한다.
+# 시연은 같은 PC 라 localhost 로 충분하고, 다른 PC 에서 접속시키려면 LAN IP 를 넣는다.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:5000")
 
 APP_PORT = int(os.getenv("APP_PORT", "5000"))
 

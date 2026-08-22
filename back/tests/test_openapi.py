@@ -21,7 +21,8 @@ EXCLUDED_ENDPOINT_PREFIXES = ("static", "docs.", "docs_ui.")
 _FLASK_PARAM = re.compile(r"<(?:[^:<>]+:)?([^:<>]+)>")
 
 # auth.py 데코레이터가 다는 표식 → 스펙 securitySchemes 이름
-AUTH_TO_SCHEME = {"bearer": "bearerAuth", "internal": "internalKey"}
+AUTH_TO_SCHEME = {"bearer": "bearerAuth", "internal": "internalKey",
+                  "agency": "agencyKey"}
 
 
 def _flask_to_openapi(rule: str) -> str:
@@ -170,3 +171,21 @@ def test_public_routes_declare_no_security(app, spec):
             if op.get("security"):
                 problems.append(f"{method.upper()} {path}: 공개인데 security 선언됨")
     assert not problems, "인증 문서화 과잉:\n" + "\n".join(problems)
+
+
+# ---------- 6. 소방서 출동 통지 연동 ----------
+
+def test_report_status_enum_has_dispatched(spec):
+    """출동 통지를 받으면 나오는 상태가 문서에 있어야 한다."""
+    enum = spec["components"]["schemas"]["ReportStatus"]["enum"]
+    assert "DISPATCHED" in enum
+
+
+def test_dispatch_path_is_documented(spec):
+    """새 엔드포인트와 그 인증 방식이 문서에 있어야 한다."""
+    path = spec["paths"]["/api/reports/dispatch"]["post"]
+    assert path["security"] == [{"agencyKey": []}]
+    scheme = spec["components"]["securitySchemes"]["agencyKey"]
+    assert scheme["type"] == "apiKey"
+    assert scheme["in"] == "header"
+    assert scheme["name"] == "X-Agency-Key"

@@ -99,11 +99,32 @@ git checkout dev-Wang</code></pre>
 <h3>2) 파이썬 가상환경 + 의존성</h3>
 <pre><code>cd back
 python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt</code></pre>
+.venv/Scripts/pip install -r requirements.txt -r requirements-dev.txt</code></pre>
 <div class="note">
   💡 Mac · Linux 는 <code>.venv/bin/pip</code> 입니다. 아래 예시들의 <code>.venv/Scripts/</code> 도
   모두 <code>.venv/bin/</code> 으로 바꿔 읽으세요.<br>
   파이썬은 3.11 이상을 권장합니다 (3.14 에서 동작 확인).
+</div>
+<div class="warn">
+  ⚠️ <strong>이 프로젝트는 파이썬 가상환경이 두 개입니다. 섞어 쓰면 안 됩니다.</strong>
+  <table>
+    <tr><th>위치</th><th>파이썬</th><th>설치할 것</th><th>용도</th></tr>
+    <tr>
+      <td><code>back/.venv</code></td><td>3.11 이상 (3.14 확인)</td>
+      <td><code>back/requirements.txt</code> + <code>back/requirements-dev.txt</code></td>
+      <td>백엔드 서버 · 테스트 · <code>mock-119</code></td>
+    </tr>
+    <tr>
+      <td><code>ai-model/.venv</code></td><td><strong>3.11 고정</strong></td>
+      <td><code>ai-model/requirements.txt</code></td>
+      <td>YOLO 추론 · 학습</td>
+    </tr>
+  </table>
+  <code>ai-model</code> 이 3.11 에 묶인 이유는 <code>torch</code> 가 3.14 에 아직
+  안 들어가기 때문입니다. 그래서 <code>ai-model/requirements.txt</code> 를
+  <code>back/.venv</code> 에 설치하면 <code>torch</code> 에서 막히고, 반대로
+  <code>back/requirements.txt</code> 만 깔린 환경에서는 추론이 돌지 않습니다.
+  <code>ai-model</code> 은 <code>py -3.11 -m venv .venv</code> 로 따로 만드세요.
 </div>
 
 <h3>3) PostgreSQL + PostGIS 설치</h3>
@@ -466,18 +487,55 @@ X-Internal-Key: &lt;INTERNAL_API_KEY 값&gt;
 <h3>가상 119 서버 띄우기</h3>
 <p>실제로 119 에 신고할 수는 없으므로, 소방청 접수 서버를 흉내내는 서버를 함께 띄웁니다.</p>
 <pre><code>cd mock-119
-../back/.venv/Scripts/python app.py     # 포트 6000</code></pre>
-<p>신고가 도착하면 이 콘솔에 한글 로그가 찍히므로, 시연 화면에 띄워두면 좋습니다.</p>
+../back/.venv/Scripts/python app.py     # 포트 8119</code></pre>
+<p>신고가 도착하면 이 콘솔에 한글 로그가 찍힙니다. 그리고 <strong>브라우저로
+<code>http://localhost:8119</code> 를 열면 접수 화면</strong>이 뜹니다 —
+받은 신고가 표로 쌓이고, bbox 가 그려진 사진과 도로명주소·카메라 정보가 함께 보입니다.
+시연에서는 이 화면을 파이어가드 대시보드 옆에 나란히 띄워 두세요.</p>
+
+<div class="warn">
+  <p><strong>포트를 6000 으로 바꾸지 마세요.</strong> 크롬 계열 브라우저는 6000 번을
+  안전하지 않은 포트로 보고 접속을 거부합니다(<code>ERR_UNSAFE_PORT</code>).
+  서버는 멀쩡히 떠 있고 <code>curl</code> 도 되는데 주소창에서만 안 열려서 원인을
+  찾기 어렵습니다. 2026-08-18 시연 리허설에서 실제로 걸렸던 문제입니다.</p>
+</div>
+
+<h3>출동 지령 되받기</h3>
+<p>접수 화면의 <code>[출동 지령]</code> 버튼을 누르면 소방서가 우리 서버로
+<strong>출동 통지를 되쏩니다</strong>(<code>POST /api/reports/dispatch</code>).
+받으면 그 신고가 <code>ACCEPTED</code>(접수 완료) 에서 <code>DISPATCHED</code>(출동 접수)
+로 바뀌고, 대시보드 표기도 따라 바뀝니다.</p>
+<ul>
+  <li>인증은 <code>X-Agency-Key</code> 헤더입니다. 화면의 입력칸 기본값
+      <code>dev-agency-key</code> 가 <code>.env</code> 의
+      <code>AGENCY_CALLBACK_KEY</code> 와 같아야 합니다.</li>
+  <li>콜백 주소는 신고에 실려 온 <code>callback_url</code> 로 자동 채워집니다
+      (백엔드의 <code>PUBLIC_BASE_URL</code> 설정에서 만들어집니다).</li>
+  <li>같은 통지를 여러 번 눌러도 신고가 늘지 않습니다 — 최신 값으로 덮어씁니다.</li>
+</ul>
+
+<h3>119 로 나가는 주소</h3>
+<p>신고에 실리는 주소는 <code>cctv_location</code>(설치 위치 설명)이 아니라,
+CCTV 등록 시 좌표를 역지오코딩해 저장한 <code>cctv_address</code> 입니다.
+비어 있으면 <code>"위도 37.5665, 경도 126.978 (본관 정문 앞)"</code> 같은 좌표
+문자열로 나갑니다.</p>
+<ul>
+  <li>주소가 안 채워지면 카카오 개발자 콘솔에서 그 앱의 <strong>카카오맵</strong>
+      서비스가 켜져 있는지 확인하세요. 꺼져 있으면 403 이 옵니다.</li>
+  <li>컬럼 추가 이전에 등록된 카메라는
+      <code>back/scripts/backfill_cctv_address.py</code> 를 한 번 돌려 채웁니다.</li>
+  <li>고속도로 지점은 도로명주소가 없어 지번으로 나옵니다 — 정상입니다.</li>
+</ul>
 
 <h3>승계 시연 만들기</h3>
 <p>"가까운 소방서가 응답하지 않아 다음 소방서로 넘어간다"를 보여주려면,
 소방서 두 곳의 endpoint 를 다르게 설정합니다.</p>
 <pre><code>-- 1순위(가까운) 소방서는 실패하도록
-UPDATE fireguard.agency SET agency_endpoint = 'http://localhost:6000/report?mode=fail'
+UPDATE fireguard.agency SET agency_endpoint = 'http://localhost:8119/report?mode=fail&amp;station=1'
  WHERE agency_no = 1;
 
 -- 2순위 소방서는 정상 접수
-UPDATE fireguard.agency SET agency_endpoint = 'http://localhost:6000/report?mode=ok'
+UPDATE fireguard.agency SET agency_endpoint = 'http://localhost:8119/report?mode=ok&amp;station=2'
  WHERE agency_no = 2;</code></pre>
 <p><code>mode</code> 값: <code>ok</code>(접수) · <code>fail</code>(장애) · <code>timeout</code>(무응답) · <code>reject</code>(거절)</p>
 
@@ -584,7 +642,19 @@ ESCALATION_INTERVAL_SEC=2   # 무응답 감지 주기를 2초로 (기본 5)</cod
   <li>분기 B — 사용자가 <strong>"오탐 취소"</strong> → 전체 중단, 신고 없음</li>
   <li>분기 C — <strong>아무것도 누르지 않음</strong> → 유예 경과 후 자동 신고
       → 1순위 소방서 무응답 → <strong>2순위로 승계</strong> → 접수 완료</li>
+  <li>소방서 접수 화면(<code>http://localhost:8119</code>)에 신고가 뜬다 —
+      bbox 사진 · 도로명주소 · 카메라 정보</li>
+  <li><code>[출동 지령]</code> 클릭 → 대시보드의 신고가
+      <strong>'출동 접수'</strong> 로 바뀐다 (대시보드 폴링 최대 30초,
+      새로고침 버튼으로 즉시 확인 가능)</li>
 </ol>
+
+<div class="warn">
+  <p><strong>DB 를 초기화하면 mock-119 도 함께 재시작하세요.</strong>
+  <code>event_no</code> 가 1 부터 다시 시작해 신고 ID(<code>FG-{event_no}</code>)가
+  이전 세션과 겹치는데, mock 서버의 접수 대장은 메모리라 그대로 남아 있어
+  새 화재를 <strong>중복 접수로 튕겨냅니다</strong>.</p>
+</div>
 
 <!-- ===================================================== -->
 <h2 id="trouble">6. 자주 막히는 곳</h2>

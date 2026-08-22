@@ -2005,7 +2005,7 @@ POST /api/alerts/45/respond  {"action":"READ"}
 <table>
 <thead><tr><th>테이블</th><th>담는 것</th><th>핵심 컬럼</th></tr></thead>
 <tbody>
-<tr><td><code>users</code></td><td>계정</td><td><code>user_role</code>(ADMIN/VIEWER), <code>user_status</code>(ACTIVE/SUSPENDED/WITHDRAWN), <code>user_pw</code>(bcrypt 해시 60자)</td></tr>
+<tr><td><code>users</code></td><td>계정</td><td><code>user_role</code>(ADMIN/VIEWER), <code>user_status</code>(ACTIVE/PENDING/SUSPENDED/WITHDRAWN), <code>user_pw</code>(bcrypt 해시 60자)</td></tr>
 <tr><td><code>cctv</code></td><td>카메라</td><td><code>user_no</code>(소유자=알림 수신자), <code>cctv_lat/lng</code>(소방서 거리 계산 기준), <code>cctv_stream_url</code>(ITS가 갱신)</td></tr>
 <tr><td><code>fire_event</code></td><td>화재 이벤트</td><td><code>event_first_detected_at</code>(관측 창 기준점), <code>event_detected_frames</code> / <code>event_threshold_frames</code>, <code>event_is_test</code></td></tr>
 <tr><td><code>event_media</code></td><td>프레임 이미지</td><td><code>media_url</code>(=URL 그대로), <code>media_detections</code>(jsonb 원본), <code>media_is_primary</code>(119에 보낼 대표)</td></tr>

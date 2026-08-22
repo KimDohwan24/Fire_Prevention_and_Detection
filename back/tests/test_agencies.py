@@ -9,6 +9,8 @@ PUT  /api/agencies/<agency_no>   수정 · 비활성화 (ADMIN)
 AGENCY_KEYS = {
     "agency_no", "agency_name", "agency_lat", "agency_lng",
     "agency_endpoint", "agency_is_active",
+    # 마이그레이션 008 (생활안전지도 적재) 로 늘어난 열 — 손으로 등록한 행은 NULL
+    "agency_source_id", "agency_address", "agency_phone",
 }
 
 NEW_AGENCY = {
@@ -50,6 +52,33 @@ def test_list_agencies_item_keys_are_exactly_documented(client, admin_headers):
     items = client.get("/api/agencies", headers=admin_headers).get_json()["items"]
     for it in items:
         assert set(it.keys()) == AGENCY_KEYS
+
+
+def test_list_agencies_manual_rows_have_null_source_fields(client, admin_headers):
+    """손으로 등록한 기준 데이터는 출처·주소·전화가 NULL 로 내려온다 (키는 있어야 한다)."""
+    items = client.get("/api/agencies", headers=admin_headers).get_json()["items"]
+    for it in items:
+        assert it["agency_source_id"] is None
+        assert it["agency_address"] is None
+        assert it["agency_phone"] is None
+
+
+def test_list_agencies_exposes_safemap_columns(client, admin_headers):
+    """생활안전지도에서 적재한 행(출처 고유번호·주소·전화)이 그 값 그대로 목록에 실린다."""
+    import db
+    db.execute(
+        """
+        INSERT INTO agency (agency_name, agency_lat, agency_lng, agency_endpoint,
+                            agency_source_id, agency_address, agency_phone)
+        VALUES ('안성소방서', 37.0004190, 127.2560293, 'http://127.0.0.1:8119/report?mode=ok',
+                'IF0038-000123', '경기도 안성시 미양로 855', '031-123-4567')
+        """
+    )
+    items = client.get("/api/agencies", headers=admin_headers).get_json()["items"]
+    row = next(i for i in items if i["agency_name"] == "안성소방서")
+    assert row["agency_source_id"] == "IF0038-000123"
+    assert row["agency_address"] == "경기도 안성시 미양로 855"
+    assert row["agency_phone"] == "031-123-4567"
 
 
 # ---------- POST /api/agencies ----------

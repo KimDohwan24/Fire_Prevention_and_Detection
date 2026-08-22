@@ -10,8 +10,7 @@ from flask import Blueprint, jsonify, request
 import db
 from auth import internal_key_required
 from errors import ApiError
-from routes.cctv_routes import COLUMNS as CCTV_COLUMNS
-from services import event_service, its_cctv
+from services import cctv_service, event_service
 
 bp = Blueprint("internal", __name__)
 
@@ -25,16 +24,8 @@ def list_cctvs_for_ai():
     다시 호출해 새 주소를 받아 재접속하면 된다. 보통은 ?cctv_status=ACTIVE 로
     가동 중인 카메라만 받아 간다.
     """
-    where = ""
-    params: list = []
-    if status := request.args.get("cctv_status"):
-        where = "WHERE cctv_status = %s"
-        params.append(status)
-
-    rows = db.query(
-        f"SELECT {CCTV_COLUMNS} FROM cctv {where} ORDER BY cctv_no", tuple(params)
-    )
-    return jsonify({"items": its_cctv.refresh_stream_urls(rows)})
+    rows = cctv_service.list_cctvs(cctv_status=request.args.get("cctv_status"))
+    return jsonify({"items": rows})
 
 
 @bp.post("/detections")

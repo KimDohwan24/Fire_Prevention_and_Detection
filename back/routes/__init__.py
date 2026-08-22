@@ -3,6 +3,7 @@ from flask import Flask
 
 from routes.auth_routes import bp as auth_bp
 from routes.user_routes import bp as user_bp
+from routes.me_routes import bp as me_bp
 from routes.cctv_routes import bp as cctv_bp
 from routes.event_routes import bp as event_bp
 from routes.alert_routes import bp as alert_bp
@@ -17,6 +18,8 @@ from routes.docs_routes import bp as docs_bp, swagger_ui_blueprint
 def register_blueprints(app: Flask):
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(user_bp, url_prefix="/api/users")
+    # 토큰 주인 전용 — user_no 를 URL 로 받지 않아 권한 검사가 필요 없다
+    app.register_blueprint(me_bp, url_prefix="/api/me")
     app.register_blueprint(cctv_bp, url_prefix="/api/cctvs")
     app.register_blueprint(event_bp, url_prefix="/api/events")
     app.register_blueprint(alert_bp, url_prefix="/api/alerts")

@@ -518,7 +518,8 @@ def test_internal_cctvs_returns_refreshed_items(client, monkeypatch):
     items = r.get_json()["items"]
     assert len(items) == 2
     assert set(items[0].keys()) == {
-        "cctv_no", "user_no", "cctv_name", "cctv_location", "cctv_lat", "cctv_lng",
+        "cctv_no", "user_no", "cctv_name", "cctv_location", "cctv_address",
+        "cctv_lat", "cctv_lng",
         "cctv_stream_url", "cctv_width", "cctv_height", "cctv_status", "cctv_created_at",
     }
     assert items[0]["cctv_stream_url"] == FRESH_URL

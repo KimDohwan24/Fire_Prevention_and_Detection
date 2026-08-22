@@ -1,16 +1,37 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { adminUpgradeApi } from '../api';
 import {
   User, ShieldCheck, Mail, Phone, Building, Calendar,
   Lock, Bell, Shield, Key, CheckCircle, Clock,
-  LogOut, ArrowLeft, Edit3, Camera, Save, X, AlertTriangle,
+  ArrowLeft, Edit3, Camera, Save, X, AlertTriangle,
   FileText, Activity, Smartphone, Monitor, ShieldAlert, Video, MapPin, ExternalLink, Loader2,
-  Trash2, ChevronLeft, ChevronRight
+  LogOut, RotateCcw, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 import CctvPlayer from '../components/CctvPlayer';
-import { authApi, cctvApi, eventApi, getCurrentUserFromStorage, userApi } from '../api';
+import AppHeader from '../components/AppHeader';
+import { authApi, cctvApi, getCurrentUserFromStorage, userApi } from '../api';
+import {
+  appendLocalActivityLog,
+  getLocalActivityLogs,
+  normalizeActivityRecord,
+} from '../utils/activityLog';
+
+const normalizePhoneNumber = (value = '') => (
+  String(value).replace(/\D/g, '').slice(0, 11)
+);
+
+const formatPhoneNumber = (value = '') => {
+  const digits = normalizePhoneNumber(value);
+
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  if (digits.length <= 10) {
+    return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+};
 
 export default function MyPage() {
   const navigate = useNavigate();
@@ -18,7 +39,10 @@ export default function MyPage() {
   // 내 활동 및 접속 이력 페이지네이션 및 로딩 상태
   const [activityPage, setActivityPage] = useState(1);
   const [isActivitiesLoading, setIsActivitiesLoading] = useState(true);
-  const [isDeletingActivities, setIsDeletingActivities] = useState(false);
+  const [activityTotal, setActivityTotal] = useState(0);
+  const [activityTotalPages, setActivityTotalPages] = useState(0);
+  const [activityError, setActivityError] = useState('');
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0);
   const ITEMS_PER_PAGE = 5;
 
   // 사용자 프로필 정보 (실시간 DB / 세션 복원 및 안전한 초기값)
@@ -48,7 +72,6 @@ export default function MyPage() {
     smsNotify: true,
     emailNotify: true,
     pushNotify: true,
-    autoNotify119: true,
     nightMode: true
   });
 
@@ -92,6 +115,8 @@ export default function MyPage() {
       try {
         const sessionResponse = await authApi.me();
         const sessionUser = sessionResponse?.user || sessionResponse;
+        const storedUser = getCurrentUserFromStorage();
+        const storedAuthProvider = storedUser?.authProvider || null;
         if (sessionUser?.user_no == null || !sessionUser?.user_id) {
           throw new Error('현재 로그인 사용자 정보를 확인할 수 없습니다.');
         }
@@ -104,8 +129,11 @@ export default function MyPage() {
           email: sessionUser.user_email || `${sessionUser.user_id}@fireguard.or.kr`,
           phone: sessionUser.user_phone || '',
           role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
+          authProvider: storedAuthProvider,
           dept: sessionUser.user_role === 'ADMIN' ? '관제총괄팀' : '관제팀',
-          position: sessionUser.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원',
+          position: storedUser?.position || (
+            sessionUser.user_role === 'ADMIN' ? '총괄 관제 책임자' : '관제 전담 요원'
+          ),
           joinedAt: '2026-01-01',
           lastLogin: '최근 접속 중',
           assignedZone: 'A동 및 외곽 관제 구역'
@@ -147,80 +175,23 @@ export default function MyPage() {
 
     loadCurrentUserAndCctvs();
 
-    // 3. 최근 활동 이력 수신 (백엔드 API + localStorage 조치 내역 통합)
-    setIsActivitiesLoading(true);
-    eventApi.list({ size: 30 }).then(res => {
-      const items = res?.items || res || [];
-      const falseAlarmList = JSON.parse(localStorage.getItem('falseAlarmEvents') || '[]');
-      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
-
-      const mappedActs = Array.isArray(items) ? items.map(ev => {
-        const isFalse = ev.event_status === 'FALSE_ALARM' || ev.event_status === 'CANCEL' || ev.alert_status === 'CANCEL' || falseAlarmList.includes(ev.event_no);
-        return {
-          id: ev.event_no,
-          time: ev.event_first_detected_at ? ev.event_first_detected_at.substring(0, 16).replace('T', ' ') : '2026-08-11 12:00',
-          type: isFalse ? 'false_alarm' : (ev.event_status === 'CONFIRMED' || ev.event_class === 'FLAME_SMOKE' ? 'fire' : 'system'),
-          title: isFalse 
-            ? '✅ 화재 알림 오탐지 취소 처리' 
-            : (ev.event_class === 'FLAME_SMOKE' ? '🔥 화재 및 연기 감지' : '⚠️ 화재 의심 상태 감지'),
-          detail: `${ev.cctv_name || '카메라'} (${ev.cctv_location || 'A동 관제 구역'}) - ${isFalse ? '관제 요원 오탐 취소 완료' : '실시간 AI 감지'}`
-        };
-      }) : [];
-
-      // 사용자가 직접 조치한 userLogs(오탐 취소 / 119 출동 승인)를 최우선 상단에 통합
-      const combined = [...userLogs, ...mappedActs];
-      const uniqueActs = Array.from(new Map(combined.map(item => [item.id, item])).values());
-      setActivities(uniqueActs);
-    }).catch(err => {
-      console.warn('MyPage 활동이력 로드 오류:', err);
-      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
-      if (userLogs.length > 0) setActivities(userLogs);
-    }).finally(() => {
-      setIsActivitiesLoading(false);
-    });
   }, [navigate]);
 
-  // 활동 이력 전체 삭제
-  const handleClearActivities = () => {
-    if (activities.length === 0) {
-      alert('삭제할 활동 이력이 존재하지 않습니다.');
-      return;
-    }
-    if (confirm('내 활동 및 접속 이력을 모두 삭제하시겠습니까?')) {
-      setIsDeletingActivities(true);
-      setTimeout(() => {
-        setActivities([]);
-        localStorage.removeItem('userActivityLogs');
-        localStorage.setItem('falseAlarmEvents', '[]');
-        setActivityPage(1);
-        setIsDeletingActivities(false);
-        showToast('활동 이력이 성공적으로 모두 삭제되었습니다.');
-      }, 400);
-    }
-  };
+  useEffect(() => {
+    if (!currentUser?.user_no) return;
 
-  // 개별 활동 이력 삭제
-  const handleDeleteSingleActivity = (actId) => {
-    setActivities(prev => {
-      const updated = prev.filter(a => a.id !== actId);
-      const userLogs = JSON.parse(localStorage.getItem('userActivityLogs') || '[]');
-      const filteredUserLogs = userLogs.filter(a => a.id !== actId);
-      localStorage.setItem('userActivityLogs', JSON.stringify(filteredUserLogs));
-      
-      const newTotalPages = Math.max(1, Math.ceil(updated.length / ITEMS_PER_PAGE));
-      if (activityPage > newTotalPages) {
-        setActivityPage(newTotalPages);
-      }
-      return updated;
-    });
-    showToast('해당 활동 이력이 삭제되었습니다.');
-  };
+    setActivityError('');
 
-  const totalActivityPages = Math.max(1, Math.ceil(activities.length / ITEMS_PER_PAGE));
-  const currentPaginatedActivities = activities.slice(
-    (activityPage - 1) * ITEMS_PER_PAGE,
-    activityPage * ITEMS_PER_PAGE
-  );
+    const localActivities = getLocalActivityLogs(currentUser.user_no)
+      .map(normalizeActivityRecord);
+    const localTotalPages = Math.ceil(localActivities.length / ITEMS_PER_PAGE);
+    const localStart = (activityPage - 1) * ITEMS_PER_PAGE;
+
+    setActivities(localActivities.slice(localStart, localStart + ITEMS_PER_PAGE));
+    setActivityTotal(localActivities.length);
+    setActivityTotalPages(localTotalPages);
+    setIsActivitiesLoading(false);
+  }, [currentUser?.user_no, activityPage, activityRefreshKey]);
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -230,9 +201,16 @@ export default function MyPage() {
   };
 
   const isAdmin = currentUser?.role === 'admin';
+  const isSocialAccount = Boolean(currentUser?.authProvider);
 
-  const handleLogout = () => {
-    authApi.logout();
+  const handleResetActivities = () => {
+    setActivityPage(1);
+    setActivityRefreshKey((current) => current + 1);
+    showToast('활동 이력을 최신 상태로 초기화했습니다.');
+  };
+
+  const handleLogout = async () => {
+    await authApi.logout();
     navigate('/login');
   };
 
@@ -241,7 +219,7 @@ export default function MyPage() {
     setEditForm({
       name: currentUser.name || '',
       email: currentUser.email || '',
-      phone: currentUser.phone || '',
+      phone: formatPhoneNumber(currentUser.phone || ''),
       dept: currentUser.dept || '',
       position: currentUser.position || '',
       assignedZone: currentUser.assignedZone || ''
@@ -280,21 +258,42 @@ export default function MyPage() {
       return;
     }
 
+    const name = editForm.name.trim();
+    const phone = normalizePhoneNumber(editForm.phone);
+    const email = editForm.email.trim();
+    const profilePayload = {
+      user_name: name,
+      user_phone: phone || null,
+    };
+
+    // 소셜 계정은 로그인 제공자가 관리하는 이메일을 수정하지 않는다.
+    if (!isSocialAccount) {
+      profilePayload.user_email = email;
+    }
+
     try {
-      await userApi.update(currentUser.user_no, {
-        user_name: editForm.name.trim(),
-        user_email: editForm.email.trim(),
-        user_phone: editForm.phone.replace(/-/g, '').trim() || null,
-      });
+      await userApi.update(currentUser.user_no, profilePayload);
       const updatedUser = {
         ...currentUser,
-        name: editForm.name.trim(),
-        email: editForm.email.trim(),
-        phone: editForm.phone.replace(/-/g, '').trim(),
+        name,
+        phone,
+        position: editForm.position.trim() || currentUser.position,
+        ...(isSocialAccount ? {} : { email }),
       };
       setCurrentUser(updatedUser);
       localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+      appendLocalActivityLog({
+        user_no: updatedUser.user_no,
+        activity_type: 'PROFILE_UPDATE',
+        type: 'system',
+        title: '프로필 정보 수정',
+        detail: isSocialAccount
+          ? '닉네임, 직책 또는 연락처 정보를 변경했습니다.'
+          : '이름, 이메일 또는 연락처 정보를 변경했습니다.',
+      });
       setIsEditProfileOpen(false);
+      setActivityPage(1);
+      setActivityRefreshKey((current) => current + 1);
       showToast('프로필 정보가 저장되었습니다.');
     } catch (error) {
       showToast(error.message || '프로필 저장에 실패했습니다.');
@@ -304,6 +303,10 @@ export default function MyPage() {
  // 비밀번호 변경 저장
 const handleSavePassword = async (e) => {
   e.preventDefault();
+  if (currentUser?.authProvider) {
+    showToast('소셜 로그인 계정은 해당 소셜 서비스에서 비밀번호를 관리합니다.');
+    return;
+  }
   if (!pwForm.currentPassword) {
     alert('현재 비밀번호를 입력해주세요.');
     return;
@@ -342,6 +345,15 @@ const handleSavePassword = async (e) => {
 
     setIsChangePasswordOpen(false);
     setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    appendLocalActivityLog({
+      user_no: currentUser.user_no,
+      activity_type: 'PASSWORD_CHANGE',
+      type: 'setting',
+      title: '비밀번호 변경',
+      detail: '계정 비밀번호를 변경했습니다.',
+    });
+    setActivityPage(1);
+    setActivityRefreshKey((current) => current + 1);
     setIsPasswordChangeNoticeOpen(true);
 
   } catch (error) {
@@ -352,11 +364,25 @@ const handleSavePassword = async (e) => {
 
   // 설정을 변경할 때의 핸들러
   const toggleSetting = (key) => {
-    setSettings(prev => {
-      const next = { ...prev, [key]: !prev[key] };
-      showToast('설정이 업데이트되었습니다.');
-      return next;
+    const nextValue = !settings[key];
+    const settingLabels = {
+      smsNotify: '긴급 SMS 알림',
+      emailNotify: '이메일 화재 리포트',
+      pushNotify: '브라우저 웹 푸시',
+      nightMode: '야간 모드',
+    };
+
+    setSettings(prev => ({ ...prev, [key]: nextValue }));
+    appendLocalActivityLog({
+      user_no: currentUser?.user_no,
+      activity_type: 'SETTING_UPDATE',
+      type: 'setting',
+      title: '알림 설정 변경',
+      detail: `${settingLabels[key] || '개인 설정'}을 ${nextValue ? '켜짐' : '꺼짐'}으로 변경했습니다.`,
     });
+    setActivityPage(1);
+    setActivityRefreshKey((current) => current + 1);
+    showToast('설정이 업데이트되었습니다.');
   };
 
   return (
@@ -370,58 +396,11 @@ const handleSavePassword = async (e) => {
         </div>
       )}
 
-      {/* 1. 상단 네비게이션 바 (GNB) */}
-      <header className="flex items-center justify-between px-6 h-14 border-b border-hairline shrink-0 bg-canvas z-20 sticky top-0">
-        <div className="flex items-center gap-3">
-          <Link to="/dashboard" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
-            <AlertTriangle className="w-5 h-5 text-ink" />
-            <span className="font-display text-heading-md tracking-tight">FireGuard</span>
-          </Link>
-
-          {/* 권한 표시 배지 */}
-          {isAdmin ? (
-            <span className="flex items-center gap-1.5 text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 font-semibold px-3 py-1 rounded-full border border-amber-500/30">
-              <ShieldCheck className="w-4 h-4" /> 관리자 권한
-            </span>
-          ) : (
-            <span className="text-xs bg-surface-soft text-mute px-2.5 py-1 rounded-full border border-hairline">
-              일반 관제회원
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-6">
-          <nav className="flex items-center gap-6 text-body-sm-strong text-body">
-            <span className="text-ink font-bold underline decoration-ink underline-offset-4 cursor-default">마이페이지</span>
-
-            <button onClick={() => navigate('/dashboard')} className="hover:text-ink transition-colors cursor-pointer">
-              CCTV 모니터링
-            </button>
-
-            {isAdmin && (
-              <button
-                onClick={() => navigate('/admin')}
-                className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-bold bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3 py-1 rounded-full transition-all text-xs cursor-pointer"
-              >
-                <span>관리자 페이지</span>
-              </button>
-            )}
-          </nav>
-
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-white font-bold bg-neutral-900 dark:bg-neutral-800 px-3 py-1 rounded-full border border-neutral-700 hidden sm:inline-flex items-center shadow-xs">
-              {currentUser?.name ? `${currentUser.name.replace(/\s*님$/, '')}님` : '사용자님'}
-            </span>
-            <button
-              onClick={handleLogout}
-              className="flex items-center gap-2 bg-primary text-on-primary px-4 h-[34px] rounded-full text-button-md hover:bg-ink-deep transition-colors focus:outline-none focus-visible:outline-none text-xs cursor-pointer"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>로그아웃</span>
-            </button>
-          </div>
-        </div>
-      </header>
+      <AppHeader
+        currentPage="mypage"
+        currentUser={currentUser}
+        onLogout={handleLogout}
+      />
 
       {/* 메인 컨텐츠 영역 */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-8 space-y-8">
@@ -448,13 +427,20 @@ const handleSavePassword = async (e) => {
               <Edit3 className="w-4 h-4 text-mute" />
               <span>프로필 수정</span>
             </button>
-            <button
-              onClick={() => setIsChangePasswordOpen(true)}
-              className="flex items-center gap-2 bg-primary text-on-primary hover:bg-ink-deep px-4 h-10 rounded-full text-body-sm font-medium transition-colors focus:outline-none cursor-pointer"
-            >
-              <Key className="w-4 h-4" />
-              <span>비밀번호 변경</span>
-            </button>
+            {isSocialAccount ? (
+              <span className="inline-flex items-center gap-2 px-4 h-10 rounded-full border border-hairline bg-surface-soft text-body-sm text-mute">
+                <Key className="w-4 h-4" />
+                <span>소셜 계정</span>
+              </span>
+            ) : (
+              <button
+                onClick={() => setIsChangePasswordOpen(true)}
+                className="flex items-center gap-2 bg-primary text-on-primary hover:bg-ink-deep px-4 h-10 rounded-full text-body-sm font-medium transition-colors focus:outline-none cursor-pointer"
+              >
+                <Key className="w-4 h-4" />
+                <span>비밀번호 변경</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -493,9 +479,6 @@ const handleSavePassword = async (e) => {
                     <User className="w-3.5 h-3.5" /> {currentUser?.dept || '관제 요원'}
                   </span>
                 )}
-                <span className="text-caption-sm text-mute border border-hairline px-2.5 py-0.5 rounded-full bg-surface-soft">
-                  ID: {currentUser?.id || '-'}
-                </span>
               </div>
 
               <p className="text-body-md text-mute flex items-center gap-2 flex-wrap">
@@ -533,7 +516,7 @@ const handleSavePassword = async (e) => {
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Phone className="w-4 h-4 text-mute" />
-                  <span>{currentUser?.phone || '연락처 미등록'}</span>
+                  <span>{formatPhoneNumber(currentUser?.phone) || '연락처 미등록'}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Calendar className="w-4 h-4 text-mute" />
@@ -591,13 +574,13 @@ const handleSavePassword = async (e) => {
                 <Video className="w-5 h-5 text-ink" />
                 <span>최근 등록 CCTV ({isCctvsLoading ? '조회중...' : `${Math.min(myCctvs.length, 3)} / ${myCctvs.length}대`})</span>
               </h3>
-              <p className="text-body-sm text-mute mt-0.5">최근 등록한 CCTV 3대의 상태를 확인합니다. 전체 모니터링은 대시보드에서 진행하세요.</p>
+              <p className="text-body-sm text-mute mt-0.5">최근 등록한 CCTV 3대의 상태를 확인합니다. 전체 영상과 지도는 실시간 관제에서 확인하세요.</p>
             </div>
             <button
-              onClick={() => navigate('/dashboard')}
+              onClick={() => navigate('/monitoring')}
               className="flex items-center gap-1.5 text-xs text-primary hover:text-ink font-semibold px-3 py-1.5 rounded-full border border-hairline hover:bg-surface-soft transition-colors shrink-0 self-start sm:self-auto cursor-pointer"
             >
-              <span>대시보드 지도에서 전체 확인</span>
+              <span>실시간 관제에서 전체 확인</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -669,9 +652,6 @@ const handleSavePassword = async (e) => {
                 <Bell className="w-5 h-5 text-ink" />
                 <h3 className="text-heading-md font-bold text-ink">화재 경보 & 알림 설정</h3>
               </div>
-              <span className="text-caption-sm text-mute bg-surface-soft px-2.5 py-1 rounded-full border border-hairline">
-                실시간 119 자동 연동
-              </span>
             </div>
 
             <div className="space-y-4">
@@ -729,23 +709,7 @@ const handleSavePassword = async (e) => {
                 </button>
               </div>
 
-              {/* 토글 4: 119 소방서 자동 신고 동의 */}
-              <div className="flex items-center justify-between p-3.5 bg-amber-500/5 border border-amber-500/20 rounded-xl">
-                <div className="flex items-start gap-3">
-                  <ShieldAlert className="w-5 h-5 text-amber-500 mt-0.5" />
-                  <div>
-                    <p className="text-body-sm font-semibold text-ink">119 소방서 자동 긴급 신고 연동</p>
-                    <p className="text-caption-sm text-mute">AI 화재 신뢰도 90% 이상 시 즉시 소방서 지능형 자동 신고</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => toggleSetting('autoNotify119')}
-                  className={`w-12 h-6 rounded-full transition-colors relative cursor-pointer focus:outline-none ${settings.autoNotify119 ? 'bg-amber-600' : 'bg-surface-soft border border-hairline'}`}
-                >
-                  <span className={`absolute top-1 w-4 h-4 rounded-full bg-canvas transition-transform ${settings.autoNotify119 ? 'right-1' : 'left-1'}`} />
-                </button>
-              </div>
+
 
             </div>
           </section>
@@ -757,32 +721,31 @@ const handleSavePassword = async (e) => {
                 <Activity className="w-5 h-5 text-ink" />
                 <h3 className="text-heading-md font-bold text-ink">내 활동 및 접속 이력</h3>
                 <span className="text-caption-sm text-mute font-mono bg-surface-soft px-2.5 py-0.5 rounded-full border border-hairline">
-                  총 {activities.length}건
+                  총 {activityTotal}건
                 </span>
               </div>
-
-              {/* 이력 전체 삭제 버튼 */}
               <button
                 type="button"
-                onClick={handleClearActivities}
-                disabled={activities.length === 0 || isDeletingActivities}
-                className="flex items-center gap-1.5 text-xs text-terminal-red hover:bg-terminal-red/10 border border-terminal-red/20 px-3 py-1.5 rounded-full transition-colors font-semibold cursor-pointer disabled:opacity-40 shrink-0 self-start sm:self-auto"
-                title="모든 활동 이력 삭제"
+                onClick={handleResetActivities}
+                disabled={isActivitiesLoading}
+                className="flex items-center gap-1.5 text-xs text-body hover:text-ink hover:bg-surface-soft border border-hairline px-3 py-1.5 rounded-full transition-colors font-semibold cursor-pointer disabled:opacity-40 shrink-0 self-start sm:self-auto"
+                title="활동 이력 목록을 최신 상태로 다시 불러오기"
               >
-                {isDeletingActivities ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="w-3.5 h-3.5" />
-                )}
-                <span>이력 전체 삭제</span>
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>새로고침</span>
               </button>
             </div>
 
             {/* 본문: 로딩 버퍼링 / 비어있음 / 5건씩 슬라이스된 목록 */}
-            {isActivitiesLoading || isDeletingActivities ? (
+            {isActivitiesLoading ? (
               <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl">
                 <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
-                <span className="text-xs font-semibold text-body">활동 이력 데이터를 처리 중입니다... (버퍼링)</span>
+                <span className="text-xs font-semibold text-body">활동 이력을 불러오는 중입니다.</span>
+              </div>
+            ) : activityError ? (
+              <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl text-center">
+                <AlertTriangle className="w-8 h-8 text-terminal-red/60" />
+                <span className="text-xs font-medium">{activityError}</span>
               </div>
             ) : activities.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-mute space-y-2 bg-surface-soft/30 border border-hairline rounded-xl text-center">
@@ -792,11 +755,12 @@ const handleSavePassword = async (e) => {
             ) : (
               <div className="space-y-4">
                 <div className="space-y-3">
-                  {currentPaginatedActivities.map((act) => (
+                  {activities.map((act) => (
                     <div key={act.id} className="flex items-start justify-between gap-3.5 p-3.5 rounded-xl border border-hairline/60 hover:bg-surface-soft transition-colors group">
                       <div className="flex items-start gap-3.5 min-w-0 flex-1">
                         <div className="p-2 rounded-lg bg-surface-soft border border-hairline text-ink shrink-0 mt-0.5">
                           {act.type === 'login' && <Monitor className="w-4 h-4 text-blue-500" />}
+                          {act.type === 'logout' && <LogOut className="w-4 h-4 text-mute" />}
                           {act.type === 'fire' && <AlertTriangle className="w-4 h-4 text-red-500" />}
                           {act.type === 'false_alarm' && <ShieldAlert className="w-4 h-4 text-amber-500" />}
                           {act.type === 'admin' && <ShieldCheck className="w-4 h-4 text-amber-500" />}
@@ -814,24 +778,15 @@ const handleSavePassword = async (e) => {
                         </div>
                       </div>
 
-                      {/* 개별 이력 삭제 버튼 */}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteSingleActivity(act.id)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-mute hover:text-terminal-red rounded-lg transition-all cursor-pointer shrink-0"
-                        title="이 항목 삭제"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
                     </div>
                   ))}
                 </div>
 
                 {/* 5건씩 조회 컨트롤러 바 */}
-                {totalActivityPages > 1 && (
+                {activityTotalPages > 1 && (
                   <div className="pt-3 border-t border-hairline/60 flex items-center justify-between text-xs">
                     <span className="text-mute font-mono text-[11px]">
-                      {activityPage} / {totalActivityPages} 페이지 (총 {activities.length}건)
+                      {activityPage} / {activityTotalPages} 페이지 (총 {activityTotal}건)
                     </span>
 
                     <div className="flex items-center gap-1.5">
@@ -845,7 +800,7 @@ const handleSavePassword = async (e) => {
                         <span>이전</span>
                       </button>
 
-                      {Array.from({ length: totalActivityPages }, (_, i) => i + 1).map((pageNum) => (
+                      {Array.from({ length: activityTotalPages }, (_, i) => i + 1).map((pageNum) => (
                         <button
                           key={pageNum}
                           type="button"
@@ -862,8 +817,8 @@ const handleSavePassword = async (e) => {
 
                       <button
                         type="button"
-                        onClick={() => setActivityPage(prev => Math.min(totalActivityPages, prev + 1))}
-                        disabled={activityPage === totalActivityPages}
+                        onClick={() => setActivityPage(prev => Math.min(activityTotalPages, prev + 1))}
+                        disabled={activityPage === activityTotalPages}
                         className="px-2.5 py-1 rounded-lg border border-hairline bg-canvas hover:bg-surface-soft disabled:opacity-40 transition-colors flex items-center gap-1 cursor-pointer font-semibold"
                       >
                         <span>다음</span>
@@ -921,7 +876,6 @@ const handleSavePassword = async (e) => {
                   key={selectedMyCctv.id}
                   streamUrl={selectedMyCctv.stream_url || selectedMyCctv.cctv_stream_url || 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4'}
                   cctvName={selectedMyCctv.name}
-                  isFire={selectedMyCctv.status === 'fire'}
                 />
               </div>
 
@@ -982,11 +936,11 @@ const handleSavePassword = async (e) => {
                 type="button"
                 onClick={() => {
                   setSelectedMyCctv(null);
-                  navigate('/dashboard');
+                  navigate('/monitoring');
                 }}
                 className="flex items-center gap-1.5 text-xs text-primary font-semibold hover:underline cursor-pointer"
               >
-                <span>CCTV 모니터링 화면으로 보기</span>
+                <span>실시간 관제 화면으로 보기</span>
                 <ExternalLink className="w-3.5 h-3.5" />
               </button>
               <button
@@ -1001,9 +955,7 @@ const handleSavePassword = async (e) => {
         </div>
       )}
 
-      {/* ------------------------------------------------------------- */}
-      {/* 팝업 모달 1: 프로필 수정 다이얼로그 (ui_modal_rules 수칙 준수) */}
-      {/* ------------------------------------------------------------- */}
+
       {isEditProfileOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
           {/* Outer Card with Explicit Width constraints */}
@@ -1029,7 +981,9 @@ const handleSavePassword = async (e) => {
             <form onSubmit={handleSaveProfile} className="flex flex-col shrink-0">
               <div className="p-6 max-h-[70vh] overflow-y-auto space-y-4">
                 <div>
-                  <label className="block text-body-sm font-semibold text-ink mb-1">이름</label>
+                  <label className="block text-body-sm font-semibold text-ink mb-1">
+                    {isSocialAccount ? '닉네임' : '이름'}
+                  </label>
                   <input
                     type="text"
                     value={editForm.name}
@@ -1039,39 +993,20 @@ const handleSavePassword = async (e) => {
                   />
                 </div>
 
-                <div>
-                  <label className="block text-body-sm font-semibold text-ink mb-1">이메일 주소</label>
-                  <input
-                    type="email"
-                    value={editForm.email}
-                    onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                    className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-body-sm font-semibold text-ink mb-1">연락처 (전화번호)</label>
-                  <input
-                    type="text"
-                    value={editForm.phone}
-                    onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
-                    className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
-                    placeholder="010-0000-0000"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
+                {!isSocialAccount && (
                   <div>
-                    <label className="block text-body-sm font-semibold text-ink mb-1">소속 부서</label>
+                    <label className="block text-body-sm font-semibold text-ink mb-1">이메일 주소</label>
                     <input
-                      type="text"
-                      value={editForm.dept}
-                      onChange={(e) => setEditForm({ ...editForm, dept: e.target.value })}
+                      type="email"
+                      value={editForm.email}
+                      onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
                       className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
-                      placeholder="예: 관제1팀, 시설팀"
+                      required
                     />
                   </div>
+                )}
+
+                {isSocialAccount && (
                   <div>
                     <label className="block text-body-sm font-semibold text-ink mb-1">직책 (사용자 입력)</label>
                     <input
@@ -1082,7 +1017,44 @@ const handleSavePassword = async (e) => {
                       placeholder="예: 관제팀장, 보안담당관"
                     />
                   </div>
+                )}
+
+                <div>
+                  <label className="block text-body-sm font-semibold text-ink mb-1">연락처 (전화번호)</label>
+                  <input
+                    type="text"
+                    value={formatPhoneNumber(editForm.phone)}
+                    onChange={(e) => setEditForm({ ...editForm, phone: formatPhoneNumber(e.target.value) })}
+                    className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
+                    placeholder="010-0000-0000"
+                    inputMode="tel"
+                  />
                 </div>
+
+                {!isSocialAccount && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-body-sm font-semibold text-ink mb-1">소속 부서</label>
+                      <input
+                        type="text"
+                        value={editForm.dept}
+                        onChange={(e) => setEditForm({ ...editForm, dept: e.target.value })}
+                        className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
+                        placeholder="예: 관제1팀, 시설팀"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-body-sm font-semibold text-ink mb-1">직책 (사용자 입력)</label>
+                      <input
+                        type="text"
+                        value={editForm.position}
+                        onChange={(e) => setEditForm({ ...editForm, position: e.target.value })}
+                        className="block box-border w-full h-11 px-4 bg-canvas border border-hairline rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
+                        placeholder="예: 관제팀장, 보안담당관"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <div className="p-3.5 bg-surface-soft border border-hairline rounded-xl space-y-1">
                   <span className="block text-caption-sm text-mute font-semibold">📹 내가 설치 / 등록한 CCTV 카메라 ({myCctvs.length}대 - 클릭시 실시간 재생)</span>
@@ -1105,39 +1077,6 @@ const handleSavePassword = async (e) => {
                   </div>
                 </div>
 
-                {/* 👑 관리자 승인 요청 섹션 (일반 사용자일 경우에만 노출) */}
-                {!isAdmin && (
-                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-2 mt-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-bold text-xs">
-                        <span>👑</span>
-                        <span>관리자 권한 승격 신청</span>
-                      </div>
-                      {currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING' ? (
-                        <span className="text-[11px] font-bold text-amber-500 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 animate-pulse">
-                          ⏳ 승인 대기 중
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="text-caption-sm text-ink/80 leading-relaxed">
-                      최고 관리자에게 승인 요청을 전송합니다. 관리자가 승인하면 관리자 전용 대시보드 및 시스템 설정 권한으로 승격됩니다.
-                    </p>
-
-                    <button
-                      type="button"
-                      onClick={handleRequestAdmin}
-                      disabled={currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING'}
-                      className="w-full h-10 mt-1 bg-amber-500 hover:bg-amber-600 active:scale-[0.99] text-white font-bold text-xs rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <span>👑</span>
-                      <span>
-                        {currentUser.adminRequested || currentUser.adminRequestStatus === 'PENDING'
-                          ? '관리자 승인 요청됨 (대기 중)'
-                          : '관리자 승인 요청 보내기'}
-                      </span>
-                    </button>
-                  </div>
-                )}
               </div>
 
               {/* Modal Footer (shrink-0) */}

@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useDaumPostcodePopup } from 'react-daum-postcode';
 
-import { userApi } from '../api';
+import { userApi, authApi } from '../api';
+
+const EMAIL_VERIFICATION_DURATION = 5 * 60;
+const ADDRESS_REQUIRED_MESSAGE = '주소 검색을 완료해주세요.';
 
 const Signup = () => {
   const navigate = useNavigate();
@@ -17,13 +20,22 @@ const Signup = () => {
     phone: '',
     address: '',
     detailAddress: '',
-    gender: '',
+    gender: '선택안함',
     birthYear: '',
     birthMonth: '',
     birthDay: '',
   });
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isIdChecked, setIsIdChecked] = useState(false);
+  const [checkedUserId, setCheckedUserId] = useState('');
+  const [isIdChecking, setIsIdChecking] = useState(false);
+  const [idCheckMessage, setIdCheckMessage] = useState('');
+  const [isEmailVerificationRequested, setIsEmailVerificationRequested] = useState(false);
+  const [isEmailVerificationConfirmed, setIsEmailVerificationConfirmed] = useState(false);
+  const [emailVerificationTimeLeft, setEmailVerificationTimeLeft] = useState(EMAIL_VERIFICATION_DURATION);
+  const [emailVerificationCode, setEmailVerificationCode] = useState('');
+  const [addressErrorMsg, setAddressErrorMsg] = useState('');
 
   const openPostcode = useDaumPostcodePopup();
 
@@ -31,6 +43,156 @@ const Signup = () => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
+
+  const handleIdChange = (e) => {
+    const { value } = e.target;
+    setFormData(prev => ({ ...prev, id: value }));
+
+    if (value.trim() !== checkedUserId) {
+      setIsIdChecked(false);
+      setCheckedUserId('');
+      setIdCheckMessage('');
+    }
+  };
+
+  const handleCheckId = async () => {
+    const userId = formData.id.trim();
+
+    setErrorMsg('');
+    setIsIdChecked(false);
+    setCheckedUserId('');
+    setIdCheckMessage('');
+
+    if (!userId) {
+      setIdCheckMessage('아이디를 입력해주세요.');
+      return;
+    }
+
+    setIsIdChecking(true);
+    try {
+      const response = await authApi.checkUserId(userId);
+
+      if (response?.available === false) {
+        setIdCheckMessage('중복된 아이디입니다.');
+        return;
+      }
+
+      if (response?.available !== true) {
+        throw new Error('아이디 중복확인 응답을 확인할 수 없습니다.');
+      }
+
+      setCheckedUserId(userId);
+      setIsIdChecked(true);
+      setIdCheckMessage('사용 가능한 아이디입니다.');
+    } catch (err) {
+      console.error('아이디 중복확인 실패:', err);
+      setCheckedUserId('');
+      
+      // 💡 [수정] 백엔드가 400 에러와 함께 보낸 {"detail": "..."} 메시지를 꺼내오도록 변경!
+      const errorMsg = err.response?.data?.detail || err.message || '아이디 중복확인에 실패했습니다.';
+      setIdCheckMessage(errorMsg);
+      
+    } finally {
+      setIsIdChecking(false);
+    }
+  };
+
+  const handlePhoneChange = (e) => {
+    setFormData(prev => ({
+      ...prev,
+      phone: e.target.value.replace(/[^0-9]/g, '').slice(0, 11),
+    }));
+  };
+
+  useEffect(() => {
+    if (!isEmailVerificationRequested || emailVerificationTimeLeft <= 0) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setEmailVerificationTimeLeft(prevTime => Math.max(prevTime - 1, 0));
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [isEmailVerificationRequested, emailVerificationTimeLeft]);
+
+  // const handleRequestEmailVerification = () => {
+  //   setErrorMsg('');
+  //   setIsEmailVerificationRequested(true);
+  //   setEmailVerificationTimeLeft(EMAIL_VERIFICATION_DURATION);
+  //   setEmailVerificationCode('');
+  // };
+const handleRequestEmailVerification = async () => {
+  setErrorMsg('');
+
+  const emailDomainStr = formData.emailDomain === '직접입력' ? formData.customDomain : formData.emailDomain;
+  const fullEmail = formData.emailId && emailDomainStr ? `${formData.emailId}@${emailDomainStr}` : null;
+
+  if (!fullEmail) {
+    setErrorMsg('이메일을 올바르게 입력해주세요.');
+    return;
+  }
+
+  try {
+    await authApi.requestEmailVerify(fullEmail);
+
+    setIsEmailVerificationRequested(true);
+    setIsEmailVerificationConfirmed(false);
+    setEmailVerificationTimeLeft(EMAIL_VERIFICATION_DURATION);
+    setEmailVerificationCode('');
+    alert('인증번호가 발송되었습니다.');
+  } catch (err) {
+    console.error('이메일 전송 실패:', err);
+    setErrorMsg(err.message || '이메일 전송에 실패했습니다.');
+  }
+};
+
+  const handleConfirmEmailVerification = async () => {
+    if (emailVerificationTimeLeft <= 0) {
+      setErrorMsg('인증 시간이 만료되었습니다. 인증번호를 다시 요청해주세요.');
+      return;
+    }
+
+    if (emailVerificationCode.length !== 6) {
+      setErrorMsg('인증번호 6자리를 입력해주세요.');
+      return;
+    }
+
+    setErrorMsg('');
+
+    // 이메일 문자열 조합
+    const emailDomainStr = formData.emailDomain === '직접입력' ? formData.customDomain : formData.emailDomain;
+    const fullEmail = `${formData.emailId}@${emailDomainStr}`;
+
+    try {
+      // 📌 백엔드의 /verify-code API 호출
+      const response = await fetch("http://localhost:5000/api/auth/verify-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+        email: fullEmail, 
+        code: emailVerificationCode 
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setErrorMsg(data.error || '인증번호가 일치하지 않습니다.');
+        return;
+      }
+
+      // 검증 성공 시
+      setIsEmailVerificationConfirmed(true);
+      alert('이메일 인증이 완료되었습니다.');
+
+    } catch (err) {
+      console.error('인증 확인 실패:', err);
+      setErrorMsg('서버 통신 중 오류가 발생했습니다.');
+    }
+  };
+
+  const formattedEmailVerificationTime = `${String(Math.floor(emailVerificationTimeLeft / 60)).padStart(2, '0')}:${String(emailVerificationTimeLeft % 60).padStart(2, '0')}`;
 
   const handleCompletePostcode = (data) => {
     let fullAddress = data.address;
@@ -46,6 +208,10 @@ const Signup = () => {
       fullAddress += extraAddress !== '' ? ` (${extraAddress})` : '';
     }
 
+    setAddressErrorMsg('');
+    setErrorMsg((previousMessage) => (
+      previousMessage === ADDRESS_REQUIRED_MESSAGE ? '' : previousMessage
+    ));
     setFormData(prev => ({ ...prev, address: fullAddress }));
   };
 
@@ -53,18 +219,44 @@ const Signup = () => {
     openPostcode({ onComplete: handleCompletePostcode });
   };
 
+  const validateAddress = () => {
+    if (formData.address.trim()) {
+      setAddressErrorMsg('');
+      return true;
+    }
+
+    setAddressErrorMsg(ADDRESS_REQUIRED_MESSAGE);
+    setErrorMsg(ADDRESS_REQUIRED_MESSAGE);
+    return false;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
+
+    if (!validateAddress()) {
+      return;
+    }
+
+    if (!isIdChecked || checkedUserId !== formData.id.trim()) {
+      setErrorMsg('아이디 중복확인을 완료해주세요.');
+      return;
+    }
 
     if (formData.password !== formData.passwordConfirm) {
       setErrorMsg('비밀번호와 비밀번호 확인이 일치하지 않습니다.');
       return;
     }
+    if (!isEmailVerificationConfirmed) {
+      setErrorMsg('이메일 인증을 완료해주세요.');
+      return;
+    }
 
+    const address = formData.address.trim();
     const emailDomainStr = formData.emailDomain === 'type' ? formData.customDomain : formData.emailDomain;
     const fullEmail = formData.emailId && emailDomainStr ? `${formData.emailId}@${emailDomainStr}` : null;
     const rawPhone = formData.phone.replace(/[^0-9]/g, '');
+    const detailAddress = formData.detailAddress.trim();
 
     setIsLoading(true);
     try {
@@ -76,12 +268,17 @@ const Signup = () => {
         user_email: fullEmail,
         user_phone: rawPhone || null,
         user_gender: formData.gender || null,
-        user_address: formData.address ? `${formData.address} ${formData.detailAddress}`.trim() : null,
+        user_address: [address, detailAddress].filter(Boolean).join(' '),
       });
       alert('회원가입이 완료되었습니다. 로그인 해주세요.');
       navigate('/login');
     } catch (err) {
       console.error('회원가입 실패:', err);
+      if (err.status === 409 || err.code === 'DUPLICATE_USER_ID') {
+        setIsIdChecked(false);
+        setCheckedUserId('');
+        setIdCheckMessage('중복된 아이디입니다.');
+      }
       setErrorMsg(err.message || '회원가입에 실패했습니다.');
     } finally {
       setIsLoading(false);
@@ -109,22 +306,42 @@ const Signup = () => {
       <div className="w-full max-w-[420px]">
         <form className="space-y-5" onSubmit={handleSubmit}>
           {errorMsg && (
-            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-500 text-xs font-semibold text-center">
+            <div role="alert" aria-live="assertive" className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-500 text-xs font-semibold text-center">
               {errorMsg}
             </div>
           )}
 
           {/* 아이디 */}
           <div className="flex flex-col space-y-1.5">
-            <input
-              type="text"
-              name="id"
-              value={formData.id}
-              onChange={handleChange}
-              className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
-              placeholder="아이디"
-              required
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                name="id"
+                value={formData.id}
+                onChange={handleIdChange}
+                className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
+                placeholder="아이디"
+                autoComplete="username"
+                required
+              />
+              <button
+                type="button"
+                onClick={handleCheckId}
+                disabled={isIdChecking}
+                className="h-[40px] flex-shrink-0 px-4 bg-surface-soft border border-hairline text-ink rounded-full text-button-md whitespace-nowrap hover:bg-hairline active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 transition-all"
+              >
+                {isIdChecking ? '확인 중...' : '중복확인'}
+              </button>
+            </div>
+            {idCheckMessage && (
+              <p
+                className={`px-2 text-caption-sm ${isIdChecked ? 'text-emerald-600' : 'text-red-500'}`}
+                role="status"
+                aria-live="polite"
+              >
+                {idCheckMessage}
+              </p>
+            )}
           </div>
 
           {/* 비밀번호 */}
@@ -167,30 +384,29 @@ const Signup = () => {
           </div>
 
           {/* 이메일 */}
-          <div className="flex flex-col space-y-1.5 pt-1">
+          <div className="flex flex-col space-y-1.5">
             <label className="text-body-sm-strong text-ink px-2">이메일</label>
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center gap-2">
               <input
                 type="text"
                 name="emailId"
                 value={formData.emailId}
                 onChange={handleChange}
-                className="flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all w-0"
+                className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
                 placeholder="이메일"
                 required
               />
               <span className="text-body-md text-ink flex-shrink-0">@</span>
               {formData.emailDomain === '직접입력' ? (
-                <div className="flex items-center space-x-1.5 flex-1">
+                <div className="min-w-0 flex flex-1 items-center gap-1.5">
                   <input
                     type="text"
                     name="customDomain"
                     value={formData.customDomain}
                     onChange={handleChange}
-                    className="flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all w-0"
+                    className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
                     placeholder="도메인 (예: kakao.com)"
                     required
-                    autoFocus
                   />
                   <div className="relative w-[40px] h-[40px] flex-shrink-0">
                     <div className="w-full h-full rounded-full border border-hairline bg-surface-soft text-ink flex items-center justify-center pointer-events-none hover:bg-hairline transition-all">
@@ -209,30 +425,32 @@ const Signup = () => {
                           customDomain: val === '직접입력' ? prev.customDomain : ''
                         }));
                       }}
-                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                      className="absolute inset-0 w-full h-full cursor-pointer bg-canvas text-ink opacity-0"
+                      style={{ color: '#000000', backgroundColor: '#ffffff', colorScheme: 'light' }}
                       title="도메인 선택"
                     >
-                      <option value="직접입력">직접입력</option>
-                      <option value="naver.com">naver.com</option>
-                      <option value="gmail.com">gmail.com</option>
-                      <option value="daum.net">daum.net</option>
+                      <option className="bg-canvas text-ink" value="직접입력">직접입력</option>
+                      <option className="bg-canvas text-ink" value="naver.com">naver.com</option>
+                      <option className="bg-canvas text-ink" value="gmail.com">gmail.com</option>
+                      <option className="bg-canvas text-ink" value="daum.net">daum.net</option>
                     </select>
                   </div>
                 </div>
               ) : (
-                <div className="relative flex-1">
+                <div className="relative min-w-0 flex-1">
                   <select
                     name="emailDomain"
                     value={formData.emailDomain}
                     onChange={handleChange}
                     className="w-full h-[40px] pl-4 pr-8 bg-canvas border border-hairline rounded-full text-body-md text-ink focus:outline-none focus:border-ink transition-all appearance-none cursor-pointer"
+                    style={{ color: '#000000', backgroundColor: '#ffffff', colorScheme: 'light' }}
                     required
                   >
-                    <option value="" disabled>선택해주세요</option>
-                    <option value="naver.com">naver.com</option>
-                    <option value="gmail.com">gmail.com</option>
-                    <option value="daum.net">daum.net</option>
-                    <option value="직접입력">직접입력</option>
+                    <option className="bg-canvas text-ink" value="" disabled>선택해주세요</option>
+                    <option className="bg-canvas text-ink" value="naver.com">naver.com</option>
+                    <option className="bg-canvas text-ink" value="gmail.com">gmail.com</option>
+                    <option className="bg-canvas text-ink" value="daum.net">daum.net</option>
+                    <option className="bg-canvas text-ink" value="직접입력">직접입력</option>
                   </select>
                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-mute">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
@@ -240,28 +458,80 @@ const Signup = () => {
                 </div>
               )}
             </div>
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <p className="text-caption-sm text-body">입력한 이메일로 인증번호를 보내요.</p>
+              <button
+                type="button"
+                onClick={handleRequestEmailVerification}
+                className="h-[40px] flex-shrink-0 px-5 bg-surface-soft border border-hairline text-ink rounded-full text-button-md whitespace-nowrap hover:bg-hairline active:scale-[0.98] transition-all"
+              >
+                인증요청
+              </button>
+            </div>
+
+            {isEmailVerificationRequested && (
+              <div className="mt-1 space-y-2 rounded-2xl border border-hairline bg-surface-soft p-3 animate-fadeIn">
+                <div className="flex items-center justify-between px-1 text-caption-sm">
+                  <span className="text-body">인증번호가 이메일로 발송되었습니다.</span>
+                  <span className={`font-mono font-semibold ${emailVerificationTimeLeft === 0 ? 'text-mute' : 'text-red-500'}`} aria-live="polite">
+                    {formattedEmailVerificationTime}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={emailVerificationCode}
+                    onChange={(e) => {
+                      setEmailVerificationCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6));
+                      setIsEmailVerificationConfirmed(false);
+                    }}
+                    className="min-w-0 flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
+                    placeholder="이메일 인증번호 6자리"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleRequestEmailVerification}
+                    className="h-[40px] px-5 bg-surface-soft border border-hairline text-ink rounded-full text-button-md whitespace-nowrap hover:bg-hairline active:scale-[0.98] transition-all flex-shrink-0"
+                  >
+                    재전송
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleConfirmEmailVerification}
+                  disabled={emailVerificationCode.length !== 6 || emailVerificationTimeLeft === 0}
+                  className={`w-full h-[40px] rounded-full text-button-md transition-all ${
+                    isEmailVerificationConfirmed
+                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-600'
+                      : 'bg-primary text-on-primary hover:bg-ink-deep active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50'
+                  }`}
+                >
+                  {isEmailVerificationConfirmed ? '인증 완료' : '인증번호 확인'}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 휴대폰 */}
           <div className="flex flex-col space-y-1.5">
             <label className="text-body-sm-strong text-ink px-2">휴대폰</label>
-            <div className="flex items-center space-x-2">
-              <input
-                type="text"
-                name="phone"
-                value={formData.phone}
-                onChange={handleChange}
-                className="flex-1 h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all w-0"
-                placeholder="숫자만입력해주세요"
-                required
-              />
-              <button
-                type="button"
-                className="h-[40px] px-5 bg-surface-soft border border-hairline text-ink rounded-full text-button-md whitespace-nowrap hover:bg-hairline active:scale-[0.98] transition-all flex-shrink-0"
-              >
-                인증요청
-              </button>
-            </div>
+            <input
+              type="text"
+              name="phone"
+              value={formData.phone}
+              onChange={handlePhoneChange}
+              className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-sm text-ink placeholder:text-xs placeholder:text-mute focus:outline-none focus:border-ink transition-all"
+              placeholder="- 없이 숫자만 입력해주세요"
+              inputMode="numeric"
+              maxLength={11}
+              required
+            />
           </div>
 
           {/* 주소 */}
@@ -273,9 +543,11 @@ const Signup = () => {
                 name="address"
                 value={formData.address}
                 readOnly
-                className="flex-1 h-[40px] px-4 bg-surface-soft border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none transition-all cursor-not-allowed w-0"
+                className={`flex-1 h-[40px] px-4 bg-surface-soft border rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none transition-all cursor-not-allowed w-0 ${addressErrorMsg ? 'border-red-500' : 'border-hairline'}`}
                 placeholder="주소 검색 버튼을 눌러주세요"
                 required
+                aria-required="true"
+                aria-invalid={Boolean(addressErrorMsg)}
               />
               <button
                 type="button"
@@ -296,9 +568,13 @@ const Signup = () => {
                   onChange={handleChange}
                   className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus:border-ink transition-all"
                   placeholder="상세 주소를 입력해주세요 (예: 101동 202호)"
-                  autoFocus
                 />
               </div>
+            )}
+            {addressErrorMsg && (
+              <p role="alert" aria-live="polite" className="px-2 text-caption-sm font-semibold text-red-500">
+                {addressErrorMsg}
+              </p>
             )}
           </div>
 
@@ -387,9 +663,15 @@ const Signup = () => {
           <div className="pt-6 pb-2">
             <button
               type="submit"
-              className="w-full h-[48px] bg-primary text-on-primary rounded-full text-button-md text-[16px] font-medium hover:bg-ink-deep active:scale-[0.98] transition-all duration-200"
+              onClick={(event) => {
+                if (!validateAddress()) {
+                  event.preventDefault();
+                }
+              }}
+              disabled={isLoading || isIdChecking}
+              className="w-full h-[48px] bg-primary text-on-primary rounded-full text-button-md text-[16px] font-medium hover:bg-ink-deep active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
             >
-              회원가입
+              {isLoading ? '가입 중...' : '회원가입'}
             </button>
           </div>
 

@@ -16,7 +16,7 @@ function isHlsUrl(url) {
   return url.includes('.m3u8');
 }
 
-export default function CctvPlayer({ streamUrl, cctvName, isFire = false, className = '' }) {
+export default function CctvPlayer({ streamUrl, cctvName, className = '' }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -148,16 +148,7 @@ export default function CctvPlayer({ streamUrl, cctvName, isFire = false, classN
         }}
       />
 
-      {/* 4. 화재 탐지 감지 오버레이 */}
-      {isFire && (
-        <div className="absolute top-1/4 left-1/4 w-1/3 h-1/3 border-2 border-red-500 bg-red-500/20 flex items-start p-2 pointer-events-none z-10 animate-pulse rounded-lg shadow-lg">
-          <span className="bg-red-600 text-white text-[11px] px-2.5 py-0.5 font-extrabold rounded-md shadow-md flex items-center gap-1">
-            🔥 FIRE DETECTED (98.4%)
-          </span>
-        </div>
-      )}
-
-      {/* 5. LIVE 라벨 및 CCTV 카메라 명칭 */}
+      {/* LIVE 라벨 및 CCTV 카메라 명칭 */}
       <div className="absolute top-3 left-3 z-10 flex items-center gap-2 pointer-events-none">
         <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-600/90 text-white font-mono text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-sm">
           <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />

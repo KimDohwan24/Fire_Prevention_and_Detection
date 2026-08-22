@@ -7,6 +7,8 @@ import pytest
 
 from conftest import make_alert, make_event, make_media, make_report
 
+import db
+
 
 # ---------- 목록: 기본 ----------
 
@@ -308,3 +310,24 @@ def test_event_dates_are_iso_strings(client, admin_headers):
     body = r.get_json()
     assert "T" in body["event_detected_at"]
     assert "T" in body["event_first_detected_at"]
+
+
+def test_event_detail_reports_expose_dispatch_fields(client, admin_headers):
+    """이벤트 상세의 신고 항목에도 출동 정보가 실린다."""
+    event_no = make_event()
+    report_no = make_report(event_no, status="ACCEPTED")
+    db.execute(
+        """
+        UPDATE report_119
+        SET report_status = 'DISPATCHED', report_dispatched_at = now(),
+            report_dispatch = %s::jsonb
+        WHERE report_no = %s
+        """,
+        ('{"dispatch_no": "D-1"}', report_no),
+    )
+
+    r = client.get(f"/api/events/{event_no}", headers=admin_headers)
+
+    report = r.get_json()["reports"][0]
+    assert report["report_dispatched_at"] is not None
+    assert report["report_dispatch"]["dispatch_no"] == "D-1"

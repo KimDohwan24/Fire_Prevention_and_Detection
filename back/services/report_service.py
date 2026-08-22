@@ -19,6 +19,7 @@
 - 점검 모드(event_is_test) 이벤트는 신고하지 않는다.
 """
 import base64
+import io
 import json
 import logging
 import time
@@ -61,8 +62,10 @@ def nearest_agencies(cctv_no: int) -> list[dict]:
     """
     return db.query(_NEAREST_AGENCIES_SQL, (cctv_no,))
 
-# 진행 중으로 간주하는 상태 (부분 유니크 인덱스와 동일한 집합)
-ACTIVE_STATUSES = ("SENDING", "ACCEPTED")
+# 진행 중으로 간주하는 상태 (부분 유니크 인덱스 UX_report_119_active 와 동일한 집합)
+# ⚠️ 이 튜플과 인덱스 조건이 어긋나면, 출동 중인 화재에 신고가 한 번 더 나가거나
+#    INSERT 가 유니크 위반(23505)으로 터진다. 바꿀 때는 db/schema.sql 도 같이 바꾼다.
+ACTIVE_STATUSES = ("SENDING", "ACCEPTED", "DISPATCHED")
 
 
 def report_uid(event_no: int) -> str:
@@ -76,6 +79,32 @@ def report_uid(event_no: int) -> str:
     로그에서 신고 ID 만 보고 이벤트를 찾을 수 있다.
     """
     return f"FG-{event_no}"
+
+
+def _report_address(event: dict) -> str:
+    """119 에 보낼 주소를 정한다.
+
+    우선순위:
+      1. cctv_address — CCTV 등록 시 좌표를 역지오코딩해 둔 값 (도로명 또는 지번)
+      2. 좌표 문자열 — "위도 37.5665, 경도 126.978 (본관 정문 앞)"
+      3. cctv_location — 좌표조차 없을 때의 마지막 수단
+
+    2번이 가짜 주소보다 안전하고 빈 칸보다 쓸모 있다. 사람이 읽고 지도에 찍을 수
+    있어서 신고가 무용지물이 되지 않는다. 괄호 안은 설치 위치 설명이고, 없으면
+    괄호째 뺀다.
+    """
+    if event.get("cctv_address"):
+        return event["cctv_address"]
+
+    lat, lng = event.get("cctv_lat"), event.get("cctv_lng")
+    if lat is None or lng is None:
+        return event.get("cctv_location") or ""
+
+    # numeric(10,7) 이라 그대로 쓰면 "37.5665000" 처럼 0 이 붙는다 — 사람이 읽을 형태로
+    text = f"위도 {float(lat):g}, 경도 {float(lng):g}"
+    if event.get("cctv_location"):
+        text += f" ({event['cctv_location']})"
+    return text
 
 
 def _real_post_report(endpoint: str, payload: dict) -> requests.Response:
@@ -135,10 +164,17 @@ def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
     돌려준다 — 이미지 때문에 신고가 막히면 안 된다.
     """
     try:
-        import io
-
         from PIL import Image, ImageDraw
+    except ImportError:
+        # Pillow 는 requirements.txt 에 선언된 필수 의존성이다. 여기서 아래 일반
+        # except 로 함께 삼키면 "설치가 빠졌다"가 경고 한 줄로 묻혀서, 상자 없는
+        # 사진이 119 로 나가도 아무도 모른다. 신고 자체는 계속 보내되(이미지 때문에
+        # 신고가 막히면 안 된다) 원인만은 error 로 분명히 남긴다.
+        logger.error("Pillow 가 설치돼 있지 않다 — 검출 상자 없이 원본으로 전송한다. "
+                     "requirements.txt 를 다시 설치할 것")
+        return content
 
+    try:
         im = Image.open(io.BytesIO(content)).convert("RGB")
         draw = ImageDraw.Draw(im)
         width, height = im.size
@@ -252,7 +288,7 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
             RETURNING report_no
             """,
             (event["event_no"], agency["agency_no"], sequence, trigger_reason,
-             event["cctv_location"], round(agency["distance_km"], 3)),
+             _report_address(event), round(agency["distance_km"], 3)),
         )
     except psycopg2.errors.UniqueViolation:
         # 다른 경로(에스컬레이션 vs 사용자 확인)가 먼저 신고를 진행 중 — 그걸 돌려준다
@@ -276,7 +312,9 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
         # 신고 ID — 재전송·승계 내내 같은 값. 받는 쪽의 중복 접수 방지 키다.
         "report_uid": report_uid(event["event_no"]),
         "event_no": event["event_no"],
-        "address": event["cctv_location"],
+        # 소방서가 출동할 주소. cctv_location(설치 위치 설명)이 아니다 — 그건 place 로 간다.
+        "address": _report_address(event),
+        "place": event["cctv_location"],
         "lat": float(event["cctv_lat"]),
         "lng": float(event["cctv_lng"]),
         "event_class": event["event_class"],
@@ -289,6 +327,31 @@ def _attempt_agency(event: dict, agency: dict, sequence: int,
         # 대표 프레임(bbox 검출 좌표 포함) — 접수 서버가 화면에 띄울 수 있게 싣는다
         "image_base64": event["image_base64"],
         "image_detections": event["image_detections"],
+        # 출동 통지를 되쏠 주소. 받는 쪽이 우리 주소를 미리 알지 않아도 되게 한다.
+        "callback_url": f"{config.PUBLIC_BASE_URL}/api/reports/dispatch",
+        # 카메라 정보 — 접수자가 어느 카메라 건인지 특정하고 화면을 띄울 수 있게
+        "cctv": {
+            "cctv_no": event["cctv_no"],
+            "name": event["cctv_name"],
+            "location": event["cctv_location"],
+            "address": event["cctv_address"],
+            "lat": float(event["cctv_lat"]),
+            "lng": float(event["cctv_lng"]),
+            "stream_url": event["cctv_stream_url"],
+            "width": event["cctv_width"],
+            "height": event["cctv_height"],
+            "status": event["cctv_status"],
+        },
+        # 판정 근거 — 몇 프레임이 쌓여 확정됐나
+        "detection": {
+            "frames": event["event_detected_frames"],
+            "threshold_frames": event["event_threshold_frames"],
+        },
+        # 이 시도의 수신 기관. 승계하면 달라지므로 payload 조립이 기관 루프 안에 있다.
+        "agency": {
+            "name": agency["agency_name"],
+            "distance_km": round(agency["distance_km"], 3),
+        },
     }
     max_attempts = config.MAX_REPORT_ATTEMPTS
     endpoint = agency["agency_endpoint"]
@@ -396,8 +459,11 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
     event = db.query_one(
         """
         SELECT e.event_no, e.event_class, e.event_confidence, e.event_is_test,
-               e.event_first_detected_at,
-               c.cctv_no, c.cctv_location, c.cctv_lat, c.cctv_lng
+               e.event_first_detected_at, e.event_detected_frames,
+               e.event_threshold_frames,
+               c.cctv_no, c.cctv_name, c.cctv_location, c.cctv_address,
+               c.cctv_lat, c.cctv_lng, c.cctv_stream_url,
+               c.cctv_width, c.cctv_height, c.cctv_status
         FROM fire_event e
         JOIN cctv c ON c.cctv_no = e.cctv_no
         WHERE e.event_no = %s
@@ -428,7 +494,15 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
                        event_no)
         return None
 
+    # 시도 대상 자르기. 기본(REPORT_MAX_AGENCIES=1)은 가장 가까운 한 곳뿐이라
+    # 아래 루프가 한 바퀴만 돌고 끝난다 — 기관 승계가 일어나지 않는다.
+    # 0 이면 자르지 않고 후보 전체를 순서대로 시도한다(원래 승계 동작).
+    if config.REPORT_MAX_AGENCIES:
+        agencies = agencies[:config.REPORT_MAX_AGENCIES]
+
     # 바깥 루프: 기관 승계 (sequence 1, 2, ...)
+    # 후보가 한 곳뿐이면 is_last 가 곧바로 True 라, 그 기관이 재시도를 소진하면
+    # NO_RESPONSE(승계 예정)가 아니라 FAILED(전송 실패)로 닫힌다. 의도된 동작이다.
     result = None
     for sequence, agency in enumerate(agencies, start=1):
         is_last = sequence == len(agencies)

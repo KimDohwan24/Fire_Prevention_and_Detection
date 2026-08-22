@@ -1,17 +1,23 @@
 """관리자 계정 API — 명세서 3번 섹션.
 
-GET  /api/users             목록 (ADMIN)
-POST /api/users             등록 (ADMIN)
-PUT  /api/users/<user_no>   수정 · 정지 · 탈퇴 (ADMIN 전체 / 일반 사용자는 본인만)
+GET  /api/users                        목록 (ADMIN)
+POST /api/users                        등록 (공개 — 가입 화면이 토큰 없이 부른다)
+                                       ADMIN 토큰으로 부르면 user_role 을 지정할 수
+                                       있고, 그 외에는 VIEWER 로 고정된다
+PUT  /api/users/<user_no>              수정 · 정지 · 탈퇴 (ADMIN 전체 / 일반 사용자는 본인만)
+PUT  /api/users/password               본인 비밀번호 변경 (로그인 필요)
+GET  /api/users/<user_no>/activities   활동이력 (ADMIN 전체 / 일반 사용자는 본인만)
+                                       본인 것만 필요하면 GET /api/me/activities 를 쓴다
 """
 import bcrypt
 from flask import Blueprint, g, jsonify, request
 
 import db
-from auth import admin_required, login_required
+from auth import admin_required, caller_role, login_required
 from errors import ApiError
+from services import activity_service
 from utils.pagination import get_page_params, paged_response
-from utils.validation import validate_password, validate_phone, validate_user_id
+from utils.validation import validate_password, validate_phone, validate_user_id, validate_user_name
 
 bp = Blueprint("users", __name__)
 
@@ -50,7 +56,7 @@ def list_users():
 
 
 @bp.post("")
-@admin_required
+# @admin_required
 def create_user():
     body = request.get_json(silent=True) or {}
     for field in ("user_id", "user_pw", "user_name", "user_role"):
@@ -61,9 +67,19 @@ def create_user():
     validate_user_id(body["user_id"])
     validate_password(body["user_pw"], user_id=body["user_id"])
     validate_phone(body, "user_phone")
-
+    validate_user_name(body["user_name"])
     if db.query_one("SELECT 1 FROM users WHERE user_id = %s", (body["user_id"],)):
         raise ApiError(409, "DUPLICATE_USER_ID", "이미 사용 중인 아이디입니다.")
+
+    # 권한은 요청자가 스스로 정할 수 없다.
+    #
+    # 이 엔드포인트는 원래 admin_required 였는데, 가입 화면이 토큰 없이 부르게 되면서
+    # 데코레이터가 제거됐다. 그 상태로는 아무나 user_role='ADMIN' 을 실어 보내
+    # **인증 없이 관리자 계정을 만들 수 있다** (2026-08-19 실측: 토큰 없이 201).
+    # 인증을 다시 걸면 가입이 막히므로, 대신 관리자 토큰으로 부른 경우에만 본문의
+    # user_role 을 받아들이고 그 외에는 VIEWER 로 고정한다.
+    # 관리자가 남을 승격시키는 경로는 PUT /api/users/<user_no> 로 따로 있다.
+    user_role = body["user_role"] if caller_role() == "ADMIN" else "VIEWER"
 
     pw_hash = bcrypt.hashpw(body["user_pw"].encode(), bcrypt.gensalt()).decode()
     row = db.execute_returning(
@@ -75,7 +91,7 @@ def create_user():
         """,
         (
             body["user_id"], pw_hash, body["user_name"],
-            body.get("user_email"), body.get("user_phone"), body["user_role"],
+            body.get("user_email"), body.get("user_phone"), user_role,
             body.get("user_gender"), body.get("user_address"),
         ),
     )
@@ -106,9 +122,17 @@ def update_user(user_no: int):
 
     if "user_pw" in body:
         # 비밀번호 작성규칙 — 대상 사용자의 아이디 포함 여부는 DB 조회로 확인한다
-        target = db.query_one("SELECT user_id FROM users WHERE user_no = %s", (user_no,))
+        target = db.query_one(
+            "SELECT user_id, user_provider FROM users WHERE user_no = %s", (user_no,)
+        )
         if not target:
             raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+        # 소셜 계정에 비밀번호를 심으면 CK_USERS_LOCAL_PW 는 통과하지만 정작 로그인은
+        # SOCIAL_ACCOUNT 로 계속 막힌다 — 아무 효과 없는 값만 남으므로 미리 거절한다
+        if target["user_provider"] != "LOCAL":
+            raise ApiError(400, "SOCIAL_ACCOUNT",
+                           "소셜 로그인 계정에는 비밀번호를 설정할 수 없습니다.",
+                           field="user_pw")
         validate_password(body["user_pw"], user_id=target["user_id"])
         sets.append("user_pw = %s")
         params.append(bcrypt.hashpw(body["user_pw"].encode(), bcrypt.gensalt()).decode())
@@ -116,6 +140,11 @@ def update_user(user_no: int):
     # 탈퇴 처리: WITHDRAWN 이 들어오면 탈퇴 일시를 함께 기록한다 (명세서 3번)
     if body.get("user_status") == "WITHDRAWN":
         sets.append("user_withdrawal_at = now()")
+
+    # 정지·탈퇴는 즉시 효력을 가져야 한다. 이 줄이 없으면 관리자가 계정을 정지해도
+    # 이미 로그인해 있던 사람은 토큰 만료(기본 12시간)까지 그대로 쓴다.
+    if body.get("user_status") in ("SUSPENDED", "WITHDRAWN"):
+        sets.append("user_token_valid_from = now()")
 
     if not sets:
         raise ApiError(400, "BAD_REQUEST", "수정할 필드가 없습니다.")
@@ -127,6 +156,16 @@ def update_user(user_no: int):
     )
     if affected == 0:
         raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+
+    # 이력은 '누가 무엇을 바꿨나'로 남긴다 — 대상은 수정당한 계정(user_no),
+    # 주체는 요청한 사람(g.user)이다. 관리자가 남의 계정을 고친 경우 둘이 다르다.
+    changed = [col for col in UPDATABLE if col in body]
+    if changed:
+        activity_service.record(g.user["user_no"], activity_service.PROFILE_UPDATED,
+                                target_no=user_no, detail=", ".join(changed))
+    if "user_pw" in body:
+        activity_service.record(g.user["user_no"], activity_service.PASSWORD_CHANGED,
+                                target_no=user_no, detail="관리자 변경")
     return jsonify({"user_no": user_no})
 
 
@@ -144,9 +183,21 @@ def change_password():
     user_no = g.user.get("user_no")
 
     # DB에서 현재 사용자의 아이디와 저장된 비밀번호 해시 조회
-    user = db.query_one("SELECT user_id, user_pw FROM users WHERE user_no = %s", (user_no,))
+    user = db.query_one(
+        "SELECT user_id, user_pw, user_provider FROM users WHERE user_no = %s",
+        (user_no,),
+    )
     if not user:
         raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+
+    # 소셜 계정은 user_pw 가 NULL 이라 아래 .encode() 에서 그대로 터진다(500).
+    # OAuth 로그인이 붙기 전에는 토큰을 못 얻어 도달 불가능한 경로였지만 이제는
+    # 아니다. 바꿀 비밀번호가 애초에 없다는 사실을 400 으로 알려준다 —
+    # PUT /api/users/{user_no} 의 user_pw 가드와 같은 code·field 를 쓴다.
+    if user["user_provider"] != "LOCAL":
+        raise ApiError(400, "SOCIAL_ACCOUNT",
+                       "소셜 로그인 계정은 비밀번호를 변경할 수 없습니다.",
+                       field="user_pw")
 
     # 1. 현재 비밀번호 검증 (bcrypt.checkpw 사용)
     if not bcrypt.checkpw(current_password.encode(), user["user_pw"].encode()):
@@ -167,3 +218,26 @@ def change_password():
     )
 
     return jsonify({"message": "비밀번호가 성공적으로 변경되었습니다."})
+
+
+@bp.get("/<int:user_no>/activities")
+@login_required
+def list_user_activities(user_no: int):
+    """지정한 사용자의 활동이력을 최신순으로 돌려준다.
+
+    권한은 PUT 과 같은 규칙이다 — ADMIN 은 전체, 일반 사용자는 본인 것만.
+    활동 이력은 감사 자료라 아무나 남의 것을 들여다볼 수 있으면 안 된다.
+
+    본인 이력만 필요하면 GET /api/me/activities 를 쓰는 편이 낫다 — 아래 두 검사가
+    통째로 필요 없어진다. 이 경로는 관리자가 남의 이력을 볼 때를 위해 남겨 둔 것이다.
+    """
+    if g.user.get("user_role") != "ADMIN" and g.user.get("user_no") != user_no:
+        raise ApiError(403, "FORBIDDEN", "본인 계정의 활동이력만 조회할 수 있습니다.")
+
+    # 이력이 0건인 것과 사용자가 없는 것은 다르다 — 빈 배열로 뭉개면 프론트가
+    # 오타 난 user_no 를 '활동 없음'으로 표시하게 된다
+    if db.query_one("SELECT 1 FROM users WHERE user_no = %s", (user_no,)) is None:
+        raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+
+    page, size = get_page_params()
+    return jsonify(activity_service.list_for_user(user_no, page, size))

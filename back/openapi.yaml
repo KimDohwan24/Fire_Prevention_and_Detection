@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: 파이어가드 API
-  version: 0.7.0
+  version: 0.10.1
   description: |
     CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
 
@@ -21,6 +21,9 @@ info:
       검증 실패(400)는 어느 입력 탓인지 가리킬 수 있으면 `field` 가 하나 더 붙는다
       (`{ "code": "BAD_REQUEST", "message": "...", "field": "user_pw" }`) —
       400 은 `code` 가 전부 `BAD_REQUEST` 라, 폼 입력칸에 메시지를 붙일 때 이걸 쓴다
+      ⚠️ 예외 셋 — 가입 화면 보조 경로는 본문 모양이 다르다: `GET /api/auth/check-id` 와
+      `POST /api/email/verify-confirm` 은 `{ "detail": "..." }`, `POST /api/auth/verify-code` 는
+      `{ "error": "..." }` 로 400 을 낸다 (각 항목 참고)
     - 목록 중 페이징이 있는 것은 `items / page / size / total_count / total_pages`
       봉투로 감싸 내려간다 (`/api/cctvs`, `/api/agencies` 는 페이징 없이 `items` 만)
 
@@ -51,6 +54,8 @@ tags:
     description: 인증 (로그인·세션 복원)
   - name: users
     description: 관리자 계정
+  - name: me
+    description: 내 정보 — 토큰 주인의 것만 다룬다 (user_no 를 URL 로 받지 않는다)
   - name: cctvs
     description: 연동 카메라
   - name: its
@@ -77,7 +82,8 @@ paths:
         - users
       summary: 관리자 권한 승인 요청
       description: |
-        일반 회원이 관리자 권한 승인을 요청한다. 계정 상태가 `USER` 에서 `PENDING` (승인 대기)으로 변경된다.
+        일반 회원이 관리자 권한 승인을 요청한다. 계정 상태가 `ACTIVE` 에서 `PENDING` (승인 대기)으로 변경된다.
+        권한(`user_role`)은 `VIEWER` 그대로이고, `PENDING` 인 동안에도 로그인·계정 찾기는 정상 동작한다.
       security:
         - bearerAuth: []
       responses:
@@ -188,6 +194,10 @@ paths:
         아이디·비밀번호로 JWT 를 발급받는다. 정지(SUSPENDED)·탈퇴(WITHDRAWN)
         계정은 비밀번호가 맞아도 403 이다.
         로그인에는 비밀번호 작성규칙을 적용하지 않는다 (기존 계정 보장).
+
+        소셜 로그인으로 가입한 계정은 비밀번호가 없어서 이 경로로는 절대 들어올 수
+        없다 — 400 `SOCIAL_ACCOUNT` 로 돌려보낸다. 어느 서비스로 가입했는지까지는
+        알려주지 않으니, 프론트는 소셜 로그인 버튼들을 다시 보여주면 된다.
       requestBody:
         required: true
         content:
@@ -217,19 +227,58 @@ paths:
                   user:
                     $ref: "#/components/schemas/LoginUser"
         "400":
-          description: 필수값 누락 또는 형식 오류 (`BAD_REQUEST`)
+          description: 필수값 누락·형식 오류(`BAD_REQUEST`) 또는 소셜 계정(`SOCIAL_ACCOUNT`)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-              example:
-                code: BAD_REQUEST
-                message: user_id 는 필수입니다.
-                field: user_id
+              examples:
+                missing_field:
+                  summary: 필수값 누락
+                  value:
+                    code: BAD_REQUEST
+                    message: user_id 는 필수입니다.
+                    field: user_id
+                social:
+                  summary: 소셜 로그인 계정
+                  value:
+                    code: SOCIAL_ACCOUNT
+                    message: 소셜 로그인으로 가입한 계정입니다. 해당 서비스로 로그인해주세요.
         "401":
           $ref: "#/components/responses/InvalidCredentials"
         "403":
           $ref: "#/components/responses/AccountBlocked"
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: 로그아웃 (토큰 폐기 + 이력 기록)
+      description: |
+        **토큰을 폐기하고** 활동이력에 `LOGOUT` 을 1행 남긴다. 두 가지를 다 한다.
+
+        폐기는 사용자 단위다 — **그 사람의 다른 기기도 함께 끊긴다.** 이후 기존
+        토큰으로 보낸 요청은 401 `TOKEN_REVOKED` 를 받는다. 로그아웃 직후 바로
+        다시 로그인하는 것은 정상 동작한다.
+
+        이 엔드포인트를 불러야만 둘 다 일어난다. 프론트가 저장한 토큰만 지우고
+        이걸 건너뛰면 서버 쪽 토큰은 만료(기본 12시간)까지 살아있고 `LOGOUT` 행도
+        쌓이지 않는다. 브라우저를 그냥 닫은 경우도 마찬가지로 잡히지 않는다.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 폐기·기록 완료
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              example:
+                message: 로그아웃되었습니다.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /api/auth/me:
     get:
@@ -435,6 +484,487 @@ paths:
                     message: 비밀번호는 영문자·숫자·특수문자를 모두 포함해 8자 이상이어야 합니다.
                     field: user_pw
 
+  /api/auth/check-id:
+    get:
+      tags: [auth]
+      summary: 아이디 중복·형식 확인 (공개 — 가입 화면의 중복확인 버튼)
+      description: |
+        가입 화면이 토큰 없이 부른다 (`Signup.py`). 쿼리 `user_id` 가 비었거나,
+        영문·숫자 외 문자가 섞였거나, 이미 있는 아이디면 **전부 400** 이다 —
+        중복도 409 가 아니라 400 이고, 본문은 공통 `{ code, message }` 가 아니라
+        `{ "detail": "..." }` 다. 프론트(`api.js` 의 `checkUserId`)는 그 `detail` 을
+        그대로 안내 문구로 쓴다.
+
+        여기서 보는 형식은 **영문·숫자만**이라 가입(`POST /api/users`)의 규칙
+        (5~20자, 영문 소문자 시작, `_`·`-` 허용)보다 느슨하다. 여기서 통과해도
+        가입에서 `BAD_REQUEST` 가 날 수 있으니 최종 판정은 가입 응답을 따른다.
+
+        정적 경로라 `/api/auth/{provider}` 보다 먼저 잡힌다 (`/api/auth/me` 와 같은 이유).
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          description: 중복 확인할 아이디
+          schema:
+            type: string
+            example: fireguard01
+      responses:
+        "200":
+          description: 사용 가능한 아이디
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 사용 가능한 아이디입니다.
+                  available:
+                    type: boolean
+                    example: true
+        "400":
+          description: 빈 값 · 형식 위반 · 이미 존재 (본문은 `{ detail }` 하나다)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
+                    description: 사용자에게 그대로 보여줄 수 있는 한글 메시지
+              examples:
+                empty:
+                  summary: 아이디 없음
+                  value:
+                    detail: 아이디를 입력해주세요.
+                format:
+                  summary: 영문·숫자 외 문자 포함
+                  value:
+                    detail: 아이디는 영문과 숫자만 사용할 수 있습니다.
+                duplicate:
+                  summary: 이미 존재하는 아이디
+                  value:
+                    detail: 이미 존재하는 아이디입니다.
+
+  /api/auth/email/verify-request:
+    post:
+      tags: [auth]
+      summary: 회원가입 이메일 인증 — 인증번호 발송
+      description: |
+        가입 화면이 토큰 없이 부른다. 6자리 숫자 인증번호를 만들어 `email` 로 보낸다
+        (SMTP 는 `.env` 의 `SMTP_SERVER`·`SMTP_PORT`·`SENDER_EMAIL`·`SENDER_PASSWORD`).
+        받은 번호는 `/api/auth/verify-code`(가입 화면이 쓰는 쪽, 5분 만료) 또는
+        `/api/auth/email/verify-confirm`(만료 없음) 으로 확인한다.
+
+        - ⚠️ **인증번호는 응답 본문에 실리지 않는다.** 개발 중에는 서버 콘솔에
+          `[DEBUG] 이메일: …, 인증번호: …` 로 찍히므로 그것으로 확인한다.
+        - 인증번호는 **서버 메모리**에만 있다 — 서버를 재시작하면 사라지고, 같은
+          이메일로 다시 요청하면 새 번호로 덮어써진다.
+        - `email` 은 비어 있지만 않으면 된다 (형식 검사 없음).
+        - 가입(`POST /api/users`)은 **이메일 인증 여부를 확인하지 않는다.** 인증은
+          화면 흐름을 막는 용도일 뿐 서버가 강제하지는 않는다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: newuser@fg.kr
+      responses:
+        "200":
+          description: 발송 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 인증번호가 발송되었습니다.
+        "400":
+          description: 필수값 누락 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: BAD_REQUEST
+                message: email 는 필수입니다.
+                field: email
+        "500":
+          description: 이메일 발송 실패 (`EMAIL_SEND_FAILED`) — SMTP 설정 누락·로그인 실패·발송 거부
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: EMAIL_SEND_FAILED
+                message: 이메일 전송에 실패했습니다.
+
+  /api/auth/email/verify-confirm:
+    post:
+      tags: [auth]
+      summary: 회원가입 이메일 인증 — 인증번호 확인 (만료 없음)
+      description: |
+        `/api/auth/email/verify-request` 로 받은 인증번호를 확인한다. 맞으면 1회용으로
+        소모되어 같은 번호로 다시 부르면 400 이다.
+
+        `/api/auth/verify-code` 와 하는 일이 같지만 **만료 시간이 없고**(서버 재시작이나
+        재요청으로 덮어쓰기 전까지 유효) 에러가 공통 `{ code, message }` 형식이다.
+        프론트 `api.js` 의 `confirmEmailVerify` 가 이 경로를 가리키고, 가입 화면
+        (`Signup.jsx`)은 `/api/auth/verify-code` 를 직접 부른다 — 둘 중 하나만 쓰면 된다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: newuser@fg.kr
+                code:
+                  type: string
+                  description: 이메일로 받은 6자리 숫자
+                  example: "482913"
+      responses:
+        "200":
+          description: 인증 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 이메일 인증이 완료되었습니다.
+                  verified:
+                    type: boolean
+                    example: true
+        "400":
+          description: 필수값 누락 또는 인증번호 불일치
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                required:
+                  summary: 필수값 누락
+                  value:
+                    code: BAD_REQUEST
+                    message: code 는 필수입니다.
+                    field: code
+                invalid_code:
+                  summary: 인증번호가 틀렸거나 발급된 적 없음 (이미 쓴 번호도 같다)
+                  value:
+                    code: INVALID_VERIFY_CODE
+                    message: 인증번호가 일치하지 않거나 만료되었습니다.
+
+  /api/auth/verify-code:
+    post:
+      tags: [auth]
+      summary: 회원가입 이메일 인증 — 인증번호 확인 (5분 만료 · 가입 화면이 쓰는 쪽)
+      description: |
+        `/api/auth/email/verify-request` 로 받은 인증번호를 확인한다. 발송 시각에서
+        **5분**이 지나면 만료되고, 맞으면 1회용으로 소모된다. 가입 화면(`Signup.jsx`)이
+        부르는 확인 경로가 이것이다.
+
+        ⚠️ 에러 본문이 공통 `{ code, message }` 가 아니라 **`{ "error": "..." }`** 다.
+        상황별로 문구만 다르고 상태 코드는 전부 400 이라, 프론트는 `error` 문구를
+        그대로 띄운다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: newuser@fg.kr
+                code:
+                  type: string
+                  description: 이메일로 받은 6자리 숫자 (문자열로 보낸다 — 숫자로 보내면 불일치로 처리된다)
+                  example: "482913"
+      responses:
+        "200":
+          description: 인증 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 이메일 인증이 완료되었습니다.
+        "400":
+          description: 필수값 누락 · 발급 안 됨 · 만료 · 불일치 (본문은 `{ error }` 하나다)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error:
+                    type: string
+                    description: 사용자에게 그대로 보여줄 수 있는 한글 메시지
+              examples:
+                required:
+                  summary: 이메일·인증번호 중 빈 것이 있음
+                  value:
+                    error: 이메일과 인증번호를 모두 입력해주세요.
+                not_requested:
+                  summary: 발급된 적 없거나 이미 소모·만료 처리된 이메일
+                  value:
+                    error: 인증번호가 요청되지 않았거나 만료된 이메일입니다.
+                expired:
+                  summary: 발송 후 5분 경과
+                  value:
+                    error: 인증 시간이 만료되었습니다. 다시 요청해주세요.
+                mismatch:
+                  summary: 인증번호 불일치
+                  value:
+                    error: 인증번호가 일치하지 않습니다.
+
+  /api/auth/{provider}:
+    get:
+      tags: [auth]
+      summary: 소셜 로그인 — 시작
+      description: |
+        프로바이더 동의화면으로 **302** 한다. 프론트는
+        `window.location.assign('/api/auth/kakao')` 한 줄이면 되고 `state` 를
+        보관할 필요도 없다 (서버가 발급해 URL 에 싣고 콜백에서 대조한다).
+
+        소셜 로그인은 **이 방식 하나뿐이다.** 프론트가 `code` 를 받아 백엔드에
+        POST 하던 SPA/JSON 방식은 걷어냈다 — 아무도 부르지 않는 로그인 경로를
+        남겨 두면 인증 표면만 넓어진다.
+
+        동의화면에 싣는 `redirect_uri` 는
+        `{OAUTH_CALLBACK_BASE}/api/auth/{provider}/callback`(백엔드 자신)이다.
+        개발자 콘솔에 등록할 주소도 **이것 하나뿐이고**, 글자 하나라도 다르면
+        프로바이더가 `redirect_uri_mismatch` 로 돌려보낸다.
+
+        실패해도 JSON 을 주지 않는다 — 브라우저가 주소창째로 이동해 온 곳이라
+        JSON 은 사용자 화면에 원시 텍스트로 뜬다. 지원하지 않는 프로바이더
+        (`UNSUPPORTED_PROVIDER`)·키 미설정(`OAUTH_NOT_CONFIGURED`)도 콜백과 같은
+        방식으로 프론트에 302 하며, 코드는 프래그먼트의 `oauth_error` 에 실린다.
+
+        ⚠️ 경로 모양이 `/api/auth/me` 와 겹치지만 정적 경로가 우선하므로 `/me` 는
+        그대로 동작한다. 대신 `/api/auth` 아래에 동적 세그먼트로 시작하는 GET 을
+        더 추가하면 서로 잡아먹는다.
+      parameters:
+        - $ref: "#/components/parameters/OauthProvider"
+      responses:
+        "302":
+          description: |
+            동의화면(정상) 또는 프론트(지원하지 않는 프로바이더·키 미설정)로 이동.
+            본문은 없다.
+          headers:
+            Location:
+              description: |
+                프로바이더 동의화면 주소. `redirect_uri` 는 백엔드 콜백을 가리키고
+                `state` 가 실려 있다. 실패 시에는
+                `{OAUTH_REDIRECT_BASE}/#oauth_error=<code>` 가 된다.
+              schema:
+                type: string
+              example: https://kauth.kakao.com/oauth/authorize?response_type=code&client_id=...&redirect_uri=http%3A%2F%2Flocalhost%3A5000%2Fapi%2Fauth%2Fkakao%2Fcallback&state=...
+
+  /api/auth/{provider}/callback:
+    get:
+      tags: [auth]
+      summary: 소셜 로그인 — 프로바이더 콜백
+      description: |
+        프로바이더가 **사용자의 브라우저를 여기로 되돌려보낸다.** 프론트가 직접
+        부르는 API 가 아니다 — 개발자 콘솔에 등록하는 주소가 곧 이 경로다.
+
+        백엔드가 `code` 를 토큰·사용자정보로 바꾸고 계정을 찾거나 만든 뒤
+        (`user_role: VIEWER`, `user_status: ACTIVE`, 비밀번호 없음) 우리 JWT 를
+        발급해 프론트로 302 한다. 관제 권한(`ADMIN`)이 필요하면 관리자가 따로
+        올려준다.
+
+        ⚠️ **이메일이 같은 일반 계정과 자동으로 연결되지 않는다.** 프로바이더가 그
+        이메일의 소유를 실제로 검증했는지 보장할 수 없어서다. 검증하지 않는 곳에
+        피해자의 이메일로 가입해 로그인하면 우리 쪽 계정을 그대로 가져가게 된다.
+        그래서 `admin@fg.kr` 로 쓰는 계정이 이미 있어도 **별개 계정**이 생긴다.
+        계정 두 개를 합치는 것은 본인 확인을 거친 별도 기능이어야 할 문제라
+        이 API 의 범위 밖이다.
+
+        비밀번호가 없는 계정이라 `PUT /api/users/password` 와
+        `/api/auth/password-reset/*` 는 쓸 수 없다 (400 `SOCIAL_ACCOUNT`).
+        로그아웃(`POST /api/auth/logout`)은 일반 계정과 똑같이 동작한다.
+
+        **성공·실패 모두 302 이고 본문은 없다.** 브라우저가 응답을 따라오는
+        중이라 JSON 을 주면 사용자에게 원시 JSON 이 보인다.
+
+        결과는 프론트 주소의 **프래그먼트(`#`)** 에 실린다:
+          - 성공 → `{OAUTH_REDIRECT_BASE}/#access_token=<JWT>`
+          - 실패 → `{OAUTH_REDIRECT_BASE}/#oauth_error=<code>`
+
+        쿼리스트링(`?`)이 아니라 프래그먼트인 이유: 쿼리는 웹서버·프록시 접근로그에
+        쌓이고 다음 요청의 `Referer` 헤더로도 새어 나가지만, 프래그먼트는 브라우저가
+        서버로 보내지 않는다. 실리는 것이 로그인 토큰이라 그 차이가 곧 유출 여부다.
+
+        **사용자 정보는 싣지 않는다.** 프론트는 받은 토큰으로 `GET /api/auth/me` 를
+        부르면 된다 (URL 에 개인정보를 넣지 않는다).
+
+        `oauth_error` 에 들어가는 값:
+        `ACCESS_DENIED`(사용자가 동의화면에서 취소) ·
+        `UNSUPPORTED_PROVIDER` · `OAUTH_NOT_CONFIGURED` ·
+        `INVALID_OAUTH_STATE`(state 위조·만료, 약 10분) ·
+        `OAUTH_PROVIDER_ERROR`(프로바이더 통신 실패, `code` 누락 포함) ·
+        `ACCOUNT_SUSPENDED` · `ACCOUNT_WITHDRAWN` ·
+        `DUPLICATE_USER_ID`(합성한 `user_id` 가 다른 계정과 겹쳤다 — 자동으로 이름을
+        바꿔 만들지 않는다. 계정이 조용히 늘어나는 것보다 사람이 보는 편이 낫다).
+        문자열은 다른 API 가 JSON `code` 로 쓰는 것과 같은 것을 쓴다.
+      parameters:
+        - $ref: "#/components/parameters/OauthProvider"
+        - name: code
+          in: query
+          required: false
+          description: 프로바이더가 발급한 authorization code (사용자가 거부하면 오지 않는다)
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          description: 시작 라우트가 URL 에 실어 보낸 값. 서버가 HMAC 으로 대조한다
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          description: |
+            프로바이더가 알려오는 오류. `access_denied` 는 사용자가 취소한 것이라
+            `ACCESS_DENIED` 로, 나머지는 `OAUTH_PROVIDER_ERROR` 로 안내한다.
+          schema:
+            type: string
+          example: access_denied
+      responses:
+        "302":
+          description: 프론트로 이동 (성공·실패 모두). 본문은 없다.
+          headers:
+            Location:
+              description: |
+                `{OAUTH_REDIRECT_BASE}/#access_token=<JWT>` 또는
+                `{OAUTH_REDIRECT_BASE}/#oauth_error=<code>`.
+              schema:
+                type: string
+              example: http://localhost:5173/#access_token=eyJhbGciOiJIUzI1NiIs...
+
+  # ---------------------------------------------------------------- 회원가입 이메일 인증 — 옛 경로 (Signup.py)
+  /api/email/verify-request:
+    post:
+      tags: [auth]
+      summary: 회원가입 이메일 인증 — 인증번호 발송 (옛 경로)
+      description: |
+        `Signup.py` 에 남아 있는 이전 경로다. `/api/auth/email/verify-request` 와
+        같은 일을 하지만 **저장소가 따로라 서로 호환되지 않는다** — 여기서 받은
+        번호는 `/api/email/verify-confirm` 으로만 확인된다. 프론트는 이 경로를
+        부르지 않으며(`/api/auth/email/*` 을 쓴다), 새로 붙일 때도 그쪽을 쓴다.
+
+        - SMTP 계정이 코드에 고정돼 있어 `.env` 설정을 따르지 않는다.
+        - 필수값 검증이 없다. `email` 이 비어도 400 이 아니라 발송 단계에서
+          `INTERNAL_ERROR` 500 이 난다.
+        - 인증번호는 응답에 실리지 않고 서버 콘솔에만 찍힌다. 만료 시간은 없다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: newuser@fg.kr
+      responses:
+        "200":
+          description: 발송 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 인증번호가 발송되었습니다.
+        "500":
+          description: 이메일 발송 실패 또는 `email` 누락 (`INTERNAL_ERROR`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: INTERNAL_ERROR
+                message: 서버 내부 오류가 발생했습니다.
+
+  /api/email/verify-confirm:
+    post:
+      tags: [auth]
+      summary: 회원가입 이메일 인증 — 인증번호 확인 (옛 경로)
+      description: |
+        `/api/email/verify-request` 로 받은 인증번호를 확인한다 (`Signup.py`).
+        맞으면 1회용으로 소모된다. 틀리면 400 인데 본문이 공통 형식이 아니라
+        `{ "detail": "..." }` 다. `/api/auth/email/verify-request` 로 받은 번호는
+        여기서 확인되지 않는다 (저장소가 다르다).
+
+        여기서 인증한 결과는 `Signup.py` 의 가입 핸들러만 보는데, `POST /api/users` 는
+        먼저 등록된 `user_routes` 쪽이 받으므로 **가입에는 아무 영향이 없다.**
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: newuser@fg.kr
+                code:
+                  type: string
+                  description: 이메일로 받은 6자리 숫자
+                  example: "482913"
+      responses:
+        "200":
+          description: 인증 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 이메일 인증이 완료되었습니다.
+                  verified:
+                    type: boolean
+                    example: true
+        "400":
+          description: 인증번호 불일치 또는 발급된 적 없음 (본문은 `{ detail }` 하나다)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
+                    description: 사용자에게 그대로 보여줄 수 있는 한글 메시지
+              example:
+                detail: 인증번호가 일치하지 않거나 만료되었습니다.
+
   # ---------------------------------------------------------------- 계정
   /api/users:
     get:
@@ -470,15 +1000,21 @@ paths:
           $ref: "#/components/responses/Forbidden"
     post:
       tags: [users]
-      summary: 계정 등록 (ADMIN)
+      summary: 계정 등록 (공개 — 가입 화면이 토큰 없이 부른다)
       description: |
+        **인증이 없는 경로다.** 가입 화면이 토큰을 갖기 전에 부르기 때문이다.
+
+        그래서 `user_role` 은 요청자가 정할 수 없다 — **ADMIN 토큰을 실어 보낸
+        경우에만** 본문의 값이 반영되고, 그 외에는 무엇을 보내든 `VIEWER` 로
+        고정된다. 이 방어가 없으면 누구나 `user_role: "ADMIN"` 을 보내 관리자
+        계정을 만들 수 있다. 남을 승격시키는 것은 `PUT /api/users/{user_no}` 다.
+
         아이디·비밀번호 작성규칙을 여기서만 검사한다.
         - `user_id`: 5~20자, 영문 소문자 시작, 소문자·숫자·`_`·`-`
         - `user_pw`: 영문+숫자+특수문자 3종 포함 8~64자.
           같은 문자 3연속·연속 문자열(1234, abcd)·키보드 배열(qwer)·아이디 포함 금지
         - `user_phone`: 하이픈 없이 숫자만 (`01012345678`)
-      security:
-        - bearerAuth: []
+      security: []
       requestBody:
         required: true
         content:
@@ -533,6 +1069,87 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/DuplicateUserId"
+
+  /api/users/password:
+    put:
+      tags: [users]
+      summary: 본인 비밀번호 변경
+      description: |
+        로그인한 사용자가 **자기 비밀번호만** 바꾼다. 대상 `user_no` 를 받지 않고
+        토큰에서 꺼내 쓰므로, 남의 비밀번호를 바꿀 통로가 애초에 없다.
+
+        현재 비밀번호를 함께 받아 대조한다 — 토큰만으로 통과시키면 자리를 비운
+        사이 브라우저를 잡은 사람이 비밀번호를 갈아버릴 수 있다.
+
+        새 비밀번호는 계정 등록·수정과 같은 작성규칙을 거친다.
+        비밀번호를 잊어버린 경우는 이 API 가 아니라
+        `/api/auth/password-reset/*` 쪽이다.
+
+        소셜 로그인 계정은 바꿀 비밀번호가 애초에 없다 — 400 `SOCIAL_ACCOUNT` 다.
+        프론트는 이 계정에 비밀번호 변경 화면 자체를 띄우지 않는 편이 낫다
+        (`GET /api/auth/me` 로는 구분되지 않으니 소셜 로그인으로 들어왔다는 사실을
+        프론트가 기억해 두면 된다).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                  description: 현재 비밀번호
+                new_password:
+                  type: string
+                  description: 새 비밀번호 (작성규칙 적용)
+      responses:
+        "200":
+          description: 변경 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              example:
+                message: 비밀번호가 성공적으로 변경되었습니다.
+        "400":
+          description: 입력 누락 · 소셜 계정 · 현재 비밀번호 불일치 · 작성규칙 위반
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                missing:
+                  summary: 필수값 누락
+                  value:
+                    code: BAD_REQUEST
+                    message: 현재 비밀번호와 새 비밀번호를 모두 입력해주세요.
+                social:
+                  summary: 소셜 로그인 계정 (바꿀 비밀번호가 없다)
+                  value:
+                    code: SOCIAL_ACCOUNT
+                    message: 소셜 로그인 계정은 비밀번호를 변경할 수 없습니다.
+                    field: user_pw
+                wrong_current:
+                  summary: 현재 비밀번호 불일치
+                  value:
+                    code: INVALID_CURRENT_PASSWORD
+                    message: 현재 비밀번호가 일치하지 않습니다.
+                password_rule:
+                  summary: 새 비밀번호 작성규칙 위반
+                  value:
+                    code: BAD_REQUEST
+                    message: 비밀번호는 영문자·숫자·특수문자를 모두 포함해 8자 이상이어야 합니다.
+                    field: user_pw
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
 
   /api/users/{user_no}:
     put:
@@ -591,12 +1208,108 @@ paths:
                     code: BAD_REQUEST
                     message: "user_phone 은 하이픈 없이 숫자만 입력해야 합니다. (예: 01012345678)"
                     field: user_phone
+                social_password:
+                  summary: 소셜 계정에 비밀번호 설정 시도
+                  value:
+                    code: SOCIAL_ACCOUNT
+                    message: 소셜 로그인 계정에는 비밀번호를 설정할 수 없습니다.
+                    field: user_pw
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/ForbiddenUserUpdate"
         "404":
           $ref: "#/components/responses/UserNotFound"
+
+  /api/users/{user_no}/activities:
+    get:
+      tags: [users]
+      summary: 활동이력 (지정 사용자)
+      description: |
+        해당 사용자의 활동이력을 **최신순**으로 준다. 남기는 종류는
+        `ActivityType` 참고. IP·User-Agent 는 수집하지 않는다.
+
+        권한은 계정 수정과 같은 규칙이다 — ADMIN 은 전체, 일반 사용자는 본인 것만.
+        활동 이력은 감사 자료라 남의 것을 아무나 볼 수 없다.
+
+        **본인 이력만 필요하면 `GET /api/me/activities` 를 쓸 것.** 이 경로는
+        관리자가 남의 이력을 보는 화면(회원 상세)을 위한 것이다.
+
+        회원 상세 화면의 "최근 로그인"은 `?size=1` 로 받은 첫 `LOGIN` 항목을 쓰면 된다.
+
+        주의: 실패한 시도는 여기 쌓이지 않는다. 그리고 `LOGOUT` 은 프론트가
+        `POST /api/auth/logout` 을 불러야만 생긴다 — 브라우저를 그냥 닫으면
+        `LOGIN` 만 있고 짝이 되는 `LOGOUT` 이 없는 행이 남는다. 정상이다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserNo"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: 조회 성공 (이력이 없으면 `items` 가 빈 배열)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/UserActivity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: 남의 활동이력 조회 시도 (`FORBIDDEN`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: FORBIDDEN
+                message: 본인 계정의 활동이력만 조회할 수 있습니다.
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
+  # ---------------------------------------------------------------- 내 정보
+  /api/me/activities:
+    get:
+      tags: [me]
+      summary: 내 활동이력
+      description: |
+        **토큰 주인의** 활동이력을 최신순으로 준다. 남기는 종류는 `ActivityType` 참고.
+
+        `GET /api/users/{user_no}/activities` 와 같은 표를 읽지만 `user_no` 를
+        URL 로 받지 않는다. 그래서 남의 번호를 넣어 훔쳐보는 일이 원천적으로
+        불가능하고, **403 도 404 도 나오지 않는다** — 토큰이 곧 신원이기 때문이다.
+        ADMIN 이라도 이 경로로는 본인 이력만 나온다.
+
+        마이페이지의 "활동 이력" 목록이 쓸 엔드포인트다. 이력이 없으면
+        `items` 가 빈 배열이고, 그것 말고 다른 응답은 없다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: 조회 성공 (이력이 없으면 `items` 가 빈 배열)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageMeta"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/UserActivity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   # ---------------------------------------------------------------- 카메라
   /api/cctvs:
@@ -1206,6 +1919,114 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/reports/dispatch:
+    post:
+      tags: [reports]
+      summary: 소방서 출동 통지 수신
+      description: |
+        119 가 실제로 배차했을 때 되쏘는 콜백이다. 우리가 신고에 실어 보낸
+        `callback_url` 이 이 경로를 가리킨다.
+
+        인증은 JWT 가 아니라 공유 키(`X-Agency-Key`)다 — 상대가 사람이 아니라
+        기관 서버다.
+
+        멱등하다. 같은 통지가 여러 번 와도 신고 행이 늘지 않고 최신 값으로
+        덮인다. 접수번호(`external_id`)가 어긋나거나 `dispatched_at` 형식이
+        깨져도 거절하지 않는다 — 출동했다는 사실을 버리는 편이 더 나쁘다.
+      security:
+        - agencyKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [report_uid]
+              additionalProperties: true
+              properties:
+                report_uid:
+                  type: string
+                  pattern: '^FG-\d+$'
+                  description: 신고에 실어 보낸 신고 ID. 어느 화재인지 찾는 열쇠다
+                  example: FG-42
+                external_id:
+                  type: string
+                  description: 119 가 발급한 접수번호. 불일치해도 거절하지 않고 경고만 남긴다
+                  example: R-000001
+                agency_name:
+                  type: string
+                  example: 모의소방서 1
+                dispatch_no:
+                  type: string
+                  description: 출동 지령 번호
+                  example: D-R-000001
+                vehicles:
+                  type: integer
+                  example: 3
+                crew:
+                  type: integer
+                  example: 12
+                eta_sec:
+                  type: integer
+                  description: 예상 도착까지 남은 초
+                  example: 240
+                dispatched_at:
+                  type: string
+                  format: date-time
+                  description: 배차 시각. 없거나 형식이 깨지면 서버 수신 시각을 쓴다
+                note:
+                  type: string
+                  example: 펌프차 2 · 구급차 1 출동
+      responses:
+        "200":
+          description: 출동 통지 반영됨
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report_no:
+                    type: integer
+                    format: int64
+                  event_no:
+                    type: integer
+                    format: int64
+                  report_status:
+                    $ref: "#/components/schemas/ReportStatus"
+                  report_dispatched_at:
+                    type: string
+                    format: date-time
+        "400":
+          description: report_uid 누락 또는 형식 오류 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: BAD_REQUEST
+                message: report_uid 는 'FG-<이벤트번호>' 형식이어야 합니다.
+                field: report_uid
+        "401":
+          description: X-Agency-Key 불일치 (`AGENCY_UNAUTHORIZED`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: AGENCY_UNAUTHORIZED
+                message: 기관 인증 키가 올바르지 않습니다.
+        "404":
+          description: |
+            진행 중인 신고 없음 (`REPORT_NOT_FOUND`). 승계로 닫힌
+            (`NO_RESPONSE`·`FAILED`) 신고만 남아 있으면 붙일 곳이 없다.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: REPORT_NOT_FOUND
+                message: 진행 중인 신고를 찾을 수 없습니다.
+
   /api/reports/{report_no}/logs:
     get:
       tags: [reports]
@@ -1408,6 +2229,13 @@ components:
       in: header
       name: X-Internal-Key
       description: AI 모델 전용. 서버의 `INTERNAL_API_KEY` 환경변수 값과 대조한다.
+    agencyKey:
+      type: apiKey
+      in: header
+      name: X-Agency-Key
+      description: |
+        소방서(119) 서버가 출동 통지를 되쏠 때 쓰는 공유 키.
+        값은 백엔드의 `AGENCY_CALLBACK_KEY` 설정과 비교한다.
 
   parameters:
     Page:
@@ -1462,6 +2290,17 @@ components:
       schema:
         type: integer
         format: int64
+    OauthProvider:
+      name: provider
+      in: path
+      required: true
+      description: |
+        소셜 로그인 제공자. 경로에는 **소문자**로 쓴다 (대문자로 보내도 받아준다).
+        DB 의 `user_provider` 에는 항상 대문자로 저장된다.
+      schema:
+        type: string
+        enum: [google, kakao, naver]
+        example: google
 
   # 에러 응답은 반드시 example 을 단다 —
   # 없으면 Swagger UI 가 공통 Error 스키마로 본문을 만들어 내서 400·401·403 이
@@ -1473,8 +2312,13 @@ components:
   responses:
     Unauthorized:
       description: |
-        토큰 없음(`UNAUTHORIZED`) · 만료(`TOKEN_EXPIRED`) · 손상(`INVALID_TOKEN`).
-        `TOKEN_EXPIRED` 면 로그인 화면으로 돌려보내야 한다.
+        토큰 없음(`UNAUTHORIZED`) · 만료(`TOKEN_EXPIRED`) · 손상(`INVALID_TOKEN`) ·
+        폐기(`TOKEN_REVOKED`). 넷 다 로그인 화면으로 돌려보내야 하지만,
+        **안내 문구는 갈라주는 편이 낫다.**
+
+        `TOKEN_REVOKED` 는 사용자가 잘못한 게 없는데 튕기는 경우다 — 다른 기기에서
+        로그아웃했거나 관리자가 계정을 정지했을 때 나온다. 이유를 안 알려주면
+        사용자는 영문도 모르고 튕긴 것으로 느낀다.
       content:
         application/json:
           schema:
@@ -1495,6 +2339,11 @@ components:
               value:
                 code: INVALID_TOKEN
                 message: 유효하지 않은 토큰입니다.
+            revoked:
+              summary: 토큰 폐기 (로그아웃·계정 정지)
+              value:
+                code: TOKEN_REVOKED
+                message: 로그아웃되었거나 무효화된 토큰입니다. 다시 로그인해주세요.
 
     Forbidden:
       description: 관리자 권한 필요 (`FORBIDDEN`)
@@ -1728,7 +2577,13 @@ components:
       enum: [ADMIN, VIEWER]
     UserStatus:
       type: string
-      enum: [ACTIVE, SUSPENDED, WITHDRAWN]
+      description: |
+        `ACTIVE` 정상 · `PENDING` 관리자 승격 승인 대기 · `SUSPENDED` 정지 · `WITHDRAWN` 탈퇴.
+
+        `PENDING` 은 **권한만 기다리는 정상 계정**이다 — 로그인도 되고 아이디 찾기·비밀번호
+        재설정도 된다. 권한은 그동안 `VIEWER` 그대로이며, 관리자가 승인하면 `ADMIN`·`ACTIVE`,
+        거절하면 `VIEWER`·`ACTIVE` 로 돌아간다 (POST /api/admin/request-upgrade).
+      enum: [ACTIVE, PENDING, SUSPENDED, WITHDRAWN]
     CctvStatus:
       type: string
       enum: [ACTIVE, INACTIVE]
@@ -1812,13 +2667,17 @@ components:
       type: string
       description: |
         `SENDING` 전송 중 · `ACCEPTED` 119 서버가 신고를 받았다고 응답 ·
+        `DISPATCHED` 소방서가 실제로 배차했다고 회신 ·
         `NO_RESPONSE` 무응답이라 다음 기관으로 승계 · `FAILED` 모든 기관 소진
 
         `ACCEPTED` 는 **접수 확인까지**를 뜻한다. 2xx 응답은 "신고를 받았다"이지
-        "소방차가 배차됐다"가 아니다. 출동 배차 확인은 119 가 별도 콜백으로
-        회신하는 값이고, 실제 연동 전까지는 구현하지 않는다 —
-        화면에 '출동'으로 표기하지 말 것.
-      enum: [SENDING, ACCEPTED, NO_RESPONSE, FAILED]
+        "소방차가 배차됐다"가 아니다. 배차는 119 가 `POST /api/reports/dispatch` 로
+        따로 회신하며, 그때 `DISPATCHED` 가 된다 — **'출동'으로 표기해도 되는
+        상태는 `DISPATCHED` 하나뿐이다.**
+
+        진행 중으로 보는 상태는 `SENDING` · `ACCEPTED` · `DISPATCHED` 세 개이고,
+        이벤트당 하나만 존재할 수 있다 (DB 부분 유니크 인덱스).
+      enum: [SENDING, ACCEPTED, DISPATCHED, NO_RESPONSE, FAILED]
 
     # ---------- 계정 ----------
     LoginUser:
@@ -1884,6 +2743,68 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    ActivityType:
+      type: string
+      description: |
+        | 값 | 언제 | `activity_target_no` |
+        |---|---|---|
+        | `LOGIN` | 로그인 성공 | 없음 |
+        | `LOGOUT` | 로그아웃 | 없음 |
+        | `PASSWORD_CHANGED` | 비밀번호 변경 성공 | 관리자 변경이면 대상 `user_no` |
+        | `PROFILE_UPDATED` | 프로필 수정 성공 | 수정된 `user_no` |
+        | `FIRE_CONFIRMED` | 알림에 화재 확인(`READ`) 응답 | `event_no` |
+        | `FIRE_DISMISSED` | 알림에 오탐 취소(`CANCEL`) 응답 | `event_no` |
+
+        **실패한 시도는 들어오지 않는다** — 로그인 실패, 거절된 조치 모두 제외다
+        (침입 시도·오조작은 활동 이력이 아니다).
+
+        ⚠️ `PUT /api/users/password` 로 바꾼 비밀번호는 아직 `PASSWORD_CHANGED` 가
+        남지 않는다. 그 경로만 기록이 빠져 있고 별도로 붙일 예정이다.
+      enum: [LOGIN, LOGOUT, PASSWORD_CHANGED, PROFILE_UPDATED,
+             FIRE_CONFIRMED, FIRE_DISMISSED]
+
+    UserActivity:
+      type: object
+      description: |
+        사용자 활동이력 1행 (`GET /api/me/activities`,
+        `GET /api/users/{user_no}/activities`).
+        사용자 1명에 N행이 쌓인다. IP·User-Agent 는 수집하지 않는다.
+
+        `user_no` 는 **행위자**다. 관리자가 남의 계정을 고친 행은 관리자의
+        `user_no` 에 쌓이고 `activity_target_no` 가 수정당한 계정을 가리킨다.
+      properties:
+        activity_no:
+          type: integer
+          format: int64
+        user_no:
+          type: integer
+          format: int64
+          description: 행위자
+        activity_type:
+          $ref: "#/components/schemas/ActivityType"
+        activity_target_no:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            대상 번호. 종류에 따라 `event_no` 이거나 `user_no` 다
+            (어느 쪽인지는 `ActivityType` 표 참고). 대상이 없는 종류는 `null`.
+        activity_detail:
+          type: string
+          nullable: true
+          description: 화면에 그대로 띄울 한 줄 요약. 없을 수 있다.
+        activity_at:
+          type: string
+          format: date-time
+          description: 활동 일시
+      example:
+        activity_no: 42
+        user_no: 1
+        activity_type: FIRE_CONFIRMED
+        activity_target_no: 12
+        activity_detail: 정문 카메라 화재 확인
+        activity_at: "2026-08-14T09:12:33"
 
     UserCreate:
       type: object
@@ -2001,6 +2922,13 @@ components:
         cctv_location:
           type: string
           nullable: true
+        cctv_address:
+          type: string
+          nullable: true
+          description: |
+            좌표를 역지오코딩한 주소 (도로명 또는 지번). 119 신고에 싣는 값이다.
+            `cctv_location` 은 사람이 붙인 설치 위치 설명이라 주소가 아니다.
+            변환에 실패했거나 컬럼 추가 이전에 등록된 카메라는 `null`.
         cctv_lat:
           type: number
           format: double
@@ -2305,6 +3233,21 @@ components:
           example: http://localhost:6000/report
         agency_is_active:
           type: boolean
+        agency_source_id:
+          type: string
+          nullable: true
+          description: 출처 고유번호 (생활안전지도 IF_0038 objt_id). 손으로 등록한 행은 null
+          example: IF0038-000123
+        agency_address:
+          type: string
+          nullable: true
+          description: 주소 (도로명 우선, 없으면 지번). 적재 스크립트가 채운다
+          example: 경기도 안성시 미양로 855
+        agency_phone:
+          type: string
+          nullable: true
+          description: 대표 전화번호
+          example: 031-123-4567
 
     AgencyCreate:
       type: object
@@ -2389,6 +3332,24 @@ components:
           type: string
           format: date-time
           nullable: true
+        report_dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 소방서 출동 통지를 받은 시각. 아직 배차 회신이 없으면 `null`
+        report_dispatch:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: |
+            소방서가 보낸 출동 정보 원문 (지령번호·차량 수·ETA 등). 기관마다
+            보내는 키가 다를 수 있어 스키마를 고정하지 않고 그대로 보관한다.
+          example:
+            agency_name: 모의소방서 1
+            dispatch_no: D-R-000001
+            vehicles: 3
+            eta_sec: 240
+            received_at: "2026-08-18T14:32:11"
 
     EventReport:
       type: object
@@ -2420,6 +3381,16 @@ components:
           type: string
           format: date-time
           nullable: true
+        report_dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 소방서 출동 통지를 받은 시각. 아직 배차 회신이 없으면 `null`
+        report_dispatch:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 소방서가 보낸 출동 정보 원문 (지령번호·차량 수·ETA 등)
 
     # ---------- 내부 (AI) ----------
     Detection:

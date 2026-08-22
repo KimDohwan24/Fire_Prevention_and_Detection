@@ -27,8 +27,8 @@ SCHEMA_SQL = Path(__file__).resolve().parents[2] / "db" / "schema.sql"
 PW = "Guard#2026"
 PW_HASH = bcrypt.hashpw(PW.encode(), bcrypt.gensalt(rounds=4)).decode()
 
-TABLES = ["report_log", "report_119", "alert", "event_media", "fire_event",
-          "cctv", "agency", "users"]
+TABLES = ["user_activity", "report_log", "report_119", "alert", "event_media",
+          "fire_event", "cctv", "agency", "users"]
 
 
 def _admin_conn(dbname: str):
@@ -84,13 +84,19 @@ def seed(_test_db):
             """,
             {"pw": PW_HASH},
         )
+        # 1번은 주소 있음 · 2번은 NULL 로 갈라 둔다 — 119 신고가 주소를 못 구했을 때의
+        # 폴백 경로를 검증하려면 주소가 비어 있는 카메라가 기준 데이터에 있어야 한다
+        # (컬럼 추가 이전에 등록된 카메라가 실제로 그 상태다).
         cur.execute(
             """
-            INSERT INTO cctv (user_no, cctv_name, cctv_location, cctv_lat, cctv_lng,
+            INSERT INTO cctv (user_no, cctv_name, cctv_location, cctv_address,
+                              cctv_lat, cctv_lng,
                               cctv_stream_url, cctv_width, cctv_height, cctv_status) VALUES
-            (1, '정문 카메라', '본관 정문 앞', 37.5665000, 126.9780000,
+            (1, '정문 카메라', '본관 정문 앞', '서울특별시 중구 세종대로 110',
+             37.5665000, 126.9780000,
              'http://192.168.0.10:8080/live/cam1.m3u8', 1920, 1080, 'ACTIVE'),
-            (1, '후문 카메라', '본관 후문',    37.5670000, 126.9790000,
+            (1, '후문 카메라', '본관 후문',    NULL,
+             37.5670000, 126.9790000,
              'http://192.168.0.11:8080/live/cam2.m3u8', 1280, 720, 'INACTIVE')
             """
         )
@@ -110,6 +116,21 @@ class _FakeReportResponse:
 
     def json(self):
         return {"external_id": "MOCK-OK"}
+
+
+@pytest.fixture(autouse=True)
+def _agency_takeover_on(monkeypatch):
+    """테스트는 기관 승계가 켜진 상태를 기본으로 한다.
+
+    운영 기본값은 REPORT_MAX_AGENCIES=1 이다 — 가장 가까운 한 곳에만 신고하고
+    끝낸다(2026-08-21 시연 단순화). 하지만 승계 구현은 그대로 살아 있고 .env 한
+    줄(REPORT_MAX_AGENCIES=0)로 되살아나므로, 그 경로가 썩지 않게 하려면 테스트는
+    승계가 도는 상태를 봐야 한다.
+
+    운영 기본값 자체(승계 없음)는 test_report_service.py 의 전용 테스트 두 개가
+    REPORT_MAX_AGENCIES 를 1 로 되돌려 따로 검증한다.
+    """
+    monkeypatch.setattr(config, "REPORT_MAX_AGENCIES", 0)
 
 
 @pytest.fixture(autouse=True)
@@ -174,6 +195,32 @@ def _no_real_its_http(monkeypatch):
     its_cctv.clear_cache()
 
 
+@pytest.fixture(autouse=True)
+def _no_real_geocode_http(request, monkeypatch):
+    """전역 가드: 어떤 테스트도 실제 카카오 Local API 를 부르지 않는다.
+
+    CCTV 등록 경로가 역지오코딩을 호출하므로, 스텁이 없으면 무관한 테스트가
+    매번 외부로 나가며 느려지고 네트워크 상태에 따라 깜빡인다. 기본은 '주소를
+    못 찾음(None)' — 주소가 필요한 테스트는 자기 monkeypatch 로 덮어쓴다
+    (테스트 본문의 setattr 가 나중에 적용되므로 이 스텁을 이긴다).
+
+    앞의 두 가드와 달리 HTTP 함수가 아니라 reverse_geocode 를 통째로 바꾼다.
+    geocode 모듈은 requests 를 모듈째 참조하므로 services.geocode.requests.get 을
+    덮으면 requests.get 이 프로세스 전역에서 바뀌어, 진짜 HTTP 를 쓰는 다른
+    테스트(mock-119 연동)까지 이 대역을 받게 된다.
+
+    대신 함수를 바꾸면 그 함수 자체를 검증하는 tests/test_geocode.py 가 자기
+    대역 대신 이 스텁을 보게 되므로 그 파일만 뺀다 — 그 파일은 이미 requests
+    단에서 스스로 막고 있어 실제 호출이 나갈 일이 없다.
+    """
+    if request.module.__name__.rsplit(".", 1)[-1] == "test_geocode":
+        yield
+        return
+
+    monkeypatch.setattr("services.geocode.reverse_geocode", lambda lat, lng: None)
+    yield
+
+
 # ---------- 인증 헬퍼 ----------
 
 def _headers(user_no, user_id, role):
@@ -189,6 +236,28 @@ def admin_headers():
 @pytest.fixture()
 def viewer_headers():
     return _headers(2, "viewer01", "VIEWER")
+
+
+# ---------- 데이터 헬퍼 ----------
+
+def make_social_user(user_id="google_1001", provider="GOOGLE", provider_id="1001",
+                     name="소셜사용자", role="VIEWER", status="ACTIVE"):
+    """비밀번호가 NULL 인 소셜 계정 1명을 만든다.
+
+    기준 데이터에 넣지 않고 헬퍼로 둔 이유: 사용자 수를 세는 기존 테스트
+    (test_users.py 의 total_count == 4)가 전부 깨지기 때문이다. 소셜 계정이
+    필요한 테스트만 부르면 된다.
+    """
+    row = db.execute_returning(
+        """
+        INSERT INTO users (user_id, user_pw, user_name, user_role, user_status,
+                           user_provider, user_provider_id)
+        VALUES (%s, NULL, %s, %s, %s, %s, %s)
+        RETURNING user_no
+        """,
+        (user_id, name, role, status, provider, provider_id),
+    )
+    return row["user_no"]
 
 
 # ---------- 데이터 헬퍼 (이벤트 계열 테스트에서 사용) ----------
