@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: 파이어가드 API
-  version: 0.10.0
+  version: 0.10.1
   description: |
     CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
 
@@ -3233,6 +3233,21 @@ components:
           example: http://localhost:6000/report
         agency_is_active:
           type: boolean
+        agency_source_id:
+          type: string
+          nullable: true
+          description: 출처 고유번호 (생활안전지도 IF_0038 objt_id). 손으로 등록한 행은 null
+          example: IF0038-000123
+        agency_address:
+          type: string
+          nullable: true
+          description: 주소 (도로명 우선, 없으면 지번). 적재 스크립트가 채운다
+          example: 경기도 안성시 미양로 855
+        agency_phone:
+          type: string
+          nullable: true
+          description: 대표 전화번호
+          example: 031-123-4567
 
     AgencyCreate:
       type: object

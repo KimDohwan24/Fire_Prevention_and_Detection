@@ -97,13 +97,12 @@ ITS_REFRESH_ENABLED = _env_bool("ITS_REFRESH_ENABLED", True)
 
 # ----- 생활안전지도(safemap.go.kr) 소방시설 개방 데이터 -----
 # 전국 소방서·119안전센터 목록(이름·주소·전화·좌표)을 받아 agency 테이블을 채운다.
-# 앱이 돌면서 부르는 값이 아니다 — scripts/import_agencies_safemap.py 만 이 키를 쓴다.
+# 앱이 돌면서 부르는 값이 아니다 — services/agencies_safemap.py 만 이 키를 쓴다.
 # 갱신주기가 1년이라 요청마다 부를 이유가 없고, 119 신고는 동기 경로라 신고 순간에
 # 외부 API 를 부르면 그 지연이 그대로 HTTP 응답 지연이 된다 (services/geocode.py 와 같은 판단).
 # 발급: https://www.safemap.go.kr 개발자센터 → 오픈API 인증키 발급
-# .env 에서의 항목 이름은 `agency` 다. 윈도우는 환경변수 이름의 대소문자를 가리지
-# 않지만 리눅스는 가리므로, 팀원 환경이 갈려도 되게 두 표기를 모두 본다.
-SAFEMAP_SERVICE_KEY = os.getenv("agency") or os.getenv("AGENCY", "")
+# .env 에서의 항목 이름은 `AGENCY` 다 (.env.example 과 같은 이름).
+SAFEMAP_SERVICE_KEY = os.getenv("AGENCY", "")
 SAFEMAP_API_URL = os.getenv("SAFEMAP_API_URL", "https://www.safemap.go.kr/openapi2/IF_0038")
 
 # ----- 소셜 로그인(OAuth) -----
