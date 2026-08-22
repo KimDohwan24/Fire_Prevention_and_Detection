@@ -141,6 +141,7 @@ const normalizeTestJob = (job) => {
     cctv_no: job?.cctv_no ?? null,
     cctv_name: job?.cctv_name,
     cctv_location: job?.cctv_location,
+    test_assignment: job?.test_assignment || null,
     thumbnail_url: job?.first_detection_media_url || job?.media_url || null,
   };
 
@@ -410,13 +411,22 @@ function FireAlertProvider({ children }) {
   }, []);
 
   const recordTestDecision = useCallback((decision, job) => {
-    const nextAlert = reportTestJob(job);
+    const isSameTestJob = Boolean(
+      activeAlert?.isTest
+      && (!job?.job_id || activeAlert.job_id === job.job_id),
+    );
+    const testAssignment = job?.test_assignment
+      || (isSameTestJob ? activeAlert.test_assignment : null);
+    const jobWithAssignment = job && testAssignment
+      ? { ...job, test_assignment: testAssignment }
+      : job;
+    const nextAlert = reportTestJob(jobWithAssignment);
     const currentUser = getCurrentUserFromStorage();
     const isConfirm = decision === 'CONFIRM_FIRE';
-    const cctvName = nextAlert?.cctv_name || `CCTV #${job?.cctv_no ?? '-'}`;
+    const cctvName = nextAlert?.cctv_name || `CCTV #${jobWithAssignment?.cctv_no ?? '-'}`;
 
     appendLocalActivityLog({
-      id: `${job?.event_no || job?.job_id}-${decision}`,
+      id: `${jobWithAssignment?.event_no || jobWithAssignment?.job_id}-${decision}`,
       user_no: currentUser?.user_no,
       activity_type: isConfirm ? 'FIRE_CONFIRMED' : 'FIRE_DISMISSED',
       time: new Date().toISOString(),
@@ -428,7 +438,7 @@ function FireAlertProvider({ children }) {
       ? `${cctvName} 화재 확정 테스트가 반영되었습니다.`
       : `${cctvName} 오탐 처리 테스트가 반영되었습니다.`);
     return nextAlert;
-  }, [reportTestJob]);
+  }, [activeAlert, reportTestJob]);
 
   const decideTest = useCallback(async (decision) => {
     if (!activeAlert?.isTest || !activeAlert.job_id || activeAlert.severity !== 'detecting' || isActionLoading) return;

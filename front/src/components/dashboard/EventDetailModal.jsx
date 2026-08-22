@@ -12,7 +12,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { eventApi, resolveMediaUrl } from '../../api';
+import { agencyApi, eventApi, resolveMediaUrl } from '../../api';
 import {
   EVENT_CLASS_LABELS,
   REPORT_STATUS_LABELS,
@@ -24,6 +24,7 @@ import {
   getEventStage,
   getEventStatusLabel,
 } from '../../utils/eventTimeline';
+import { findNearestAgency } from '../../utils/nearestAgency';
 import { useFireAlert } from '../../context/FireAlertContext';
 import { StatusPill } from './DashboardWidgets';
 
@@ -146,7 +147,14 @@ function TimelineList({ items, title, icon: Icon, tone = 'neutral' }) {
   );
 }
 
-function ReportAssignmentSection({ reports, isDetecting, isTest, stage }) {
+function ReportAssignmentSection({
+  reports,
+  isDetecting,
+  isTest,
+  stage,
+  testAgency,
+  isTestAgencyLoading,
+}) {
   return (
     <section
       className="space-y-3 rounded-xl border border-hairline bg-surface-soft p-4"
@@ -157,15 +165,44 @@ function ReportAssignmentSection({ reports, isDetecting, isTest, stage }) {
         <div className="min-w-0">
           <h3 className="text-body-sm font-bold text-ink">119 신고·소방서 배정</h3>
           <p className="mt-0.5 text-caption-sm text-mute">
-            CCTV 위치를 기준으로 백엔드가 결정한 실제 신고 대상입니다.
+            {isTest
+              ? '테스트에서는 실제 신고 없이, CCTV 기준 예상 배정 소방서만 표시합니다.'
+              : 'CCTV 위치를 기준으로 백엔드가 결정한 실제 신고 대상입니다.'}
           </p>
         </div>
       </div>
 
       {isTest ? (
-        <div className="rounded-lg border border-hairline bg-canvas px-3 py-3 text-caption-sm text-mute">
-          영상 테스트 이벤트는 실제 119 신고와 소방서 배정을 생성하지 않습니다.
-        </div>
+        testAgency ? (
+          <div className="rounded-lg border border-amber-500/30 bg-canvas p-3.5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-2">
+                <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold text-mute">테스트 예상 배정 소방서</p>
+                  <p className="truncate text-body-sm font-bold text-ink">
+                    {testAgency.agency_name || testAgency.name || `소방서 #${testAgency.agency_no || '-'}`}
+                  </p>
+                  <p className="mt-1 text-caption-sm text-mute">
+                    거리 {formatReportDistance(testAgency.distance_km)} · 활성 소방서 기준 최근접
+                  </p>
+                </div>
+              </div>
+              <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-bold text-amber-700">
+                테스트 예상값
+              </span>
+            </div>
+            <p className="mt-3 border-t border-hairline pt-2.5 text-[11px] text-mute">
+              영상 테스트는 실제 119 신고와 소방서 배정 이력을 생성하지 않습니다.
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-hairline bg-canvas px-3 py-3 text-caption-sm text-mute">
+            {isTestAgencyLoading
+              ? '소방서 목록에서 테스트 예상 배정을 확인하는 중입니다.'
+              : 'CCTV 좌표 또는 활성 소방서 좌표가 없어 예상 배정을 계산할 수 없습니다.'}
+          </div>
+        )
       ) : reports.length === 0 ? (
         <div className={`rounded-lg border px-3 py-3 text-caption-sm ${
           isDetecting
@@ -240,6 +277,8 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  const [testAgencies, setTestAgencies] = useState([]);
+  const [isTestAgencyLoading, setIsTestAgencyLoading] = useState(false);
   const detailRequestVersionRef = useRef(0);
 
   const fetchDetail = useCallback(async ({ silent = false } = {}) => {
@@ -331,6 +370,9 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
   const isDetecting = stage === 'DETECTING';
   const reports = readReports(visibleDetail) || [];
   const isTest = isTestEvent(visibleDetail);
+  const testAgencyLocation = { ...visibleDetail, ...camera };
+  const testAgency = visibleDetail.test_assignment
+    || findNearestAgency(testAgencyLocation, testAgencies);
   const statusLabel = getEventStatusLabel(visibleDetail);
   const confidence = getConfidencePercent(visibleDetail.event_confidence ?? visibleDetail.confidence);
   const rawMediaItems = Array.isArray(visibleDetail.media) ? visibleDetail.media : [];
@@ -359,6 +401,33 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
   const mediaTitle = isDetecting
     ? '최초 감지 증거'
     : stage === 'CONFIRMED' ? 'AI 판정 증거' : '오탐 판단 근거';
+
+  useEffect(() => {
+    if (!isTest) {
+      setTestAgencies([]);
+      setIsTestAgencyLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setIsTestAgencyLoading(true);
+    agencyApi.list()
+      .then((response) => {
+        if (cancelled) return;
+        const items = response?.items || (Array.isArray(response) ? response : []);
+        setTestAgencies(Array.isArray(items) ? items : []);
+      })
+      .catch(() => {
+        if (!cancelled) setTestAgencies([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsTestAgencyLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isTest]);
 
   const shouldPollReports = Boolean(
     event?.event_no != null
@@ -561,6 +630,8 @@ function EventDetailModal({ event, onClose, zIndexClassName = 'z-50' }) {
             isDetecting={isDetecting}
             isTest={isTest}
             stage={stage}
+            testAgency={testAgency}
+            isTestAgencyLoading={isTestAgencyLoading}
           />
 
           {isDetecting ? (

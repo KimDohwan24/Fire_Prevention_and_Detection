@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  Building2,
   CheckCircle2,
   Clock3,
   FileVideo,
@@ -12,7 +13,8 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import { resolveMediaUrl, videoTestApi } from '../api';
+import { agencyApi, resolveMediaUrl, videoTestApi } from '../api';
+import { findNearestAgency } from '../utils/nearestAgency';
 
 const TERMINAL_STATES = new Set(['SUCCEEDED', 'FAILED']);
 
@@ -48,6 +50,8 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
   const [job, setJob] = useState(null);
   const [decisionState, setDecisionState] = useState('idle');
   const [decisionError, setDecisionError] = useState('');
+  const [agencies, setAgencies] = useState([]);
+  const [agencyLoadState, setAgencyLoadState] = useState('idle');
   const jobRef = useRef(null);
   const alarmCallbackRef = useRef(onStatus);
   const notifiedPhaseRef = useRef(null);
@@ -96,13 +100,51 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
   }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen) return undefined;
+
+    let cancelled = false;
+    setAgencyLoadState('loading');
+    agencyApi.list()
+      .then((response) => {
+        if (cancelled) return;
+        const items = response?.items || (Array.isArray(response) ? response : []);
+        setAgencies(Array.isArray(items) ? items : []);
+        setAgencyLoadState('ready');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAgencies([]);
+        setAgencyLoadState('error');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  const enrichTestJob = useCallback((candidateJob) => {
+    if (!candidateJob) return candidateJob;
+
+    const targetCctv = cctvs.find(
+      (cctv) => String(cctv.cctv_no) === String(candidateJob.cctv_no),
+    );
+    const testAssignment = candidateJob.test_assignment
+      || findNearestAgency(targetCctv, agencies);
+
+    return {
+      ...candidateJob,
+      test_assignment: testAssignment || null,
+    };
+  }, [agencies, cctvs]);
+
+  useEffect(() => {
     if (!job?.job_id) return undefined;
 
     let cancelled = false;
     let timer = null;
     const poll = async () => {
       try {
-        const current = await videoTestApi.getJob(job.job_id);
+        const current = enrichTestJob(await videoTestApi.getJob(job.job_id));
         if (cancelled) return;
         setJob(current);
         jobRef.current = current;
@@ -133,7 +175,7 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [job?.job_id]);
+  }, [enrichTestJob, job?.job_id]);
 
   const selectedCctv = useMemo(
     () => cctvs.find((item) => String(item.cctv_no) === String(selectedCctvNo)),
@@ -153,13 +195,18 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
   const needsHumanReview = Boolean(
     job?.phase === 'DETECTING' && job?.human_review_required && job?.event_no,
   );
+  const nearestAgency = useMemo(
+    () => findNearestAgency(selectedCctv, agencies),
+    [agencies, selectedCctv],
+  );
+  const testAssignment = job?.test_assignment || nearestAgency;
 
   const handleDecision = async (decision) => {
     if (!needsHumanReview || decisionState === 'saving') return;
     setDecisionState('saving');
     setDecisionError('');
     try {
-      const response = await videoTestApi.decide(job.job_id, decision);
+      const response = enrichTestJob(await videoTestApi.decide(job.job_id, decision));
       setJob(response);
       jobRef.current = response;
       onDecision?.(decision, response);
@@ -180,10 +227,10 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
     setDecisionState('idle');
     setDecisionError('');
     try {
-      const response = await videoTestApi.runSample({
+      const response = enrichTestJob(await videoTestApi.runSample({
         sample_name: selectedSample,
         cctv_no: Number(selectedCctvNo),
-      });
+      }));
       setJob(response);
       jobRef.current = response;
     } catch (error) {
@@ -278,6 +325,48 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
               </div>
             )}
           </section>
+
+          {selectedCctv && (
+            <section
+              className="space-y-3 rounded-xl border border-hairline bg-surface-soft p-4"
+              aria-label="테스트 예상 소방서 배정"
+            >
+              <div className="flex items-start gap-2">
+                <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+                <div className="min-w-0">
+                  <h4 className="text-body-sm font-bold text-ink">테스트 예상 소방서 배정</h4>
+                  <p className="mt-0.5 text-caption-sm text-mute">
+                    실제 119 신고 없이, 선택한 CCTV라면 배정될 최근접 활성 소방서입니다.
+                  </p>
+                </div>
+              </div>
+
+              {testAssignment ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-canvas p-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold text-mute">신고 시 예상 배정 소방서</p>
+                    <p className="truncate text-body-sm font-bold text-ink">
+                      {testAssignment.agency_name || testAssignment.name || `소방서 #${testAssignment.agency_no || '-'}`}
+                    </p>
+                    <p className="mt-1 text-caption-sm text-mute">
+                      거리 {Number.isFinite(Number(testAssignment.distance_km))
+                        ? `${Number(testAssignment.distance_km).toFixed(3)} km`
+                        : '정보 없음'}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-bold text-amber-700">
+                    테스트 예상값
+                  </span>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-hairline bg-canvas px-3 py-3 text-caption-sm text-mute">
+                  {agencyLoadState === 'loading'
+                    ? '소방서 목록에서 예상 배정 기관을 확인하는 중입니다.'
+                    : 'CCTV 좌표 또는 활성 소방서 정보가 없어 예상 배정 기관을 계산할 수 없습니다.'}
+                </div>
+              )}
+            </section>
+          )}
 
           <section className="space-y-2">
             <div className="flex items-center justify-between gap-3">
