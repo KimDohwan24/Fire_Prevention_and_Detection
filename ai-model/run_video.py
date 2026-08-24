@@ -84,7 +84,7 @@ def read_dotenv(name: str) -> str:
     if not env_file.exists():
         return ""
     for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+        line = line.strip() 
         if not line or line.startswith("#"):
             continue
         key, _, value = line.partition("=")
@@ -94,9 +94,28 @@ def read_dotenv(name: str) -> str:
 
 
 def load_internal_key(explicit: str) -> str:
-    """--key > 환경변수 > 루트 .env > 백엔드 기본값 순으로 찾는다."""
-    return (explicit or os.getenv("INTERNAL_API_KEY") or read_dotenv("INTERNAL_API_KEY")
-            or "dev-internal-key")  # back/config.py 의 기본값과 같다
+    """--key > 환경변수 > 루트 .env 순으로 찾는다. **없으면 에러다.**
+
+    예전에는 마지막에 `"dev-internal-key"` 로 폴백했다. 백엔드가 키 미설정 시
+    조용히 쓰던 기본값과 짝을 맞춰 둔 것이었는데, 2026-08-24 부로 백엔드는
+    기본값이면 아예 뜨지 않는다(back/config.py 의 시크릿 가드). 그래서 그 폴백은
+    **항상 틀린 키**가 됐다 — 살려 두면 전송이 프레임마다 401 로 깨지는데,
+    원인은 '키를 안 넣었다'인데 화면에는 '인증 실패'로만 보인다.
+    보낼 것도 없이 시작할 때 멈추는 편이 낫다.
+    """
+    key = (explicit or os.getenv("INTERNAL_API_KEY")
+           or read_dotenv("INTERNAL_API_KEY"))
+    if not key:
+        # ⚠️ 이 메시지에 em-dash(—) 같은 cp949 밖 문자를 쓰지 말 것.
+        # 이 파일은 mock-119 와 달리 stdout/stderr 인코딩을 고정하지 않아서,
+        # 윈도우 기본 콘솔에서는 '키가 없다'고 알리려는 print 자체가
+        # UnicodeEncodeError 로 죽는다. 원인 대신 엉뚱한 예외만 보게 된다.
+        raise ValueError(
+            "INTERNAL_API_KEY 를 찾을 수 없습니다. --key 인자, 환경변수, "
+            f"루트 .env({PROJECT_ROOT / '.env'}) 어디에도 없습니다.\n"
+            "  백엔드와 같은 값이어야 합니다. .env 에 넣어 두면 양쪽이 함께 읽습니다."
+        )
+    return key
 
 
 def load_media_root(explicit: str) -> Path:
@@ -215,8 +234,14 @@ def main(argv=None) -> int:
     sender = None
     media_root = None
     if args.send:
-        sender = DetectionSender(base_url=args.api,
-                                 internal_key=load_internal_key(args.key))
+        # 키가 없으면 여기서 끝낸다 — 위의 FileNotFoundError 들과 같은 취급이다.
+        # 트레이스백 대신 한 줄로 알려야 "무엇을 넣어야 하는지"가 보인다.
+        try:
+            internal_key = load_internal_key(args.key)
+        except ValueError as exc:
+            print(f"[오류] {exc}", file=sys.stderr)
+            return 2
+        sender = DetectionSender(base_url=args.api, internal_key=internal_key)
         media_root = load_media_root(args.media_root)
         media_root.mkdir(parents=True, exist_ok=True)
 
