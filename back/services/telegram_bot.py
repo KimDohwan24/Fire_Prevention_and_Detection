@@ -181,8 +181,27 @@ def _handle_callback(query: dict) -> None:
         else "오탐으로 처리했습니다 — 119 신고를 취소했습니다."
     telegram.answer_callback(query_id, done)
     if message_id is not None:
-        # 본문을 바꿔 버튼을 걷어낸다 — 같은 알림을 두 번 누르는 일이 줄어든다
-        telegram.edit_message_text(chat_id, message_id, f"{message.get('text', '')}\n\n▶ {done}")
+        _show_outcome(chat_id, message_id, message, done)
+
+
+def _show_outcome(chat_id, message_id, message: dict, done: str) -> None:
+    """응답 결과를 원문 끝에 붙이고 버튼을 걷어낸다.
+
+    **토스트만으로는 부족하다.** answer_callback 은 잠깐 떴다 사라져서 놓치기 쉽고,
+    남아 있는 버튼이 "아직 아무 일도 안 일어났다"로 읽힌다. 그래서 메시지 자체를
+    바꿔 흔적을 남긴다.
+
+    갱신 방법이 메시지 종류마다 다르다. 사진으로 나간 알림은 본문이 caption 이라
+    editMessageText 가 거절당하고(services/telegram.py 의 edit_message_caption 주석),
+    거절당하면 버튼이 남아 사용자가 다시 누르게 된다. 그래서 caption 이 있으면
+    캡션을, 없으면 본문을 고친다.
+    """
+    caption = message.get("caption")
+    if caption is not None:
+        telegram.edit_message_caption(chat_id, message_id, f"{caption}\n\n▶ {done}")
+    else:
+        telegram.edit_message_text(chat_id, message_id,
+                                   f"{message.get('text', '')}\n\n▶ {done}")
 
 
 def handle_update(update: dict) -> None:

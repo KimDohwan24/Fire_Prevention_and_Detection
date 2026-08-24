@@ -5,6 +5,8 @@
 **어떤 실패에서도 예외를 밖으로 흘리지 않는다.** 알림 발송 실패가 알림 행 생성을
 막거나, 폴링 실패가 워커를 죽이면 안 되기 때문이다.
 """
+import json
+
 import pytest
 import requests
 
@@ -91,6 +93,121 @@ def test_send_message_is_false_when_the_http_call_raises(token, monkeypatch):
     monkeypatch.setattr(telegram, "_api", boom)
 
     assert telegram.send_message(999, "불이야") is False
+
+
+# ---------- 사진 발송 ----------
+#
+# sendPhoto 는 파일을 **multipart** 로 올린다 — 기존 _api 는 JSON body 라 같은 길로
+# 갈 수 없다. 그래서 이 경로만 별도 seam(_api_multipart)을 둔다.
+
+@pytest.fixture()
+def photo_calls(monkeypatch):
+    """_api_multipart 호출을 기록하고 성공 응답을 돌려주는 대역."""
+    recorded = []
+
+    def fake_api(method, data, files):
+        recorded.append((method, data, files))
+        return {"ok": True, "result": {"message_id": 777}}
+
+    monkeypatch.setattr(telegram, "_api_multipart", fake_api)
+    return recorded
+
+
+def test_send_photo_posts_the_chat_id_and_caption(token, photo_calls):
+    assert telegram.send_photo(999, b"\xff\xd8jpeg", "불이야") is True
+
+    method, data, _ = photo_calls[0]
+    assert method == "sendPhoto"
+    assert data["chat_id"] == 999
+    assert data["caption"] == "불이야"
+
+
+def test_send_photo_uploads_the_bytes_as_a_file(token, photo_calls):
+    """이미지는 form 필드가 아니라 파일로 올라가야 한다 (Bot API 규격)."""
+    telegram.send_photo(999, b"\xff\xd8jpeg", "불이야")
+
+    _, _, files = photo_calls[0]
+    assert b"\xff\xd8jpeg" in files["photo"]
+
+
+def test_send_photo_attaches_buttons_as_a_json_string(token, photo_calls):
+    """multipart 는 form 필드가 전부 문자열이라 reply_markup 을 dict 로 실을 수 없다.
+
+    JSON 으로 직렬화하지 않으면 텔레그램이 버튼을 못 읽고, 확인/취소 경로가 통째로
+    사라진다 — 사진만 예쁘게 오고 응답은 못 하는 알림이 된다.
+    """
+    buttons = [[{"text": "화재 확인", "callback_data": "resp:12:READ"}]]
+
+    telegram.send_photo(999, b"\xff\xd8jpeg", "불이야", buttons=buttons)
+
+    _, data, _ = photo_calls[0]
+    assert json.loads(data["reply_markup"]) == {"inline_keyboard": buttons}
+
+
+def test_send_photo_omits_reply_markup_when_no_buttons(token, photo_calls):
+    telegram.send_photo(999, b"\xff\xd8jpeg", "불이야")
+
+    _, data, _ = photo_calls[0]
+    assert "reply_markup" not in data
+
+
+def test_send_photo_clips_the_caption_to_the_api_limit(token, photo_calls):
+    """caption 은 1024자까지다 (본문 4096과 다르다).
+
+    넘기면 텔레그램이 통째로 거절해서 **사진도 문구도 안 간다.** 잘라서라도 보낸다.
+    """
+    telegram.send_photo(999, b"\xff\xd8jpeg", "불" * 2000)
+
+    _, data, _ = photo_calls[0]
+    assert len(data["caption"]) <= 1024
+    assert data["caption"].startswith("불불불")
+
+
+def test_send_photo_leaves_a_short_caption_alone(token, photo_calls):
+    telegram.send_photo(999, b"\xff\xd8jpeg", "불이야")
+
+    _, data, _ = photo_calls[0]
+    assert data["caption"] == "불이야"
+
+
+def test_send_photo_makes_no_http_call_when_disabled(no_token, photo_calls):
+    assert telegram.send_photo(999, b"\xff\xd8jpeg", "불이야") is False
+    assert photo_calls == []
+
+
+def test_send_photo_is_false_when_telegram_rejects_it(token, monkeypatch):
+    monkeypatch.setattr(
+        telegram, "_api_multipart",
+        lambda method, data, files: {"ok": False, "description": "PHOTO_INVALID_DIMENSIONS"})
+
+    assert telegram.send_photo(999, b"\xff\xd8jpeg", "불이야") is False
+
+
+def test_send_photo_is_false_when_the_http_call_raises(token, monkeypatch):
+    """이 모듈의 성질: 어떤 실패에서도 예외를 밖으로 흘리지 않는다."""
+    def boom(method, data, files):
+        raise requests.RequestException("network down")
+
+    monkeypatch.setattr(telegram, "_api_multipart", boom)
+
+    assert telegram.send_photo(999, b"\xff\xd8jpeg", "불이야") is False
+
+
+def test_real_multipart_posts_through_the_session(token, monkeypatch):
+    """seam 이 맞아도 실제 구현이 다른 길로 나가면 소용이 없다."""
+    posted = {}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        posted["url"], posted["data"], posted["files"] = url, data, files
+        raise requests.RequestException("stop here — 실제로 나가지 않게")
+
+    monkeypatch.setattr(telegram, "_api_multipart", telegram._real_api_multipart)
+    monkeypatch.setattr(telegram._session, "post", fake_post)
+
+    telegram.send_photo(999, b"\xff\xd8jpeg", "불이야")   # 예외는 래퍼가 삼킨다
+
+    assert posted["url"].endswith("/sendPhoto")
+    assert posted["files"] is not None, "JSON 이 아니라 multipart 로 나가야 한다"
 
 
 # ---------- 수신 ----------
