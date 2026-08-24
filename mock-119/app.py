@@ -280,7 +280,11 @@ CONSOLE_HTML = """<!doctype html>
     padding: 5px 14px; font-size: 12px; font-weight: bold; cursor: pointer;
   }
   .card-foot button:hover { background: #ef4444; }
+  .card-foot button:disabled {
+    background: #374151; color: #9ca3af; cursor: default;
+  }
   .result { font-size: 11px; color: #a7f3d0; word-break: break-all; }
+  .result.error { color: #fca5a5; }
 
   /* ── 우측: 대표 프레임 ── */
   #viewer {
@@ -323,6 +327,9 @@ CONSOLE_HTML = """<!doctype html>
 var DEFAULT_CALLBACK = "http://localhost:5000/api/reports/dispatch";
 // 결과 문구는 목록 밖에 따로 둔다 — 2초마다 목록을 다시 그리므로 카드 안에만 두면 지워진다.
 var results = {};
+// 출동 접수에 성공한 카드. 다시 그려도 버튼이 잠긴 채로 남아야 해서 목록 밖에 둔다.
+// (백엔드는 멱등이라 또 눌러도 사고는 없지만, 화면에서 이중 지령처럼 보이면 혼란스럽다)
+var done = {};
 // 사용자가 콜백 칸을 한 번이라도 건드렸으면 자동 채움을 그만둔다 (타이핑 중에 덮어쓰면 못 쓴다).
 var cbTouched = false;
 // 직전 폴링 결과. 같으면 다시 그리지 않는다 — 매번 그리면 <img> 가 재요청되어 깜빡인다.
@@ -349,7 +356,6 @@ function localIso() {
 }
 
 function dispatch(row) {
-  var out = document.getElementById("out-" + row.index);
   var url = document.getElementById("cb").value || DEFAULT_CALLBACK;
   var body = {
     report_uid: row.report_uid,
@@ -362,7 +368,9 @@ function dispatch(row) {
     dispatched_at: localIso(),
     note: "펌프차 2 · 구급차 1 출동"
   };
-  out.textContent = "전송 중...";
+  var btn = document.getElementById("btn-" + row.index);
+  if (btn) { btn.disabled = true; }
+  show(row.index, "전송 중...", false);
   fetch(url, {
     method: "POST",
     headers: {
@@ -371,17 +379,37 @@ function dispatch(row) {
     },
     body: JSON.stringify(body)
   }).then(function (res) {
-    return res.text().then(function (t) { show(row.index, res.status + " " + t); });
+    return res.text().then(function (t) {
+      if (res.ok) {
+        // 성공 — 원문 JSON 대신 사람이 읽는 문구로. 다시 못 누르게 잠근다.
+        var at = "";
+        try { at = (JSON.parse(t).report_dispatched_at || "").replace("T", " "); }
+        catch (e) { /* 형식이 달라도 성공 표시는 해야 한다 */ }
+        done[row.index] = true;
+        show(row.index, "\\u2705 출동 접수됨" + (at ? " \\u00b7 " + at : ""), false);
+        if (btn) { btn.textContent = "출동 완료"; }
+      } else {
+        var msg = "실패 (" + res.status + ")";
+        if (res.status === 401) { msg = "인증키가 틀렸다 (401) — \\u2699 에서 키를 확인"; }
+        if (res.status === 404) { msg = "백엔드에 진행 중인 신고가 없다 (404)"; }
+        show(row.index, "\\u26a0 " + msg, true);
+        if (btn) { btn.disabled = false; }
+      }
+    });
   }).catch(function (err) {
     // 백엔드가 죽어 있어도 폴링은 계속 돌아야 한다. 이 줄에만 실패를 적고 넘어간다.
-    show(row.index, "전송 실패: " + err);
+    show(row.index, "\\u26a0 전송 실패 — 백엔드(콜백 주소)가 떠 있는지 확인", true);
+    if (btn) { btn.disabled = false; }
   });
 }
 
-function show(index, message) {
-  results[index] = message;
+function show(index, message, isError) {
+  results[index] = { text: message, error: !!isError };
   var out = document.getElementById("out-" + index);
-  if (out) { out.textContent = message; }
+  if (out) {
+    out.textContent = message;
+    out.classList.toggle("error", !!isError);
+  }
 }
 
 function autofillCallback(rows) {
@@ -494,16 +522,23 @@ function card(rows, row) {
   var foot = document.createElement("div");
   foot.className = "card-foot";
   var btn = document.createElement("button");
-  btn.textContent = "출동 지령";
+  btn.id = "btn-" + row.index;
+  // 이미 접수된 출동은 다시 못 내리게 잠근 채로 그린다 (2초마다 다시 그려지므로)
+  if (done[row.index]) {
+    btn.textContent = "출동 완료";
+    btn.disabled = true;
+  } else {
+    btn.textContent = "출동 지령";
+  }
   btn.onclick = function (e) {
     e.stopPropagation();  // 버튼 클릭이 카드 선택으로 번지지 않게
     dispatch(row);
   };
   foot.appendChild(btn);
   var out = document.createElement("span");
-  out.className = "result";
+  out.className = "result" + (results[row.index] && results[row.index].error ? " error" : "");
   out.id = "out-" + row.index;
-  out.textContent = results[row.index] || "";
+  out.textContent = results[row.index] ? results[row.index].text : "";
   foot.appendChild(out);
   el.appendChild(foot);
 
