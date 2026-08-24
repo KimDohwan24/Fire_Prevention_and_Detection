@@ -51,7 +51,8 @@ API:
                                수 MB base64 를 실어 보내면 브라우저가 멈춘다
     GET  /reports/<index>/image  그 신고의 대표 프레임을 image/jpeg 로 돌려준다
                                (범위 밖·이미지 없음·디코딩 실패는 모두 404 JSON)
-    GET  /                     접수 콘솔 화면 — 수신한 신고를 표로 보여주고
+    GET  /                     접수 콘솔 화면 — 좌측에 수신한 신고 목록(카드),
+                               우측에 선택한 신고의 대표 프레임을 크게 보여주고
                                [출동 지령] 버튼으로 백엔드에 출동 통지를 되쏜다.
                                POST 는 **브라우저가 직접** 백엔드로 보낸다 (이 서버는
                                중계하지 않는다 — 백엔드가 CORS 전 오리진 허용이다)
@@ -200,8 +201,9 @@ def report_image(index: int):
     return Response(data, mimetype="image/jpeg")
 
 
-# 접수 콘솔 화면. 시연에서 "소방서가 받은 것"을 눈으로 보여주는 게 전부라
-# 꾸미지 않는다 — 표와 이미지와 버튼뿐이고 CSS·프레임워크·빌드 단계가 없다.
+# 접수 콘솔 화면. 시연에서 "소방서가 받은 것"을 눈으로 보여주는 화면이라
+# 좌측에 신고 데이터(카드 목록), 우측에 선택한 신고의 대표 프레임을 크게 띄운다.
+# 인라인 CSS 뿐이고 프레임워크·빌드 단계는 여전히 없다 — 파일 하나로 완결된다.
 # 출동 지령 POST 는 이 서버를 거치지 않고 브라우저가 백엔드로 직접 쏜다.
 # 중계를 넣으면 mock 서버가 백엔드 주소를 알아야 하는데, 백엔드가 CORS 로 전
 # 오리진을 열어 두었으므로 그럴 이유가 없다 — 화면에서 주소를 바꿔 끼우는 쪽이
@@ -209,30 +211,127 @@ def report_image(index: int):
 CONSOLE_HTML = """<!doctype html>
 <meta charset="utf-8">
 <title>모의 119 접수 콘솔</title>
-<h1>모의 119 접수 콘솔</h1>
-<p>
-  콜백 주소 <input id="cb" size="60" value="http://localhost:5000/api/reports/dispatch">
-  인증키(X-Agency-Key) <input id="key" size="20" value="dev-agency-key">
-</p>
-<p id="status">불러오는 중...</p>
-<table border="1">
-<thead>
-<tr>
-  <th>접수번호</th><th>수신시각</th><th>station</th><th>mode</th>
-  <th>화재분류 / 신뢰도</th><th>주소</th><th>설치위치</th><th>카메라</th>
-  <th>이미지</th><th>출동</th><th>결과</th>
-</tr>
-</thead>
-<tbody id="rows"></tbody>
-</table>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    background: #12151c; color: #e8eaf0;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    background: linear-gradient(90deg, #7f1d1d, #b91c1c);
+    padding: 10px 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    border-bottom: 1px solid #450a0a;
+  }
+  header h1 { font-size: 17px; letter-spacing: 1px; white-space: nowrap; }
+  #status { font-size: 12px; color: #fecaca; white-space: nowrap; }
+  /* 콜백 주소·인증키는 시연 화면에 안 보이게 접어 둔다 — ⚙ 를 누르면 펼쳐진다.
+     값 자체는 출동 지령에 계속 쓰이므로 입력칸을 없애지 않고 숨기기만 한다. */
+  #cfg { margin-left: auto; position: relative; }
+  #cfg > summary {
+    list-style: none; cursor: pointer; font-size: 15px; color: #fecaca;
+    padding: 2px 6px; border-radius: 4px; user-select: none;
+  }
+  #cfg > summary::-webkit-details-marker { display: none; }
+  #cfg > summary:hover { background: rgba(0,0,0,.25); }
+  #cfg[open] > summary { background: rgba(0,0,0,.35); }
+  .cfg-panel {
+    position: absolute; right: 0; top: 100%; margin-top: 6px; z-index: 10;
+    background: #1a1f2b; border: 1px solid #2a2f3a; border-radius: 8px;
+    padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+    font-size: 12px; color: #d1d5db; box-shadow: 0 6px 18px rgba(0,0,0,.5);
+  }
+  .cfg-panel label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .cfg-panel input {
+    background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.25);
+    color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 12px;
+  }
+  main { flex: 1; display: flex; min-height: 0; }
+
+  /* ── 좌측: 신고 목록 ── */
+  #list {
+    width: 420px; flex-shrink: 0; overflow-y: auto;
+    border-right: 1px solid #2a2f3a; padding: 12px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #empty { color: #6b7280; text-align: center; padding: 40px 0; font-size: 13px; }
+  .card {
+    background: #1a1f2b; border: 1px solid #2a2f3a; border-radius: 8px;
+    padding: 10px 12px; cursor: pointer;
+  }
+  .card:hover { border-color: #4b5563; }
+  .card.selected { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444; }
+  .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .card-top .rid { font-weight: bold; font-size: 14px; color: #fca5a5; }
+  .card-top .time { margin-left: auto; font-size: 11px; color: #9ca3af; }
+  .badge {
+    font-size: 10px; padding: 1px 7px; border-radius: 9px;
+    background: #374151; color: #d1d5db; white-space: nowrap;
+  }
+  .badge.dup { background: #78350f; color: #fcd34d; }
+  .field { display: flex; font-size: 12px; line-height: 1.7; }
+  .field .k { width: 68px; flex-shrink: 0; color: #9ca3af; }
+  .field .v { color: #e5e7eb; word-break: break-all; }
+  .conf { color: #f87171; font-weight: bold; }
+  .card-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .card-foot button {
+    background: #dc2626; color: #fff; border: 0; border-radius: 5px;
+    padding: 5px 14px; font-size: 12px; font-weight: bold; cursor: pointer;
+  }
+  .card-foot button:hover { background: #ef4444; }
+  .result { font-size: 11px; color: #a7f3d0; word-break: break-all; }
+
+  /* ── 우측: 대표 프레임 ── */
+  #viewer {
+    flex: 1; min-width: 0; display: flex; flex-direction: column;
+    padding: 14px; gap: 10px; background: #0d1017;
+  }
+  #caption { font-size: 13px; color: #d1d5db; }
+  #caption b { color: #fca5a5; }
+  #stage {
+    flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+    background: #000; border: 1px solid #2a2f3a; border-radius: 8px; overflow: hidden;
+  }
+  #preview { max-width: 100%; max-height: 100%; object-fit: contain; display: none; }
+  #noimage { color: #4b5563; font-size: 14px; }
+</style>
+<header>
+  <h1>&#128680; 모의 119 접수 콘솔</h1>
+  <span id="status">불러오는 중...</span>
+  <details id="cfg">
+    <summary title="연결 설정">&#9881;&#65039;</summary>
+    <div class="cfg-panel">
+      <label>콜백 주소
+        <input id="cb" size="46" value="http://localhost:5000/api/reports/dispatch"></label>
+      <label>인증키(X-Agency-Key)
+        <input id="key" size="45" value="__AGENCY_KEY__"></label>
+    </div>
+  </details>
+</header>
+<main>
+  <div id="list"><p id="empty">수신한 신고가 없다. 백엔드에서 화재를 트리거하면 여기에 뜬다.</p></div>
+  <div id="viewer">
+    <p id="caption">신고를 선택하면 대표 프레임이 여기에 표시된다.</p>
+    <div id="stage">
+      <img id="preview" alt="대표 프레임">
+      <p id="noimage">이미지 없음</p>
+    </div>
+  </div>
+</main>
 <script>
 var DEFAULT_CALLBACK = "http://localhost:5000/api/reports/dispatch";
-// 결과 칸 내용은 표 밖에 따로 둔다 — 2초마다 표를 다시 그리므로 행 안에 두면 지워진다.
+// 결과 문구는 목록 밖에 따로 둔다 — 2초마다 목록을 다시 그리므로 카드 안에만 두면 지워진다.
 var results = {};
 // 사용자가 콜백 칸을 한 번이라도 건드렸으면 자동 채움을 그만둔다 (타이핑 중에 덮어쓰면 못 쓴다).
 var cbTouched = false;
 // 직전 폴링 결과. 같으면 다시 그리지 않는다 — 매번 그리면 <img> 가 재요청되어 깜빡인다.
 var lastSnapshot = null;
+// 우측에 띄운 신고. 새 신고가 오면 자동으로 최신 건을 따라가되,
+// 사용자가 카드를 클릭했으면(manualSelect) 그 선택을 유지한다.
+var selectedIndex = null;
+var manualSelect = false;
+var lastImageUrl = null;
 
 document.getElementById("cb").addEventListener("input", function () { cbTouched = true; });
 
@@ -247,13 +346,6 @@ function text(v) {
 function localIso() {
   var now = new Date();
   return new Date(now - now.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
-}
-
-function cell(tr, value) {
-  var td = document.createElement("td");
-  td.textContent = value;
-  tr.appendChild(td);
-  return td;
 }
 
 function dispatch(row) {
@@ -302,48 +394,152 @@ function autofillCallback(rows) {
   document.getElementById("cb").value = url;
 }
 
+function field(parent, key, value, valueClass) {
+  var p = document.createElement("div");
+  p.className = "field";
+  var k = document.createElement("span");
+  k.className = "k";
+  k.textContent = key;
+  var v = document.createElement("span");
+  v.className = "v" + (valueClass ? " " + valueClass : "");
+  v.textContent = value;
+  p.appendChild(k);
+  p.appendChild(v);
+  parent.appendChild(p);
+}
+
+function badge(parent, label, extraClass) {
+  var b = document.createElement("span");
+  b.className = "badge" + (extraClass ? " " + extraClass : "");
+  b.textContent = label;
+  parent.appendChild(b);
+}
+
+// 우측 패널에 그 신고의 대표 프레임을 띄운다. src 는 바뀔 때만 건드린다 —
+// 같은 값을 다시 넣어도 브라우저에 따라 재요청되어 깜빡일 수 있다.
+function showPreview(row) {
+  var img = document.getElementById("preview");
+  var noimage = document.getElementById("noimage");
+  var caption = document.getElementById("caption");
+
+  if (!row) {
+    caption.textContent = "신고를 선택하면 대표 프레임이 여기에 표시된다.";
+    img.style.display = "none";
+    noimage.style.display = "";
+    lastImageUrl = null;
+    return;
+  }
+  caption.innerHTML = "";
+  var b = document.createElement("b");
+  b.textContent = text(row.external_id);
+  caption.appendChild(b);
+  caption.appendChild(document.createTextNode(
+    "  " + text(row.address) + " · " + text(row.place) +
+    " · " + text(row.event_class) + " " + text(row.confidence)));
+
+  if (row.has_image) {
+    if (lastImageUrl !== row.image_url) {
+      img.src = row.image_url;
+      lastImageUrl = row.image_url;
+    }
+    // 스타일시트가 #preview 를 display:none 으로 시작하므로 "" 로는 안 보인다 —
+    // 인라인 block 으로 명시해야 스타일시트를 이긴다.
+    img.style.display = "block";
+    noimage.style.display = "none";
+  } else {
+    img.style.display = "none";
+    noimage.style.display = "";
+    lastImageUrl = null;
+  }
+}
+
+function select(rows, index, manual) {
+  selectedIndex = index;
+  if (manual) { manualSelect = true; }
+  var cards = document.querySelectorAll(".card");
+  cards.forEach(function (card) {
+    card.classList.toggle("selected", Number(card.dataset.index) === index);
+  });
+  var row = rows.filter(function (r) { return r.index === index; })[0];
+  showPreview(row || null);
+}
+
+function card(rows, row) {
+  var el = document.createElement("div");
+  el.className = "card";
+  el.dataset.index = row.index;
+  el.onclick = function () { select(rows, row.index, true); };
+
+  var top = document.createElement("div");
+  top.className = "card-top";
+  var rid = document.createElement("span");
+  rid.className = "rid";
+  rid.textContent = text(row.external_id);
+  top.appendChild(rid);
+  if (row.duplicate) { badge(top, "중복", "dup"); }
+  badge(top, "소방서 " + text(row.station));
+  badge(top, text(row.mode));
+  var time = document.createElement("span");
+  time.className = "time";
+  time.textContent = text(row.received_at).replace("T", " ");
+  top.appendChild(time);
+  el.appendChild(top);
+
+  field(el, "분류/신뢰도", text(row.event_class) + " / " + text(row.confidence), "conf");
+  field(el, "주소", text(row.address));
+  field(el, "설치위치", text(row.place));
+  var cctv = row.cctv || {};
+  field(el, "카메라", text(cctv.name) + " (" + text(cctv.width) + "x" + text(cctv.height) + ")");
+
+  var foot = document.createElement("div");
+  foot.className = "card-foot";
+  var btn = document.createElement("button");
+  btn.textContent = "출동 지령";
+  btn.onclick = function (e) {
+    e.stopPropagation();  // 버튼 클릭이 카드 선택으로 번지지 않게
+    dispatch(row);
+  };
+  foot.appendChild(btn);
+  var out = document.createElement("span");
+  out.className = "result";
+  out.id = "out-" + row.index;
+  out.textContent = results[row.index] || "";
+  foot.appendChild(out);
+  el.appendChild(foot);
+
+  return el;
+}
+
 function draw(rows) {
   var snapshot = JSON.stringify(rows);
   if (snapshot === lastSnapshot) { return; }
   lastSnapshot = snapshot;
 
-  var tbody = document.getElementById("rows");
-  tbody.innerHTML = "";
-  rows.forEach(function (row) {
-    var tr = document.createElement("tr");
-    cell(tr, text(row.external_id) + (row.duplicate ? " (중복)" : ""));
-    cell(tr, text(row.received_at));
-    cell(tr, text(row.station));
-    cell(tr, text(row.mode));
-    cell(tr, text(row.event_class) + " / " + text(row.confidence));
-    cell(tr, text(row.address));
-    cell(tr, text(row.place));
-    var cctv = row.cctv || {};
-    cell(tr, text(cctv.name) + " (" + text(cctv.width) + "x" + text(cctv.height) + ")");
+  var list = document.getElementById("list");
+  list.innerHTML = "";
+  if (rows.length === 0) {
+    var empty = document.createElement("p");
+    empty.id = "empty";
+    empty.textContent = "수신한 신고가 없다. 백엔드에서 화재를 트리거하면 여기에 뜬다.";
+    list.appendChild(empty);
+  }
+  // 최신 신고가 위로 오게 역순으로 그린다 — 시연 중에는 방금 온 것만 본다.
+  for (var i = rows.length - 1; i >= 0; i--) {
+    list.appendChild(card(rows, rows[i]));
+  }
 
-    var imgTd = document.createElement("td");
-    if (row.has_image) {
-      var img = document.createElement("img");
-      img.src = row.image_url;
-      img.width = 240;
-      imgTd.appendChild(img);
-    } else {
-      imgTd.textContent = "-";
-    }
-    tr.appendChild(imgTd);
+  // 새 신고가 오면 자동으로 최신 건을 우측에 띄운다.
+  // 사용자가 직접 고른 게 있으면 그 선택을 유지한다 (사라진 경우만 최신으로 복귀).
+  var validSelection = rows.some(function (r) { return r.index === selectedIndex; });
+  if (rows.length === 0) {
+    select(rows, null, false);
+  } else if (manualSelect && validSelection) {
+    select(rows, selectedIndex, false);
+  } else {
+    manualSelect = false;
+    select(rows, rows[rows.length - 1].index, false);
+  }
 
-    var btnTd = document.createElement("td");
-    var btn = document.createElement("button");
-    btn.textContent = "출동 지령";
-    btn.onclick = function () { dispatch(row); };
-    btnTd.appendChild(btn);
-    tr.appendChild(btnTd);
-
-    var outTd = cell(tr, results[row.index] || "");
-    outTd.id = "out-" + row.index;
-
-    tbody.appendChild(tr);
-  });
   document.getElementById("status").textContent =
     "신고 " + rows.length + "건 · 2초마다 갱신";
   autofillCallback(rows);
@@ -364,16 +560,40 @@ setInterval(poll, 2000);
 """
 
 
+def _agency_key() -> str:
+    """출동 지령에 실을 X-Agency-Key 기본값.
+
+    백엔드의 AGENCY_CALLBACK_KEY 와 같아야 통지가 접수된다. 키를 소스에 박아
+    두면 저장소에 비밀값이 남으므로, 환경변수 → 저장소 루트 .env 순서로 읽고
+    둘 다 없으면 개발용 더미를 쓴다 (그때는 ⚙ 에서 직접 바꿔 넣으면 된다).
+    """
+    key = os.environ.get("AGENCY_CALLBACK_KEY")
+    if key:
+        return key
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                name, _, value = line.strip().partition("=")
+                if name == "AGENCY_CALLBACK_KEY" and value:
+                    return value
+    except OSError:
+        pass
+    return "dev-agency-key"
+
+
 @app.get("/")
 def console():
     """소방서 접수 콘솔 화면 (시연용).
 
     콘솔 print 만으로는 "소방서가 무엇을 받았는지"를 보여줄 수 없어서 붙인 화면이다.
-    꾸미지 않는다 — 데이터가 오가는 것만 보이면 되므로 CSS 도 프레임워크도 없다.
+    좌측이 신고 목록(데이터), 우측이 선택한 신고의 대표 프레임이다.
+    인라인 CSS 뿐이고 프레임워크·빌드 단계는 없다 — 이 파일 하나로 완결된다.
     """
     # charset 은 적지 않는다 — werkzeug 3 이 text/* 에 charset=utf-8 을 무조건
     # 덧붙여서, 여기에 또 쓰면 Content-Type 에 charset 이 두 번 들어간다.
-    return Response(CONSOLE_HTML, mimetype="text/html")
+    return Response(CONSOLE_HTML.replace("__AGENCY_KEY__", _agency_key()),
+                    mimetype="text/html")
 
 
 @app.get("/health")
