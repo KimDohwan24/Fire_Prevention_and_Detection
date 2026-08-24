@@ -82,6 +82,33 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 app = Flask(__name__)
 
+
+def _agency_key() -> str:
+    """접수 콘솔 입력칸에 미리 채워 둘 X-Agency-Key 값.
+
+    2026-08-24 이전에는 화면에 `dev-agency-key` 를 박아 뒀는데, 그건 백엔드가
+    키 미설정 시 조용히 쓰던 기본값이었다. 이제 백엔드는 기본값이면 아예 뜨지
+    않으므로(back/config.py 의 시크릿 가드) 박아 둔 값은 항상 틀린 값이 된다.
+    그래서 백엔드와 같은 곳(루트 .env)에서 읽어 온다 — 시연자가 매번 키를
+    복사해 붙여넣지 않아도 되고, 두 곳에 값이 갈라지지도 않는다.
+
+    못 찾으면 빈 칸으로 둔다. 틀린 값을 채워 두는 것보다 비어 있는 편이
+    "여기에 무언가 넣어야 한다"가 분명하다.
+    """
+    from pathlib import Path
+
+    if os.environ.get("AGENCY_CALLBACK_KEY"):
+        return os.environ["AGENCY_CALLBACK_KEY"]
+    env_file = Path(__file__).resolve().parent.parent / ".env"
+    if not env_file.exists():
+        return ""
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        name, _, value = line.strip().partition("=")
+        if name.strip() == "AGENCY_CALLBACK_KEY":
+            return value.strip()
+    return ""
+
+
 # 이번 세션에 수신한 요청 목록 (메모리 보관 — 서버 재시작 시 초기화).
 # 재전송도 전부 남는다. 접수된 것만 보려면 duplicate 가 False 인 것을 세면 된다.
 RECEIVED: list[dict] = []
@@ -212,7 +239,7 @@ CONSOLE_HTML = """<!doctype html>
 <h1>모의 119 접수 콘솔</h1>
 <p>
   콜백 주소 <input id="cb" size="60" value="http://localhost:5000/api/reports/dispatch">
-  인증키(X-Agency-Key) <input id="key" size="20" value="dev-agency-key">
+  인증키(X-Agency-Key) <input id="key" size="45" value="__AGENCY_KEY__">
 </p>
 <p id="status">불러오는 중...</p>
 <table border="1">
@@ -373,7 +400,10 @@ def console():
     """
     # charset 은 적지 않는다 — werkzeug 3 이 text/* 에 charset=utf-8 을 무조건
     # 덧붙여서, 여기에 또 쓰면 Content-Type 에 charset 이 두 번 들어간다.
-    return Response(CONSOLE_HTML, mimetype="text/html")
+    # 인증키는 매 요청 채워 넣는다 — 서버 기동 뒤에 .env 를 고쳐도 새로고침만
+    # 하면 반영된다. CONSOLE_HTML 은 JS 중괄호가 가득해서 .format 을 쓸 수 없다.
+    return Response(CONSOLE_HTML.replace("__AGENCY_KEY__", _agency_key()),
+                    mimetype="text/html")
 
 
 @app.get("/health")

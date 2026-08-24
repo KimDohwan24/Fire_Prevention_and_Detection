@@ -169,12 +169,31 @@ CREATE DATABASE fireguard;
   <tr><th>항목</th><th>설명</th></tr>
   <tr><td><code>DB_PASSWORD</code></td><td><strong>필수.</strong> 본인 PostgreSQL 비밀번호</td></tr>
   <tr><td><code>DB_USER</code></td><td>보통 <code>postgres</code></td></tr>
-  <tr><td><code>JWT_SECRET</code></td><td>아무 문자열. 개발용이면 값이 있기만 하면 됨</td></tr>
+  <tr><td><code>JWT_SECRET</code></td><td><strong>필수.</strong> 로그인 토큰 서명 키.
+      아무 문자열이어도 되지만 <strong>비워 두면 서버가 뜨지 않습니다</strong></td></tr>
   <tr><td><code>CCTV_API_KEY</code></td><td><strong>선택.</strong> 국가교통정보센터(its.go.kr) 인증키.
       CCTV 스트림 주소를 최신 값으로 갱신할 때만 씁니다.
       <strong>비워 두면 외부 호출 없이 DB 에 저장된 주소를 그대로</strong> 쓰므로, 없어도 개발·테스트는 됩니다</td></tr>
-  <tr><td><code>INTERNAL_API_KEY</code></td><td>AI ↔ 백엔드 통신 키. 비워두면 개발용 기본값 사용</td></tr>
+  <tr><td><code>INTERNAL_API_KEY</code></td><td><strong>필수.</strong> AI ↔ 백엔드 통신 키
+      (<code>X-Internal-Key</code> 헤더). AI 쪽 <code>run_video.py</code> 도 이 파일에서
+      같은 값을 읽어 갑니다</td></tr>
+  <tr><td><code>AGENCY_CALLBACK_KEY</code></td><td><strong>필수.</strong> 소방서가 출동 통지를
+      되쏠 때 쓰는 키 (<code>X-Agency-Key</code> 헤더). mock-119 접수 콘솔도 이 파일에서
+      읽어 입력칸에 채웁니다</td></tr>
 </table>
+<div class="warn">
+  ⚠️ <strong>시크릿 3개(<code>JWT_SECRET</code> · <code>INTERNAL_API_KEY</code> ·
+  <code>AGENCY_CALLBACK_KEY</code>)를 비워 두면 서버가 뜨지 않습니다.</strong>
+  기동하자마자 어느 값이 비었는지 알려주고 멈춥니다.<br><br>
+  2026-08-24 이전에는 비어 있으면 <code>dev-secret-change-me</code> 같은
+  <b>소스코드에 적힌 기본값</b>으로 조용히 돌았습니다. 그런데 <code>JWT_SECRET</code> 은
+  로그인 토큰의 서명 키라, 값을 아는 사람은 서버를 거치지 않고
+  <code>user_role: ADMIN</code> 짜리 토큰을 직접 만들어 넣을 수 있습니다 — 비밀번호도
+  로그인도 필요 없이 관리자가 됩니다. 그래서 조용한 기본값을 <b>기동 실패</b>로
+  바꿨습니다. 잘못 뜬 서버는 아무도 못 알아채지만, 안 뜨는 서버는 바로 알아채니까요.<br><br>
+  값 만들기 (셋 다 같은 방법, 서로 다른 값으로):<br>
+  <code>python -c "import secrets; print(secrets.token_urlsafe(32))"</code>
+</div>
 <div class="warn">
   ⚠️ <code>.env</code> 는 깃에 올라가지 않습니다(<code>.gitignore</code>). <strong>실제 키·비밀번호를
   <code>.env.example</code> 에 적지 마세요.</strong> 템플릿은 항상 값이 빈 상태로 커밋합니다.
@@ -506,9 +525,11 @@ X-Internal-Key: &lt;INTERNAL_API_KEY 값&gt;
 받으면 그 신고가 <code>ACCEPTED</code>(접수 완료) 에서 <code>DISPATCHED</code>(출동 접수)
 로 바뀌고, 대시보드 표기도 따라 바뀝니다.</p>
 <ul>
-  <li>인증은 <code>X-Agency-Key</code> 헤더입니다. 화면의 입력칸 기본값
-      <code>dev-agency-key</code> 가 <code>.env</code> 의
-      <code>AGENCY_CALLBACK_KEY</code> 와 같아야 합니다.</li>
+  <li>인증은 <code>X-Agency-Key</code> 헤더입니다. 화면의 입력칸은
+      <code>.env</code> 의 <code>AGENCY_CALLBACK_KEY</code> 를 읽어 자동으로
+      채워집니다 — 접수 콘솔이 백엔드와 같은 파일을 보므로 손댈 것이 없습니다.
+      칸이 비어 있으면 <code>.env</code> 에 그 값이 없다는 뜻이고, 그 상태로는
+      백엔드도 뜨지 않습니다(위 <b>4) 환경변수 파일 만들기</b> 참고).</li>
   <li>콜백 주소는 신고에 실려 온 <code>callback_url</code> 로 자동 채워집니다
       (백엔드의 <code>PUBLIC_BASE_URL</code> 설정에서 만들어집니다).</li>
   <li>같은 통지를 여러 번 눌러도 신고가 늘지 않습니다 — 최신 값으로 덮어씁니다.</li>

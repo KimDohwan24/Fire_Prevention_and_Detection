@@ -1229,7 +1229,7 @@ where = <span class="s">f"WHERE {' AND '.join(conds)}"</span> <span class="k">if
 
 <h4>AI가 보내는 실제 요청 모양</h4>
 <pre>POST /api/internal/detections
-X-Internal-Key: dev-internal-key
+X-Internal-Key: &lt;.env 의 INTERNAL_API_KEY 값&gt;
 
 {
   <span class="s">"cctv_no"</span>: <span class="s">1</span>,

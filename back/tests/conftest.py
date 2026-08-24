@@ -11,6 +11,15 @@ from pathlib import Path
 # (config.load_dotenv 는 기존 환경변수를 덮어쓰지 않는다)
 os.environ["DB_NAME"] = "fireguard_test"
 
+# 시크릿도 같은 이유로 여기서 심는다. create_app 이 개발용 기본값이면 죽기
+# 때문에(config.assert_secrets_configured), 그냥 두면 `.env` 에 값이 없는 팀원
+# 로컬에서 수트 전체가 부팅 단계에서 무너진다. 가드에 우회용 환경변수를 파지
+# 않고 여기서 진짜 값을 주는 쪽을 택했다 — 우회 스위치는 언젠가 운영에서 켜진다.
+# 테스트는 이 값을 문자열로 쓰지 않고 전부 config.* 로 참조하므로 값 자체는 무의미하다.
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-not-a-real-one")
+os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key-not-a-real-one")
+os.environ.setdefault("AGENCY_CALLBACK_KEY", "test-agency-key-not-a-real-one")
+
 import bcrypt
 import psycopg2
 import pytest
