@@ -12,6 +12,7 @@ services/telegram_bot.py 몫이다. 이 모듈이 지키는 성질은 하나다:
 토큰이 비어 있으면 모든 함수가 HTTP 없이 즉시 실패값을 돌려준다 — 토큰을 넣지 않은
 팀원 환경에서도 서버는 그대로 뜨고 알림은 기존 모의 SMS 로만 나간다.
 """
+import json
 import logging
 
 import requests
@@ -21,6 +22,11 @@ import config
 logger = logging.getLogger("fireguard.telegram")
 
 API_BASE = "https://api.telegram.org"
+
+# 사진 캡션 길이 상한 (Bot API). 본문(sendMessage)의 4096 과 **다른 값**이라 본문
+# 기준으로 만든 문구를 그대로 캡션에 넣으면 텔레그램이 통째로 거절한다 — 사진도
+# 문구도 안 가는 것이 최악이라, 넘치면 잘라서라도 보낸다.
+CAPTION_LIMIT = 1024
 
 # 연결을 재사용한다. 2026-08-22 실측(api.telegram.org): 첫 호출은 733~767ms 인데
 # 그 뒤로는 234~247ms 로 안정적이다 — 차이 약 500ms 가 DNS+TLS 핸드셰이크 값이다.
@@ -74,6 +80,40 @@ def _api(method: str, payload: dict) -> dict | None:
     return _real_api(method, payload)
 
 
+def _real_api_multipart(method: str, data: dict, files: dict) -> dict | None:
+    resp = _session.post(
+        f"{API_BASE}/bot{config.TELEGRAM_BOT_TOKEN}/{method}",
+        data=data,
+        files=files,
+        timeout=config.TELEGRAM_HTTP_TIMEOUT_SEC,
+    )
+    return resp.json()
+
+
+def _api_multipart(method: str, data: dict, files: dict) -> dict | None:
+    """파일을 올리는 Bot API 호출 1회. 테스트에서 monkeypatch 하는 지점.
+
+    _api 와 길을 나눈 이유는 **본문 형식이 다르기 때문**이다. sendPhoto 는 파일을
+    multipart/form-data 로 받는다 — JSON body 로는 파일을 실을 수 없고, requests 는
+    json= 과 files= 를 동시에 받지 못한다. _api 에 분기를 넣는 대신 형식별로 함수를
+    나눠, 각 경로를 테스트가 따로 대역으로 갈아끼울 수 있게 한다.
+
+    타임아웃은 _http_timeout 을 쓰지 않는다 — 그 함수의 롱폴링 가산은 payload 의
+    'timeout' 키(getUpdates 전용)를 보는 것이고, multipart 경로에는 그런 키가 없다.
+    """
+    return _real_api_multipart(method, data, files)
+
+
+def _handle_response(method: str, body) -> dict | None:
+    """Bot API 응답 1건을 해석한다. 실패는 전부 None 으로."""
+    if not isinstance(body, dict) or not body.get("ok"):
+        # 봇 차단·잘못된 chat_id 등. 텔레그램이 이유를 description 에 담아 준다
+        desc = body.get("description") if isinstance(body, dict) else body
+        logger.warning("텔레그램 %s 거부됨: %s", method, desc)
+        return None
+    return body.get("result")
+
+
 def _call(method: str, payload: dict) -> dict | None:
     """_api 를 부르되 실패를 전부 삼키고 성공 응답의 result 만 돌려준다.
 
@@ -88,12 +128,20 @@ def _call(method: str, payload: dict) -> dict | None:
         logger.warning("텔레그램 %s 호출 실패", method, exc_info=True)
         return None
 
-    if not isinstance(body, dict) or not body.get("ok"):
-        # 봇 차단·잘못된 chat_id 등. 텔레그램이 이유를 description 에 담아 준다
-        desc = body.get("description") if isinstance(body, dict) else body
-        logger.warning("텔레그램 %s 거부됨: %s", method, desc)
+    return _handle_response(method, body)
+
+
+def _call_multipart(method: str, data: dict, files: dict) -> dict | None:
+    """_call 의 multipart 판. 성질(예외를 밖으로 흘리지 않는다)은 같다."""
+    if not is_enabled():
         return None
-    return body.get("result")
+    try:
+        body = _api_multipart(method, data, files)
+    except Exception:
+        logger.warning("텔레그램 %s 호출 실패", method, exc_info=True)
+        return None
+
+    return _handle_response(method, body)
 
 
 def send_message(chat_id, text: str, buttons: list | None = None) -> bool:
@@ -106,6 +154,27 @@ def send_message(chat_id, text: str, buttons: list | None = None) -> bool:
     if buttons:
         payload["reply_markup"] = {"inline_keyboard": buttons}
     return _call("sendMessage", payload) is not None
+
+
+def send_photo(chat_id, image: bytes, caption: str, buttons: list | None = None) -> bool:
+    """사진 1장을 캡션과 함께 보낸다. buttons 는 send_message 와 같은 형식.
+
+    화재 알림에는 검출 이미지가 같이 가야 한다 — 사용자는 유예(ALERT_DEADLINE_SEC)
+    안에 '확인/취소'를 판단해야 하는데, 문구만으로는 앱을 열어 화면을 찾아야 하고
+    그 왕복이 유예를 다 먹는다. 사진과 버튼이 한 메시지에 있으면 그 자리에서 끝난다.
+
+    본문과 사진을 따로 두 건 보내지 않는 이유: 버튼은 한 메시지에만 붙일 수 있고,
+    두 건이면 어느 쪽에 답해야 하는지가 흐려진다. 그래서 문구를 캡션으로 넣는다.
+    """
+    data = {"chat_id": chat_id, "caption": caption[:CAPTION_LIMIT]}
+    if buttons:
+        # multipart 는 form 필드가 전부 문자열이라 dict 를 그대로 실을 수 없다.
+        # 직렬화를 빼먹으면 버튼이 조용히 사라져 응답 경로가 통째로 없어진다.
+        data["reply_markup"] = json.dumps({"inline_keyboard": buttons})
+    # 파일 이름과 MIME 은 우리가 정한다 — 텔레그램은 확장자로 형식을 짐작하고,
+    # 대표 프레임은 event_frame 이 JPEG 로 만들어 준다.
+    files = {"photo": ("detection.jpg", image, "image/jpeg")}
+    return _call_multipart("sendPhoto", data, files) is not None
 
 
 def get_updates(offset: int, timeout_sec: int = 0) -> list[dict]:
@@ -140,10 +209,28 @@ def answer_callback(callback_query_id: str, text: str) -> None:
 
 
 def edit_message_text(chat_id, message_id, text: str) -> None:
-    """이미 보낸 메시지의 본문을 갈아끼운다 (버튼도 같이 사라진다).
+    """이미 보낸 **글 메시지**의 본문을 갈아끼운다 (버튼도 같이 사라진다).
 
     버튼을 누른 뒤 "처리됨"으로 바꿔 두면 같은 알림을 두 번 누르는 일이 줄어든다.
     실패해도 본 처리에는 영향이 없다.
+
+    ⚠️ 사진 메시지에는 쓸 수 없다 — edit_message_caption 을 쓸 것.
     """
     _call("editMessageText",
           {"chat_id": chat_id, "message_id": message_id, "text": text})
+
+
+def edit_message_caption(chat_id, message_id, caption: str) -> None:
+    """이미 보낸 **사진 메시지**의 캡션을 갈아끼운다 (버튼도 같이 사라진다).
+
+    사진으로 나간 알림은 본문이 text 가 아니라 caption 이라 editMessageText 가
+    `Bad Request: there is no text in the message to edit` 로 거절당한다
+    (2026-08-24 실측). 거절당하면 **버튼이 그대로 남고**, 사용자는 아무 일도 일어나지
+    않은 줄 알고 다시 누른다 — 두 번째 누름은 "이미 응답한 알림입니다"만 돌려받아
+    응답이 먹지 않은 것처럼 보인다. 실제 시연에서 그대로 겪었다.
+
+    캡션도 sendPhoto 와 같은 1024자 상한을 받는다.
+    """
+    _call("editMessageCaption",
+          {"chat_id": chat_id, "message_id": message_id,
+           "caption": caption[:CAPTION_LIMIT]})

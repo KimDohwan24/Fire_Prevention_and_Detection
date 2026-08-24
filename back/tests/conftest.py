@@ -363,6 +363,13 @@ def _no_real_telegram_http(monkeypatch):
         telegram, "_api",
         lambda method, payload: {"ok": True, "result": {"message_id": 1}},
     )
+    # 사진 발송은 본문과 형식이 달라 다른 seam 을 지난다(multipart). 여기를 같이 막지
+    # 않으면 화재 알림 경로를 지나는 테스트가 진짜 사진을 쏘게 된다 — _api 하나만
+    # 막아 두면 "가드가 있다"는 착각까지 얹혀서 더 나쁘다.
+    monkeypatch.setattr(
+        telegram, "_api_multipart",
+        lambda method, data, files: {"ok": True, "result": {"message_id": 1}},
+    )
     telegram_bot.reset_offset()
     yield
     telegram_bot.stop_polling()

@@ -19,18 +19,17 @@
 - 점검 모드(event_is_test) 이벤트는 신고하지 않는다.
 """
 import base64
-import io
 import json
 import logging
 import time
 from datetime import datetime
-from pathlib import Path
 
 import psycopg2.errors
 import requests
 
 import config
 import db
+from services import event_frame
 
 logger = logging.getLogger("fireguard.report")
 
@@ -156,82 +155,22 @@ def _log_attempt(report_no: int, attempt: int, endpoint: str, request_body: dict
     )
 
 
-def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
-    """검출 상자(bbox)를 이미지에 그려 넣는다 — 받는 쪽이 좌표를 몰라도 되게.
-
-    좌표는 media_detections 의 YOLO xywhn(중심 x·y, 폭, 높이 — 0~1 비율).
-    화재 클래스(flame/smoke)만 그린다. 어떤 이유로든 실패하면 원본을 그대로
-    돌려준다 — 이미지 때문에 신고가 막히면 안 된다.
-    """
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        # Pillow 는 requirements.txt 에 선언된 필수 의존성이다. 여기서 아래 일반
-        # except 로 함께 삼키면 "설치가 빠졌다"가 경고 한 줄로 묻혀서, 상자 없는
-        # 사진이 119 로 나가도 아무도 모른다. 신고 자체는 계속 보내되(이미지 때문에
-        # 신고가 막히면 안 된다) 원인만은 error 로 분명히 남긴다.
-        logger.error("Pillow 가 설치돼 있지 않다 — 검출 상자 없이 원본으로 전송한다. "
-                     "requirements.txt 를 다시 설치할 것")
-        return content
-
-    try:
-        im = Image.open(io.BytesIO(content)).convert("RGB")
-        draw = ImageDraw.Draw(im)
-        width, height = im.size
-        drew = False
-        for det in detections or []:
-            if not isinstance(det, dict) or det.get("cls") not in ("flame", "smoke"):
-                continue
-            box = det.get("box") or []
-            if len(box) != 4:
-                continue
-            cx, cy, w, h = (float(v) for v in box)
-            x1, y1 = (cx - w / 2) * width, (cy - h / 2) * height
-            x2, y2 = (cx + w / 2) * width, (cy + h / 2) * height
-            draw.rectangle([x1, y1, x2, y2], outline=(220, 30, 30),
-                           width=max(2, width // 300))
-            drew = True
-        if not drew:
-            return content
-        out = io.BytesIO()
-        im.save(out, "JPEG", quality=90)
-        return out.getvalue()
-    except Exception as exc:                       # noqa: BLE001
-        logger.warning("bbox 그리기 실패 — 원본 이미지로 전송: %s", exc)
-        return content
-
-
 def _primary_frame(event_no: int) -> tuple[str | None, list | None]:
     """대표 프레임(media_is_primary)의 이미지(base64)와 검출 상자 좌표를 가져온다.
 
     실제 119라면 외부에서 우리 서버 URL 에 접근할 수 없으므로 이미지 자체를
-    페이로드에 싣는다. 이미지에는 검출 상자를 그려 넣는다. 파일이 없거나 못
-    읽으면 (None, None) — 이미지는 곁들이고 신고가 본체라, 이미지 때문에
-    신고가 막히면 안 된다.
+    페이로드에 싣는다. 파일을 읽고 검출 상자를 그리는 일은 services/event_frame.py
+    가 한다 — 같은 그림을 텔레그램 화재 알림도 쓰기 때문이다. 여기 남는 것은
+    **JSON 에 실을 수 있게 base64 로 감싸는 것뿐**이다 (텔레그램은 multipart 라
+    바이트를 그대로 쓴다).
+
+    파일이 없거나 못 읽으면 (None, None) — 이미지는 곁들이고 신고가 본체라,
+    이미지 때문에 신고가 막히면 안 된다.
     """
-    row = db.query_one(
-        """
-        SELECT media_url, media_detections FROM event_media
-        WHERE event_no = %s AND media_is_primary
-        """,
-        (event_no,),
-    )
-    if row is None or not row["media_url"]:
+    content, detections = event_frame.load_primary_frame(event_no)
+    if content is None:
         return None, None
-    prefix = "/media/"
-    url = row["media_url"]
-    if not url.startswith(prefix):
-        logger.warning("대표 프레임 경로 형식이 예상과 다름 — 이미지 없이 신고 (event_no=%s, url=%s)",
-                       event_no, url)
-        return None, None
-    try:
-        content = (Path(config.MEDIA_ROOT) / url[len(prefix):]).read_bytes()
-    except OSError as exc:
-        logger.warning("대표 프레임 파일 읽기 실패 — 이미지 없이 신고 (event_no=%s): %s",
-                       event_no, exc)
-        return None, None
-    content = _draw_bboxes(content, row["media_detections"])
-    return base64.b64encode(content).decode("ascii"), row["media_detections"]
+    return base64.b64encode(content).decode("ascii"), detections
 
 
 def _find_active_report(event_no: int) -> dict | None:

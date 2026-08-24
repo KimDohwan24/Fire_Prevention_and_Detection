@@ -34,7 +34,10 @@ def sent(monkeypatch):
     monkeypatch.setattr(telegram, "answer_callback",
                         lambda qid, text: outbox.append(("toast", qid, text, None)))
     monkeypatch.setattr(telegram, "edit_message_text",
-                        lambda chat_id, mid, text: outbox.append(("edit", chat_id, text, None)))
+                        lambda chat_id, mid, text: outbox.append(("edit_text", chat_id, text, None)))
+    monkeypatch.setattr(telegram, "edit_message_caption",
+                        lambda chat_id, mid, caption:
+                            outbox.append(("edit_caption", chat_id, caption, None)))
     return outbox
 
 
@@ -403,3 +406,47 @@ def test_the_polling_thread_uses_long_polling(token, idle_poller):
 
     assert idle_poller, "폴링 스레드가 틱을 한 번도 돌리지 않았다"
     assert idle_poller[0] == config.TELEGRAM_LONG_POLL_SEC
+
+
+# ---------- 응답 뒤 원문 갱신 ----------
+# 버튼을 누르면 원문에 결과를 붙이고 버튼을 걷어낸다. 걷어내지 않으면 사용자는
+# 아무 일도 안 일어난 줄 알고 다시 누르고, 두 번째 누름은 "이미 응답한 알림입니다"만
+# 돌려받는다 — 2026-08-24 실제 시연에서 그대로 일어났다.
+
+def _photo_press(data, chat_id=555, qid="q-1"):
+    """사진 알림의 버튼 누름. 본문이 text 가 아니라 caption 으로 온다."""
+    return {"update_id": 9,
+            "callback_query": {"id": qid, "data": data,
+                               "message": {"chat": {"id": chat_id}, "message_id": 88,
+                                           "caption": "[파이어가드] 불꽃 감지!"}}}
+
+
+def test_photo_alert_outcome_edits_the_caption(sent):
+    """사진 메시지는 editMessageText 가 통하지 않는다.
+
+    텔레그램이 'there is no text in the message to edit' 로 거절하고 버튼이 남는다.
+    """
+    _link(1, 555)
+    event_no = make_event()
+    alert_no = make_alert(event_no, user_no=1)
+
+    telegram_bot.handle_update(_photo_press(f"resp:{alert_no}:READ", chat_id=555))
+
+    edits = [(kind, text) for kind, _, text, _ in sent if kind.startswith("edit")]
+    assert edits, "원문을 갱신해야 버튼이 걷힌다"
+    kind, text = edits[0]
+    assert kind == "edit_caption", f"사진 알림인데 {kind} 을 썼다"
+    assert "[파이어가드] 불꽃 감지!" in text, "원래 문구는 남겨야 한다"
+    assert "119 신고" in text
+
+
+def test_text_alert_outcome_still_edits_the_text(sent):
+    """문자형(사진 없이 나간) 알림은 기존대로 본문을 고친다."""
+    _link(1, 555)
+    event_no = make_event()
+    alert_no = make_alert(event_no, user_no=1)
+
+    telegram_bot.handle_update(_button_press(f"resp:{alert_no}:CANCEL", chat_id=555))
+
+    edits = [(kind, text) for kind, _, text, _ in sent if kind.startswith("edit")]
+    assert edits and edits[0][0] == "edit_text"
