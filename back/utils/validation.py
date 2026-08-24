@@ -120,7 +120,7 @@ def validate_user_id(value) -> str:
     if not isinstance(value, str) or not USER_ID_RE.fullmatch(value):
         raise ApiError(
             400, "BAD_REQUEST",
-            "아이디는 5~20자의 영문 소문자·숫자·특수기호(_,-)만 사용할 수 있으며, "
+            "아이디는 5~20자의 영문 소문자만 사용할 수 있으며, "
             "시작은 영문 소문자여야 합니다.",
             field="user_id",
         )

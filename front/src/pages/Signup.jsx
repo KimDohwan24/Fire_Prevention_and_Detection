@@ -125,11 +125,42 @@ const Signup = () => {
 const handleRequestEmailVerification = async () => {
   setErrorMsg('');
 
-  const emailDomainStr = formData.emailDomain === '직접입력' ? formData.customDomain : formData.emailDomain;
-  const fullEmail = formData.emailId && emailDomainStr ? `${formData.emailId}@${emailDomainStr}` : null;
+  const emailId = formData.emailId ? formData.emailId.trim() : '';
+  // const emailDomainStr = formData.emailDomain === '직접입력' ? formData.customDomain : formData.emailDomain;
+  // const fullEmail = formData.emailId && emailDomainStr ? `${formData.emailId}@${emailDomainStr}` : null;
 
-  if (!fullEmail) {
-    setErrorMsg('이메일을 올바르게 입력해주세요.');
+  const emailDomainStr = formData.emailDomain === '직접입력' 
+    ? (formData.customDomain ? formData.customDomain.trim() : '') 
+    : formData.emailDomain;
+
+    // 2. 둘 중 하나라도 비어있거나, 입력값 내부에 공백이 포함되어 있는지 확인
+  if (!emailId || !emailDomainStr || /\s/.test(emailId) || /\s/.test(emailDomainStr)) {
+    setErrorMsg('이메일 아이디와 도메인에 공백을 포함할 수 없습니다.');
+    return;
+  }
+  // if (!fullEmail) {
+  //   setErrorMsg('이메일을 올바르게 입력해주세요.');
+  //   return;
+  // }
+
+
+  // 3. 직접입력인 경우 도메인에 마침표(.)가 포함되어 있는지, 그리고 양 끝이 점이 아닌지 검증
+if (formData.emailDomain === '직접입력') {
+    const hasDot = emailDomainStr.includes('.');
+    const isValidDotPosition = !emailDomainStr.startsWith('.') && !emailDomainStr.endsWith('.');
+    
+    if (!hasDot || !isValidDotPosition) {
+        setErrorMsg('올바른 이메일 도메인 형식(예: domain.com)을 입력해주세요.');
+        return;
+    }
+}
+
+  // 4. 최종 전체 이메일 조합 및 정규식 검증
+  const fullEmail = `${emailId}@${emailDomainStr}`;
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+  if (!emailRegex.test(fullEmail)) {
+    setErrorMsg('이메일 형식에 맞게 올바르게 입력해주세요.');
     return;
   }
 
@@ -161,7 +192,11 @@ const handleRequestEmailVerification = async () => {
     setErrorMsg('');
 
     // 이메일 문자열 조합
-    const emailDomainStr = formData.emailDomain === '직접입력' ? formData.customDomain : formData.emailDomain;
+    const emailId = formData.emailId ? formData.emailId.trim() : '';
+    // const emailDomainStr = formData.emailDomain === '직접입력' ? formData.customDomain : formData.emailDomain;
+    const emailDomainStr = formData.emailDomain === '직접입력' 
+      ? (formData.customDomain ? formData.customDomain.trim() : '') 
+      : formData.emailDomain;
     const fullEmail = `${formData.emailId}@${emailDomainStr}`;
 
     try {
