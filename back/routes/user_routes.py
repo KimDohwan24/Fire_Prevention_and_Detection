@@ -248,14 +248,14 @@ def list_user_activities(user_no: int):
 @login_required
 def mypage_pw_check():
     user_no = g.user.get("user_no") #로그인된 사용자의 유저 번호 가져옴
-    print("유저 번호: ", user_no)
+    # print("유저 번호: ", user_no)
     
     #프론트에서 보낸 JSON 형태의 데이터(Requset Body)를 파이썬 딕셔너리로 받아옴
     body = request.get_json(silent=True) or {}
     
     #사용자가 작성한 비밀번호를 current_password에 담기
     current_password = body.get("current_password")
-    print("Mypage에 접속하기 위해서 사용자가 입력한 비밀번호: ", current_password)
+    # print("Mypage에 접속하기 위해서 사용자가 입력한 비밀번호: ", current_password)
 
     #current_password에 빈 문자열이나 아예 안 들어왔을 때 발생
     if not current_password:
