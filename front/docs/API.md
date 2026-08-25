@@ -62,7 +62,7 @@ Authorization: Bearer <access_token>
 | **`user_role`** | `ADMIN` / `VIEWER` | 시스템 관리자 / 조회 전용 계정 |
 | **`user_status`** | `ACTIVE` / `SUSPENDED` / `WITHDRAWN` | 정상 / 정지 / 탈퇴 상태 |
 | **`cctv_status`** | `ACTIVE` / `INACTIVE` / `ERROR` | 정상 수신 / 동작 중지 / 연결 오류 |
-| **`event_status`** | `CONFIRMED` / `DISMISSED` | 감지 확정 / 기준 미달(오탐 처리) |
+| **`event_status`** | `PENDING` / `CONFIRMED` / `DISMISSED` | 최초 감지 후 관제자 판단 대기 / 화재 확정 / 오탐 처리 |
 | **`event_class`** | `FLAME` / `SMOKE` / `FLAME_SMOKE` | 불꽃 감지 / 연기 감지 / 둘 다 감지 |
 | **`media_type`** | `FRAME` / `CLIP` | 정지 프레임 이미지 / 짧은 영상 클립 |
 | **`alert_level`** | `1` / `2` / `3` | 1차 발생 / 승격 / 최종 경보 |
@@ -93,6 +93,10 @@ Authorization: Bearer <access_token>
 | **Agencies** | `POST` | `/api/agencies` | 🔒 ADMIN | 소방서 정보 등록 |
 | **Agencies** | `PUT` | `/api/agencies/<agency_no>` | 🔒 ADMIN | 소방서 정보 수정 / 비활성화 |
 | **Reports** | `GET` | `/api/reports` | 🔒 로그인 | 119 신고 발송 이력 전체 조회 |
+| **Video Tests** | `GET` | `/api/video-tests/samples` | 🔒 ADMIN | 테스트용 샘플 영상 목록 조회 |
+| **Video Tests** | `POST` | `/api/video-tests/run-sample` | 🔒 ADMIN | 백그라운드 샘플 영상 AI 분석 시작 (`202 + job_id`) |
+| **Video Tests** | `GET` | `/api/video-tests/jobs/<job_id>` | 🔒 ADMIN | 분석 진행상황·확정 경보·최종 결과 조회 |
+| **Video Tests** | `POST` | `/api/video-tests/jobs/<job_id>/decision` | 🔒 ADMIN | 최초 감지 후 화재 확정(`CONFIRM_FIRE`) 또는 오탐 처리(`DISMISS`) |
 
 ---
 

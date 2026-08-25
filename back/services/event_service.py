@@ -115,7 +115,9 @@ def _find_open_event(cur, cctv_no: int) -> dict | None:
                e.event_detected_frames, e.event_threshold_frames,
                e.event_first_detected_at AS window_started_at
         FROM fire_event e
-        WHERE e.cctv_no = %s AND e.event_status = 'PENDING'
+        WHERE e.cctv_no = %s
+          AND e.event_status = 'PENDING'
+          AND coalesce(e.event_source_type, 'CCTV_LIVE') = 'CCTV_LIVE'
         ORDER BY e.event_no DESC
         LIMIT 1
         """,
@@ -123,6 +125,70 @@ def _find_open_event(cur, cctv_no: int) -> dict | None:
     )
     row = cur.fetchone()
     return dict(row) if row else None
+
+
+def _confirmed_event_in_cooldown(cur, cctv_no: int, captured_at: datetime) -> dict | None:
+    """확정 후 쿨다운 구간이면 그 화재 행을, 아니면 None 을 돌려준다.
+
+    기준 시각은 event_detected_at(화재 확정 일시)이다. IX_fire_event_01
+    (cctv_no, event_detected_at) 인덱스를 그대로 탄다.
+    """
+    cur.execute(
+        """
+        SELECT event_no, event_status, event_class, event_confidence,
+               event_detected_frames, event_threshold_frames
+        FROM fire_event
+        WHERE cctv_no = %s
+          AND event_status = 'CONFIRMED'
+          AND event_detected_at > %s::timestamp - make_interval(secs => %s)
+        ORDER BY event_detected_at DESC
+        LIMIT 1
+        """,
+        (cctv_no, captured_at, config.EVENT_COOLDOWN_SEC),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _save_frame_media(cur, event_no: int, media_url: str | None,
+                      detections: list, frame_conf: float, captured_at: datetime) -> int:
+    """프레임 1장을 event_media 에 적재하고 필요하면 대표 이미지를 교체한다.
+
+    정상 누적 경로와 쿨다운 증거 적재 경로가 같은 규칙(최고 신뢰도 프레임이
+    대표)을 쓰도록 한 곳에 모아 둔다. media_url 이 None 이면 URL 없이 저장한다
+    (event_media.media_url 은 NULL 허용 — 프레임 파일이 없어도 검출 기록은 남긴다).
+    """
+    cur.execute(
+        """
+        INSERT INTO event_media (event_no, media_url, media_detections,
+                                 media_confidence, media_captured_at)
+        VALUES (%s, %s, %s::jsonb, %s, %s)
+        RETURNING media_no
+        """,
+        (event_no, media_url, json.dumps(detections), frame_conf, captured_at),
+    )
+    media_no = cur.fetchone()["media_no"]
+
+    # 대표 이미지: 지금까지 최고 신뢰도 프레임이 대표가 되도록 같은 트랜잭션에서 교체
+    cur.execute(
+        """
+        SELECT media_confidence FROM event_media
+        WHERE event_no = %s AND media_is_primary
+        """,
+        (event_no,),
+    )
+    primary = cur.fetchone()
+    if primary is None or float(primary["media_confidence"] or 0) < frame_conf:
+        cur.execute(
+            "UPDATE event_media SET media_is_primary = false "
+            "WHERE event_no = %s AND media_is_primary",
+            (event_no,),
+        )
+        cur.execute(
+            "UPDATE event_media SET media_is_primary = true WHERE media_no = %s",
+            (media_no,),
+        )
+    return media_no
 
 
 def process_detection(cctv_no: int, captured_at: datetime,
@@ -154,6 +220,19 @@ def process_detection(cctv_no: int, captured_at: datetime,
             return _event_state(event)
 
         if event is None:
+            # 확정 후 쿨다운: 같은 카메라에서 방금 확정된 화재가 있으면 새 판정을
+            # 하지 않고 그 화재에 증거 프레임만 계속 붙인다. 막지 않으면 지속
+            # 화재 동안 창이 닫힐 때마다 알림·119 신고가 반복된다(알람 폭풍).
+            # 판정(PENDING 생성·누적)과는 완전히 분리된다 — 확정 이벤트는
+            # 판정 대상이 아니며, 만료 후 첫 프레임은 새 PENDING 의 1프레임이 된다.
+            cooled = _confirmed_event_in_cooldown(cur, cctv_no, captured_at)
+            if cooled is not None:
+                _save_frame_media(cur, cooled["event_no"], media_url,
+                                  detections, frame_conf, captured_at)
+                state = _event_state(cooled)
+                state["suppressed"] = True
+                return state
+
             # 새 이벤트 시작
             cur.execute(
                 """
@@ -188,38 +267,9 @@ def process_detection(cctv_no: int, captured_at: datetime,
             )
             event = dict(cur.fetchone())
 
-        # 프레임 미디어 저장 (검출 목록은 원본 그대로 jsonb 로)
-        cur.execute(
-            """
-            INSERT INTO event_media (event_no, media_url, media_detections,
-                                     media_confidence, media_captured_at)
-            VALUES (%s, %s, %s::jsonb, %s, %s)
-            RETURNING media_no
-            """,
-            (event["event_no"], media_url, json.dumps(detections),
-             frame_conf, captured_at),
-        )
-        media_no = cur.fetchone()["media_no"]
-
-        # 대표 이미지: 지금까지 최고 신뢰도 프레임이 대표가 되도록 같은 트랜잭션에서 교체
-        cur.execute(
-            """
-            SELECT media_confidence FROM event_media
-            WHERE event_no = %s AND media_is_primary
-            """,
-            (event["event_no"],),
-        )
-        primary = cur.fetchone()
-        if primary is None or float(primary["media_confidence"] or 0) < frame_conf:
-            cur.execute(
-                "UPDATE event_media SET media_is_primary = false "
-                "WHERE event_no = %s AND media_is_primary",
-                (event["event_no"],),
-            )
-            cur.execute(
-                "UPDATE event_media SET media_is_primary = true WHERE media_no = %s",
-                (media_no,),
-            )
+        # 프레임 미디어 저장 (검출 목록은 원본 그대로 jsonb 로) + 대표 이미지 경쟁
+        _save_frame_media(cur, event["event_no"], media_url,
+                          detections, frame_conf, captured_at)
 
         # 임계값 도달 → 확정
         if event["event_status"] == "PENDING" \
@@ -256,6 +306,7 @@ def sweep_stale_pending(now: datetime | None = None) -> int:
             UPDATE fire_event e
             SET event_status = 'DISMISSED'
             WHERE e.event_status = 'PENDING'
+              AND coalesce(e.event_source_type, 'CCTV_LIVE') = 'CCTV_LIVE'
               AND e.event_first_detected_at < %s
             """,
             (cutoff,),

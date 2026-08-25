@@ -173,17 +173,56 @@ def test_accumulate_to_threshold_confirms(client, monkeypatch):
     assert ev["event_detected_at"] is not None
 
 
-def test_confirmed_event_is_closed_for_new_frames(client, monkeypatch):
-    """확정된 이벤트는 더 이상 열린 이벤트가 아니다 — 다음 화재 프레임은 새 이벤트."""
+def test_confirmed_cooldown_suppresses_new_event_and_attaches_media(
+        client, monkeypatch):
+    """확정 후 쿨다운: 같은 카메라의 프레임은 새 이벤트를 만들지 않고 증거로만 적재.
+
+    막지 않으면 지속 화재 동안 창이 닫힐 때마다 알림·119 신고가 반복된다
+    (알람 폭풍). 판정(PENDING 생성·누적)과는 분리된다 — 확정 이벤트는
+    판정 대상이 아니며, 적재되는 것은 event_media 뿐이다.
+    """
     monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 2)
     post_frame(client, captured_at="2026-08-08T14:30:00")
     confirmed = post_frame(client, captured_at="2026-08-08T14:30:01").get_json()
     assert confirmed["event_status"] == "CONFIRMED"
+    media_before = len(get_media_rows(confirmed["event_no"]))
 
-    r = post_frame(client, captured_at="2026-08-08T14:30:02")
+    r = post_frame(client, captured_at="2026-08-08T14:30:10",
+                   media_url="/media/events/cooldown/frame.jpg")
     body = r.get_json()
-    assert body["event_no"] != confirmed["event_no"]
+    assert body["suppressed"] is True
+    assert body["event_no"] == confirmed["event_no"]
+    assert body["event_status"] == "CONFIRMED"
+
+    # 새 이벤트가 생기지 않았다 — 화재 판정은 한 번만 일어난다
+    count = db.query_one("SELECT count(*) AS c FROM fire_event")["c"]
+    assert count == 1
+    # 증거 프레임은 확정 이벤트에 계속 붙는다
+    media_after = get_media_rows(confirmed["event_no"])
+    assert len(media_after) == media_before + 1
+    assert media_after[-1]["media_url"] == "/media/events/cooldown/frame.jpg"
+    # 쿨다운 프레임은 대표 이미지 경쟁에는 참여한다 (같은 규칙)
+    assert db.query_one(
+        "SELECT count(*) AS c FROM event_media WHERE media_is_primary"
+    )["c"] == 1
+
+
+def test_cooldown_expiry_starts_fresh_pending(client, monkeypatch):
+    """쿨다운이 지나면 같은 카메라도 다시 판정 대상이다 — 재발 화재를 잡기 위해.
+
+    쿨다운 앵커는 event_detected_at(확정 순간 서버 시각)이라, captured_at 을
+    서버 시각보다 한 시간 뒤로 보내면 '쿨다운이 지났다'를 시계 없이 재현할 수 있다.
+    """
+    monkeypatch.setattr(config, "EVENT_THRESHOLD_FRAMES", 2)
+    post_frame(client, captured_at="2026-08-08T14:30:00")
+    confirmed = post_frame(client, captured_at="2026-08-08T14:30:01").get_json()
+
+    later = (datetime.now() + timedelta(hours=1)).isoformat()
+    r = post_frame(client, captured_at=later)
+    body = r.get_json()
+    assert body.get("suppressed") is None
     assert body["event_status"] == "PENDING"
+    assert body["event_no"] != confirmed["event_no"]
     assert body["event_detected_frames"] == 1
 
 

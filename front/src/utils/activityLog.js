@@ -87,7 +87,11 @@ export function normalizeActivityType(activity = {}) {
   if (rawType.includes('LOGIN') || rawType.includes('SIGN_IN') || rawType.includes('ACCESS')) {
     return 'login';
   }
-  if (rawType.includes('FALSE') || rawType.includes('CANCEL')) {
+  if (
+    rawType.includes('FALSE')
+    || rawType.includes('CANCEL')
+    || rawType.includes('DISMISS')
+  ) {
     return 'false_alarm';
   }
   if (rawType.includes('FIRE') || rawType.includes('CONFIRM') || rawType.includes('119')) {

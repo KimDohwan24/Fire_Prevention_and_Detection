@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   alertApi,
-  authApi,
   cctvApi,
   eventApi,
-  getCurrentUserFromStorage,
   reportApi,
-  setCurrentUserToStorage,
 } from '../api';
+import { useAuth } from '../context/authState';
+import { createDashboardMockData } from '../utils/dashboardMockData';
 
 const PAGE_SIZE = 100;
 const HISTORY_DAYS = 30;
 const LIVE_DATA_REFRESH_INTERVAL_MS = 10_000;
+const DASHBOARD_DEMO_ENABLED = import.meta.env.VITE_DASHBOARD_DEMO !== 'false';
 
 const EMPTY_DATA = {
   cctvs: [],
@@ -21,7 +21,6 @@ const EMPTY_DATA = {
 };
 
 const EMPTY_ERRORS = {
-  session: '',
   cctvs: '',
   events: '',
   alerts: '',
@@ -35,6 +34,25 @@ const getItems = (response) => {
 
 const getErrorMessage = (error, fallback) => error?.message || fallback;
 
+const DASHBOARD_DATA_KEYS = ['cctvs', 'events', 'alerts', 'reports'];
+
+const hasCompleteDashboardData = (dashboardData) => DASHBOARD_DATA_KEYS
+  .every((key) => Array.isArray(dashboardData[key]) && dashboardData[key].length > 0);
+
+const scopeDashboardData = (dashboardData, user) => (
+  user ? scopeDataForUser(dashboardData, user) : dashboardData
+);
+
+const getDemoDashboardData = (user) => {
+  const demoData = createDashboardMockData(user);
+  const hasUserScope = user?.user_no != null;
+  const isAdmin = user?.role === 'admin' || user?.rawRole === 'ADMIN';
+
+  // 로그인 정보가 아직 완성되지 않은 순간에는 샘플 데이터를 먼저 보여준다.
+  if (user && !hasUserScope && !isAdmin) return demoData;
+  return scopeDashboardData(demoData, user);
+};
+
 const toDateParam = (date) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -44,13 +62,18 @@ const toDateParam = (date) => {
 
 const getHistoryParams = () => {
   const dateTo = new Date();
-  const dateFrom = new Date(dateTo);
-  dateFrom.setDate(dateFrom.getDate() - (HISTORY_DAYS - 1));
+  const rollingDateFrom = new Date(dateTo);
+  rollingDateFrom.setDate(rollingDateFrom.getDate() - (HISTORY_DAYS - 1));
+
+  const monthDateFrom = new Date(dateTo.getFullYear(), dateTo.getMonth(), 1);
+  const dateFrom = monthDateFrom < rollingDateFrom ? monthDateFrom : rollingDateFrom;
 
   return {
     date_from: toDateParam(dateFrom),
     date_to: toDateParam(dateTo),
-    include_test: false,
+    // 테스트 이벤트도 최근 감지 사건 카드에서 확인할 수 있도록 가져온다.
+    // KPI·추이 통계에서의 제외는 dashboardMetrics.js에서 별도로 유지한다.
+    include_test: true,
   };
 };
 
@@ -71,20 +94,6 @@ const fetchAllPages = async (requestPage, params = {}) => {
     (items, response) => items.concat(getItems(response)),
     firstItems,
   );
-};
-
-const normalizeSessionUser = (response, fallback) => {
-  const sessionUser = response?.user || response;
-  if (!sessionUser?.user_id || sessionUser?.user_no == null) return fallback;
-
-  return {
-    id: sessionUser.user_id,
-    user_no: sessionUser.user_no,
-    name: sessionUser.user_name || fallback?.name || sessionUser.user_id,
-    role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
-    rawRole: sessionUser.user_role,
-    authProvider: fallback?.authProvider || null,
-  };
 };
 
 const scopeDataForUser = ({ cctvs, events, alerts, reports }, user) => {
@@ -110,21 +119,42 @@ const scopeDataForUser = ({ cctvs, events, alerts, reports }, user) => {
   };
 };
 
+const resolveDashboardData = (rawData, user, keepDemoData = false) => {
+  const scopedData = scopeDashboardData(rawData, user);
+
+  if (DASHBOARD_DEMO_ENABLED && (keepDemoData || !hasCompleteDashboardData(scopedData))) {
+    return {
+      data: getDemoDashboardData(user),
+      isDemoData: true,
+    };
+  }
+
+  return { data: scopedData, isDemoData: false };
+};
+
 export default function useDashboardData() {
-  const storedUser = getCurrentUserFromStorage();
-  const [currentUser, setCurrentUser] = useState(storedUser);
-  const [data, setData] = useState(EMPTY_DATA);
+  const { user: currentUser } = useAuth();
+  const initialData = DASHBOARD_DEMO_ENABLED
+    ? getDemoDashboardData(currentUser)
+    : EMPTY_DATA;
+  const [data, setData] = useState(initialData);
   const [errors, setErrors] = useState(EMPTY_ERRORS);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [isDemoData, setIsDemoData] = useState(DASHBOARD_DEMO_ENABLED);
 
   const mountedRef = useRef(false);
   const initializedRef = useRef(false);
   const refreshInFlightRef = useRef(false);
   const liveDataInFlightRef = useRef(false);
-  const dataRef = useRef(EMPTY_DATA);
-  const userRef = useRef(storedUser);
+  const dataRef = useRef(initialData);
+  const userRef = useRef(currentUser);
+  const demoDataRef = useRef(DASHBOARD_DEMO_ENABLED);
+
+  useEffect(() => {
+    userRef.current = currentUser;
+  }, [currentUser]);
 
   const updateData = useCallback((updater) => {
     setData((previous) => {
@@ -141,20 +171,7 @@ export default function useDashboardData() {
     if (!silent) setIsRefreshing(true);
     if (!initializedRef.current) setIsLoading(true);
 
-    let resolvedUser = userRef.current;
-    let sessionError = '';
-
-    try {
-      const sessionResponse = await authApi.me();
-      resolvedUser = normalizeSessionUser(sessionResponse, resolvedUser);
-      if (resolvedUser && mountedRef.current) {
-        userRef.current = resolvedUser;
-        setCurrentUser(resolvedUser);
-        setCurrentUserToStorage(resolvedUser);
-      }
-    } catch (error) {
-      sessionError = getErrorMessage(error, '로그인 사용자 정보를 확인하지 못했습니다.');
-    }
+    const resolvedUser = userRef.current;
 
     const isAdmin = resolvedUser?.role === 'admin' || resolvedUser?.rawRole === 'ADMIN';
     const cctvFilters = isAdmin || resolvedUser?.user_no == null
@@ -178,9 +195,20 @@ export default function useDashboardData() {
         reports: reportResult.status === 'fulfilled' ? reportResult.value : previous.reports,
       };
 
-      updateData(scopeDataForUser(rawData, resolvedUser));
-      setErrors({
-        session: sessionError,
+      const hasFreshData = [cctvResult, eventResult, alertResult, reportResult].some((result) => (
+        result.status === 'fulfilled' && getItems(result.value).length > 0
+      ));
+      const resolvedData = resolveDashboardData(
+        rawData,
+        resolvedUser,
+        demoDataRef.current && !hasFreshData,
+      );
+
+      updateData(resolvedData.data);
+      demoDataRef.current = resolvedData.isDemoData;
+      setIsDemoData(resolvedData.isDemoData);
+
+      const nextErrors = {
         cctvs: cctvResult.status === 'rejected'
           ? getErrorMessage(cctvResult.reason, 'CCTV 현황을 불러오지 못했습니다.')
           : '',
@@ -193,7 +221,14 @@ export default function useDashboardData() {
         reports: reportResult.status === 'rejected'
           ? getErrorMessage(reportResult.reason, '119 신고 이력을 불러오지 못했습니다.')
           : '',
-      });
+      };
+      if (resolvedData.isDemoData) {
+        nextErrors.cctvs = '';
+        nextErrors.events = '';
+        nextErrors.alerts = '';
+        nextErrors.reports = '';
+      }
+      setErrors(nextErrors);
       setLastUpdated(new Date());
       initializedRef.current = true;
       setIsLoading(false);
@@ -215,24 +250,45 @@ export default function useDashboardData() {
       ]);
 
       if (mountedRef.current) {
-        updateData((previous) => scopeDataForUser({
+        const previous = dataRef.current;
+        const rawLiveData = {
           cctvs: previous.cctvs,
-          events: eventResult.status === 'fulfilled' ? eventResult.value : previous.events,
-          alerts: alertResult.status === 'fulfilled' ? alertResult.value : previous.alerts,
-          reports: reportResult.status === 'fulfilled' ? reportResult.value : previous.reports,
-        }, userRef.current));
-        setErrors((previous) => ({
-          ...previous,
-          events: eventResult.status === 'rejected'
-            ? getErrorMessage(eventResult.reason, 'Failed to refresh fire events.')
-            : '',
-          alerts: alertResult.status === 'rejected'
-            ? getErrorMessage(alertResult.reason, 'Failed to refresh alerts.')
-            : '',
-          reports: reportResult.status === 'rejected'
-            ? getErrorMessage(reportResult.reason, 'Failed to refresh 119 reports.')
-            : '',
-        }));
+          events: eventResult.status === 'fulfilled' ? getItems(eventResult.value) : previous.events,
+          alerts: alertResult.status === 'fulfilled' ? getItems(alertResult.value) : previous.alerts,
+          reports: reportResult.status === 'fulfilled' ? getItems(reportResult.value) : previous.reports,
+        };
+        const hasFreshLiveData = [eventResult, alertResult, reportResult].some((result) => (
+          result.status === 'fulfilled' && getItems(result.value).length > 0
+        ));
+        const resolvedLiveData = resolveDashboardData(
+          rawLiveData,
+          userRef.current,
+          demoDataRef.current && !hasFreshLiveData,
+        );
+
+        updateData(resolvedLiveData.data);
+        demoDataRef.current = resolvedLiveData.isDemoData;
+        setIsDemoData(resolvedLiveData.isDemoData);
+        setErrors((previousErrors) => {
+          const nextErrors = {
+            ...previousErrors,
+            events: eventResult.status === 'rejected'
+              ? getErrorMessage(eventResult.reason, 'Failed to refresh fire events.')
+              : '',
+            alerts: alertResult.status === 'rejected'
+              ? getErrorMessage(alertResult.reason, 'Failed to refresh alerts.')
+              : '',
+            reports: reportResult.status === 'rejected'
+              ? getErrorMessage(reportResult.reason, 'Failed to refresh 119 reports.')
+              : '',
+          };
+          if (resolvedLiveData.isDemoData) {
+            nextErrors.events = '';
+            nextErrors.alerts = '';
+            nextErrors.reports = '';
+          }
+          return nextErrors;
+        });
         setLastUpdated(new Date());
       }
     } catch (error) {
@@ -267,6 +323,7 @@ export default function useDashboardData() {
     errors,
     isLoading,
     isRefreshing,
+    isDemoData,
     lastUpdated,
     refresh: () => refresh({ silent: false }),
   };

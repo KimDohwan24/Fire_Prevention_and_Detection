@@ -6,7 +6,14 @@ import { appendLocalActivityLog } from './utils/activityLog';
  */
 
 export const API_BASE_URL = '/api';
+export const BACKEND_ORIGIN = import.meta.env.VITE_BACKEND_ORIGIN || '';
 export const SUPER_ADMIN_USER_NO = 1;
+
+export function resolveMediaUrl(mediaUrl) {
+  if (!mediaUrl) return '';
+  if (/^https?:\/\//i.test(mediaUrl)) return mediaUrl;
+  return `${BACKEND_ORIGIN}${mediaUrl}`;
+}
 
 // OAuth2 로그인 시작 엔드포인트. 각 백엔드 엔드포인트는 OAuth 제공자 인증 화면으로 리다이렉트해야 합니다.
 export const OAUTH_PROVIDER_PATHS = Object.freeze({
@@ -30,6 +37,7 @@ const OAUTH_ERROR_MESSAGES = Object.freeze({
 
 // StrictMode에서 로그인 콜백 effect가 한 번 더 실행되어도 같은 인증 요청을 재사용한다.
 let oauthCompletionPromise = null;
+const unauthorizedSubscribers = new Set();
 
 export function getOAuthLoginUrl(provider) {
   const endpoint = OAUTH_PROVIDER_PATHS[provider];
@@ -70,7 +78,7 @@ export function getCurrentUserFromStorage() {
   try {
     const raw = localStorage.getItem('currentUser');
     return raw ? JSON.parse(raw) : null;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
@@ -83,25 +91,63 @@ export function setCurrentUserToStorage(user) {
   }
 }
 
-function createSignedInUser(user, authProvider = null) {
-  if (!user?.user_id || user.user_no == null) {
+export function clearStoredSession() {
+  setAccessToken(null);
+  setCurrentUserToStorage(null);
+}
+
+export function subscribeToUnauthorized(subscriber) {
+  unauthorizedSubscribers.add(subscriber);
+  return () => unauthorizedSubscribers.delete(subscriber);
+}
+
+function notifyUnauthorized() {
+  unauthorizedSubscribers.forEach((subscriber) => {
+    try {
+      subscriber();
+    } catch (error) {
+      console.warn('세션 만료 상태를 화면에 반영하지 못했습니다.', error);
+    }
+  });
+}
+
+export function normalizeAuthenticatedUser(user, fallback = null, authProvider) {
+  const rawUser = user?.user || user;
+  const userId = rawUser?.user_id || rawUser?.id;
+  if (!userId || rawUser?.user_no == null) {
     throw new Error('로그인 사용자 정보를 확인하지 못했습니다.');
   }
 
-  const isSuperAdmin = isSuperAdminUser(user);
+  const isSuperAdmin = isSuperAdminUser(rawUser);
+  const rawRole = isSuperAdmin
+    ? 'ADMIN'
+    : rawUser.user_role || rawUser.rawRole || fallback?.rawRole || 'VIEWER';
+  const joinedAt = rawUser.user_created_at
+    ? String(rawUser.user_created_at).substring(0, 10)
+    : fallback?.joinedAt;
+
   return {
-    id: user.user_id,
-    user_no: user.user_no,
-    name: user.user_name || user.user_id,
-    role: isSuperAdmin || user.user_role === 'ADMIN' ? 'admin' : 'user',
-    rawRole: isSuperAdmin ? 'ADMIN' : user.user_role,
+    ...fallback,
+    id: userId,
+    user_no: rawUser.user_no,
+    name: rawUser.user_name || rawUser.name || fallback?.name || userId,
+    email: rawUser.user_email ?? rawUser.email ?? fallback?.email ?? '',
+    phone: rawUser.user_phone ?? rawUser.phone ?? fallback?.phone ?? '',
+    user_status: rawUser.user_status || fallback?.user_status || 'ACTIVE',
+    role: rawRole === 'ADMIN' ? 'admin' : 'user',
+    rawRole,
     isSuperAdmin,
-    authProvider,
+    authProvider: authProvider === undefined
+      ? rawUser.authProvider ?? fallback?.authProvider ?? null
+      : authProvider,
+    joinedAt: joinedAt || '2026-01-01',
+    lastLogin: fallback?.lastLogin || '최근 접속 중',
+    assignedZone: fallback?.assignedZone || 'A동 및 외곽 관제 구역',
   };
 }
 
 function persistSignedInSession(accessToken, user, authProvider = null) {
-  const signedInUser = createSignedInUser(user, authProvider);
+  const signedInUser = normalizeAuthenticatedUser(user, null, authProvider);
   setAccessToken(accessToken);
   setCurrentUserToStorage(signedInUser);
   appendLocalActivityLog({
@@ -160,8 +206,7 @@ export function completeOAuthLogin() {
       );
       return { user: signedInUser, provider: pendingProvider };
     } catch {
-      setAccessToken(null);
-      setCurrentUserToStorage(null);
+      clearStoredSession();
       throw new Error('소셜 로그인 세션을 확인하지 못했습니다. 다시 시도해주세요.');
     }
   })();
@@ -197,7 +242,7 @@ async function request(endpoint, options = {}) {
       // 404 발생 시 백엔드 포트(http://localhost:5000/api)로 직접 2차 시도
       response = await fetch(`http://localhost:5000/api${endpoint}`, config);
     }
-  } catch (e) {
+  } catch {
     response = await fetch(`http://localhost:5000/api${endpoint}`, config).catch(() => null);
   }
 
@@ -209,7 +254,8 @@ async function request(endpoint, options = {}) {
 
   if (!response.ok) {
     if (!skipAuth && response.status === 401 && endpoint !== '/auth/login') {
-      localStorage.removeItem('access_token');
+      clearStoredSession();
+      notifyUnauthorized();
     }
     // 💡 data?.detail을 가장 먼저 확인하도록 추가!
     const errorMsg = data?.detail || data?.message || data?.error || `요청 실패 (${response.status})`;
@@ -230,7 +276,8 @@ export const authApi = {
       body: JSON.stringify({ user_id, user_pw }),
     });
     if (res?.access_token) {
-      persistSignedInSession(res.access_token, res.user);
+      const signedInUser = persistSignedInSession(res.access_token, res.user);
+      return { ...res, user: signedInUser };
     }
     return res;
   },
@@ -312,8 +359,7 @@ export const authApi = {
           detail: 'FireGuard에서 로그아웃했습니다.',
         });
       }
-      setAccessToken(null);
-      setCurrentUserToStorage(null);
+      clearStoredSession();
       localStorage.removeItem(OAUTH_PENDING_PROVIDER_KEY);
     }
   },
@@ -322,6 +368,13 @@ export const authApi = {
 
 // 2. 사용자/관리자 API
 export const userApi = {
+  verifyMyPagePassword: async (current_password) => {
+    return await request('/users/mypage-check-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password }),
+    });
+  },
+
   list: async (status = '') => {
     const query = status ? `?user_status=${encodeURIComponent(status)}` : '';
     return await request(`/users${query}`);
@@ -416,6 +469,31 @@ export const eventApi = {
   },
 };
 
+// 관리자용 샘플 영상 판정 테스트 API
+export const videoTestApi = {
+  listSamples: async () => {
+    return await request('/video-tests/samples');
+  },
+
+  runSample: async ({ sample_name, cctv_no }) => {
+    return await request('/video-tests/run-sample', {
+      method: 'POST',
+      body: JSON.stringify({ sample_name, cctv_no }),
+    });
+  },
+
+  getJob: async (jobId) => {
+    return await request(`/video-tests/jobs/${jobId}`);
+  },
+
+  decide: async (jobId, decision, reason = '') => {
+    return await request(`/video-tests/jobs/${jobId}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ decision, reason }),
+    });
+  },
+};
+
 // 5. 알림 API
 export const alertApi = {
   list: async (filters = '') => {
@@ -442,20 +520,6 @@ export const alertApi = {
 export const agencyApi = {
   list: async () => {
     return await request('/agencies');
-  },
-
-  create: async (agencyData) => {
-    return await request('/agencies', {
-      method: 'POST',
-      body: JSON.stringify(agencyData),
-    });
-  },
-
-  update: async (agency_no, agencyData) => {
-    return await request(`/agencies/${agency_no}`, {
-      method: 'PUT',
-      body: JSON.stringify(agencyData),
-    });
   },
 };
 

@@ -36,6 +36,9 @@ def list_events():
     if v := date_param("date_to"):
         conds.append("e.event_detected_at < %s::date + 1")
         params.append(v)
+    # 업로드 영상 판정은 기존 관제 화면과 완전히 분리한다. 현재 프론트가
+    # include_test=true 를 사용하더라도 VIDEO_TEST 가 섞여 나오지 않는다.
+    # include_test=true인 경우에는 VIDEO_TEST 감사 이력도 함께 반환한다.
     if request.args.get("include_test", "false").lower() != "true":
         conds.append("e.event_is_test = false")
 
@@ -50,6 +53,7 @@ def list_events():
                e.event_status, e.event_class,
                e.event_first_detected_at, e.event_detected_at,
                e.event_confidence, e.event_is_test,
+               e.event_source_metadata, e.event_test_finished_at,
                -- 대표 이미지가 여러 장일 수 있으므로 정렬을 명시한다.
                -- (ORDER BY 없는 LIMIT 1 은 어떤 행이 뽑힐지 보장되지 않는다)
                -- 신뢰도가 가장 높은 것, 같으면 먼저 저장된 것(media_no 작은 쪽).
@@ -94,7 +98,9 @@ def get_event(event_no: int):
     media = db.query(
         """
         SELECT media_no, media_url, media_confidence,
-               media_captured_at, media_is_primary, media_detections
+               media_captured_at, media_is_primary, media_is_first,
+               media_is_confirmation, media_frame_index,
+               media_source_offset_sec, media_detections
         FROM event_media WHERE event_no = %s
         ORDER BY media_is_primary DESC, media_no
         """,

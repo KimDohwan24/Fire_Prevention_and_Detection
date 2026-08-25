@@ -117,7 +117,17 @@ CREATE TABLE fireguard.fire_event (
     event_detected_frames   integer       NULL,
     event_threshold_frames  integer       NULL,
     event_confidence        numeric(5,4)  NULL,
-    event_is_test           boolean       NOT NULL  DEFAULT false
+    event_is_test           boolean       NOT NULL  DEFAULT false,
+    -- CCTV 실시간 수집과 업로드 영상 테스트를 같은 이벤트 테이블에서 구분한다.
+    event_source_type       varchar(20)   NOT NULL  DEFAULT 'CCTV_LIVE',
+    event_source_metadata   jsonb         NULL,
+    -- 테스트 당시 CCTV 정보. 이후 CCTV 이름/주소가 바뀌어도 이력은 그대로 남는다.
+    event_cctv_snapshot     jsonb         NULL,
+    event_processed_frames  integer       NULL,
+    event_first_detected_offset_sec numeric(12,3) NULL,
+    event_confirmed_offset_sec      numeric(12,3) NULL,
+    event_test_started_at   timestamp     NULL,
+    event_test_finished_at  timestamp     NULL
 );
 
 
@@ -133,7 +143,11 @@ CREATE TABLE fireguard.event_media (
     media_detections  jsonb         NULL,
     media_confidence  numeric(5,4)  NULL,
     media_captured_at timestamp     NULL,
-    media_is_primary  boolean       NOT NULL  DEFAULT false
+    media_is_primary  boolean       NOT NULL  DEFAULT false,
+    media_is_first    boolean       NOT NULL  DEFAULT false,
+    media_is_confirmation boolean   NOT NULL  DEFAULT false,
+    media_frame_index bigint        NULL,
+    media_source_offset_sec numeric(12,3) NULL
 );
 
 
@@ -424,6 +438,14 @@ COMMENT ON COLUMN fireguard.fire_event.event_detected_frames   IS '검출된 프
 COMMENT ON COLUMN fireguard.fire_event.event_threshold_frames  IS '확정 기준 프레임 수';
 COMMENT ON COLUMN fireguard.fire_event.event_confidence        IS '최고 신뢰도';
 COMMENT ON COLUMN fireguard.fire_event.event_is_test           IS '점검 모드 여부';
+COMMENT ON COLUMN fireguard.fire_event.event_source_type       IS '이벤트 입력 종류 (CCTV_LIVE, VIDEO_TEST)';
+COMMENT ON COLUMN fireguard.fire_event.event_source_metadata   IS '영상·모델·판정 설정 메타데이터';
+COMMENT ON COLUMN fireguard.fire_event.event_cctv_snapshot     IS '테스트 당시 CCTV 정보 스냅샷';
+COMMENT ON COLUMN fireguard.fire_event.event_processed_frames  IS 'AI가 실제 추론한 전체 프레임 수';
+COMMENT ON COLUMN fireguard.fire_event.event_first_detected_offset_sec IS '영상 내 최초 검출 위치(초)';
+COMMENT ON COLUMN fireguard.fire_event.event_confirmed_offset_sec IS '영상 내 화재 확정 위치(초)';
+COMMENT ON COLUMN fireguard.fire_event.event_test_started_at   IS '영상 테스트 처리 시작 일시';
+COMMENT ON COLUMN fireguard.fire_event.event_test_finished_at  IS '영상 테스트 처리 종료 일시';
 
 COMMENT ON COLUMN fireguard.event_media.media_no          IS '미디어 번호';
 COMMENT ON COLUMN fireguard.event_media.event_no          IS '이벤트 번호';
@@ -432,6 +454,10 @@ COMMENT ON COLUMN fireguard.event_media.media_detections  IS '검출 상자 목�
 COMMENT ON COLUMN fireguard.event_media.media_confidence  IS '최고 신뢰도';
 COMMENT ON COLUMN fireguard.event_media.media_captured_at IS '촬영 일시';
 COMMENT ON COLUMN fireguard.event_media.media_is_primary  IS '대표 이미지 여부';
+COMMENT ON COLUMN fireguard.event_media.media_is_first    IS '최초 검출 증거 이미지 여부';
+COMMENT ON COLUMN fireguard.event_media.media_is_confirmation IS '화재 확정 증거 이미지 여부';
+COMMENT ON COLUMN fireguard.event_media.media_frame_index IS '원본 영상의 프레임 번호';
+COMMENT ON COLUMN fireguard.event_media.media_source_offset_sec IS '원본 영상 내 위치(초)';
 
 COMMENT ON COLUMN fireguard.alert.alert_no           IS '알림 번호';
 COMMENT ON COLUMN fireguard.alert.event_no           IS '이벤트 번호';
