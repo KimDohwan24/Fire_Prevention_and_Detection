@@ -11,6 +11,8 @@ event_media.media_url 에는 "/media/events/12/frame_001.jpg" 형태로 저장�
 운영 환경이라면 (1) 만료 시간이 든 서명 URL 을 발급하거나 (2) nginx 같은 리버스
 프록시에서 인증 후 내부 리다이렉트(X-Accel-Redirect)로 넘기는 방식을 써야 한다.
 """
+from pathlib import Path
+
 from flask import Blueprint, send_from_directory
 
 import config
@@ -30,3 +32,10 @@ def serve_media(filename: str):
     테스트에서 임시 디렉터리로 갈아끼울 수 있어야 하기 때문.
     """
     return send_from_directory(config.MEDIA_ROOT, filename)
+
+
+@bp.get("/video-tests/samples/<path:filename>")
+def serve_video_test_sample(filename: str):
+    """브라우저의 video 태그가 선택한 샘플 영상을 재생할 수 있게 한다."""
+    sample_root = Path(config.AI_MODEL_ROOT).resolve() / "samples"
+    return send_from_directory(sample_root, filename)

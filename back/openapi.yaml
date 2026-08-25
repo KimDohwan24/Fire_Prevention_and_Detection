@@ -70,6 +70,8 @@ tags:
     description: 119 신고 이력
   - name: internal
     description: AI 모델 전용 내부 API
+  - name: video-tests
+    description: 관리자용 샘플 영상 판정 및 관제자 판단
   - name: system
     description: 헬스체크·미디어 서빙
 
@@ -2310,6 +2312,306 @@ paths:
         "404":
           $ref: "#/components/responses/CctvNotFound"
 
+  /api/internal/video-tests:
+    post:
+      tags: [internal]
+      summary: 업로드 영상 AI 판정 이력 저장 (AI 전용)
+      description: |
+        AI가 영상 전체를 끝까지 분석한 뒤 `FIRE` 또는 `NO_FIRE` 결과를 한 번에 보낸다.
+        이벤트는 항상 `event_is_test=true`, `event_source_type=VIDEO_TEST`로 저장되며
+        기존 관제 목록·알림·문자·119 신고에는 연결되지 않는다.
+
+        `manifest`는 JSON 문자열이고, 그 안의 `evidence[].file_field`가 같은 이름의
+        JPEG 파트(`evidence_0`~`evidence_2`)를 가리킨다. 증거 이미지는 최초 검출,
+        확정 프레임, 최고 신뢰도 프레임을 합쳐 중복 제거 후 최대 3장이다.
+      security:
+        - internalKey: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [manifest]
+              properties:
+                manifest:
+                  type: string
+                  description: VideoTestManifest 객체를 JSON 직렬화한 문자열
+                evidence_0:
+                  type: string
+                  format: binary
+                  description: 첫 번째 원본 증거 JPEG (선택)
+                evidence_1:
+                  type: string
+                  format: binary
+                  description: 두 번째 원본 증거 JPEG (선택)
+                evidence_2:
+                  type: string
+                  format: binary
+                  description: 세 번째 원본 증거 JPEG (선택)
+      responses:
+        "201":
+          description: 영상 테스트 이력 저장 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoTestResult"
+        "400":
+          description: manifest 통계·BBOX·이미지 형식 오류 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                code: BAD_REQUEST
+                message: result 는 FIRE 또는 NO_FIRE 여야 합니다.
+                field: result
+        "401":
+          $ref: "#/components/responses/InternalUnauthorized"
+        "404":
+          $ref: "#/components/responses/CctvNotFound"
+
+  /api/internal/video-tests/{job_id}/progress:
+    post:
+      tags: [internal]
+      summary: 백그라운드 AI 영상 테스트 진행상황 수집 (AI 전용)
+      security:
+        - internalKey: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{32}$'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [progress]
+              properties:
+                progress:
+                  type: string
+                  description: 최초 감지 또는 화재 확정 진행상황 JSON 문자열
+                image:
+                  type: string
+                  format: binary
+                  description: 해당 시점 AI 증거 JPEG
+      responses:
+        "200":
+          description: 진행상황 반영 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoTestJob"
+        "400":
+          description: 진행상황 형식 오류 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/InternalUnauthorized"
+        "404":
+          description: 영상 테스트 작업 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------- 관리자 AI 영상 테스트
+  /api/video-tests/samples:
+    get:
+      tags: [video-tests]
+      summary: AI 테스트용 샘플 영상 목록
+      description: "관리자가 `ai-model/samples`에 준비한 영상 파일 목록을 조회한다."
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 샘플 영상 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VideoTestSample"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: 샘플 영상 디렉터리를 사용할 수 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/video-tests/run-sample:
+    post:
+      tags: [video-tests]
+      summary: 샘플 영상 전체 AI 판정 실행
+      description: 선택한 CCTV를 영상 테스트 이벤트에 연결하고 영상을 끝까지 분석한다. CCTV 실시간 스트림은 변경하지 않는다.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sample_name, cctv_no]
+              properties:
+                sample_name:
+                  type: string
+                  description: "`ai-model/samples` 안의 파일명"
+                  example: fire_test.mp4
+                cctv_no:
+                  type: integer
+                  minimum: 1
+                  description: 판정 결과를 연결할 등록 CCTV 번호
+                  example: 8
+      responses:
+        "202":
+          description: 백그라운드 AI 영상 분석 작업 접수
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoTestJob"
+        "400":
+          description: 입력 형식 오류 (`BAD_REQUEST`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 샘플 영상 또는 CCTV 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: AI 프로세스 또는 결과 오류
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: AI 실행 환경을 사용할 수 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "504":
+          description: AI 영상 분석 시간 초과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/video-tests/jobs/{job_id}:
+    get:
+      tags: [video-tests]
+      summary: 백그라운드 AI 영상 테스트 상태 조회
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{32}$'
+      responses:
+        "200":
+          description: 작업 상태 및 최종 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoTestJob"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 영상 테스트 작업 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/video-tests/jobs/{job_id}/decision:
+    post:
+      tags: [video-tests]
+      summary: 최초 감지 영상에 대한 관제자 판단
+      description: |
+        AI가 최초 화염·연기를 감지한 `DETECTING` 단계에서 관제자가 판단한다.
+        `CONFIRM_FIRE`는 테스트 이벤트를 `CONFIRMED`로, `DISMISS`는 `DISMISSED`로 바꾼다.
+        영상 테스트이므로 이 요청은 SMS·119 신고를 만들지 않는다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{32}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [CONFIRM_FIRE, DISMISS]
+                reason:
+                  type: string
+                  maxLength: 500
+                  example: 관제 화면에서 실제 화염 확인
+      responses:
+        "200":
+          description: 관제자 판단 반영
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoTestJob"
+        "400":
+          description: 잘못된 판단 값
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 영상 테스트 작업 또는 감지 이벤트 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: 이미 종료되었거나 다른 판단이 반영됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   # ---------------------------------------------------------------- 시스템
   /api/health:
     get:
@@ -3609,3 +3911,160 @@ components:
         event_threshold_frames:
           type: integer
           description: 확정에 필요한 프레임 수
+
+    VideoTestJob:
+      type: object
+      required: [job_id, status, phase, sample_name, cctv_no, alarm_triggered]
+      properties:
+        job_id:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, SUCCEEDED, FAILED]
+        phase:
+          type: string
+          enum: [QUEUED, ANALYZING, DETECTING, FIRE_CONFIRMED, DISMISSED, COMPLETED, FAILED]
+        sample_name:
+          type: string
+        cctv_no:
+          type: integer
+        event_no:
+          type: integer
+          format: int64
+          nullable: true
+        alarm_triggered:
+          type: boolean
+        human_review_required:
+          type: boolean
+          description: 최초 감지 후 관제자 판단이 필요한지 여부
+        event_class:
+          type: string
+          nullable: true
+        confidence:
+          type: number
+          nullable: true
+        media_url:
+          type: string
+          nullable: true
+        first_detection_media_url:
+          type: string
+          nullable: true
+          description: 최초 화염·연기 감지 증거 이미지 경로
+        operator_decision:
+          type: string
+          enum: [CONFIRM_FIRE, DISMISS]
+          nullable: true
+        operator_user_no:
+          type: integer
+          nullable: true
+        operator_decided_at:
+          type: string
+          format: date-time
+          nullable: true
+        operator_reason:
+          type: string
+          nullable: true
+        processed_frames:
+          type: integer
+          minimum: 0
+        positive_frames:
+          type: integer
+          minimum: 0
+        threshold_frames:
+          type: integer
+          minimum: 1
+        result:
+          $ref: "#/components/schemas/VideoTestResult"
+          nullable: true
+        error:
+          $ref: "#/components/schemas/Error"
+          nullable: true
+
+    VideoTestSample:
+      type: object
+      required: [name, extension, size_bytes, preview_url]
+      properties:
+        name:
+          type: string
+          example: fire_test.mp4
+        extension:
+          type: string
+          example: mp4
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        preview_url:
+          type: string
+          description: 로그인 없이 선택 영상을 미리보기할 수 있는 경로
+
+    VideoTestResult:
+      type: object
+      required:
+        - event_no
+        - result
+        - event_status
+        - event_detected_frames
+        - event_threshold_frames
+        - event_processed_frames
+        - media
+      properties:
+        event_no:
+          type: integer
+          format: int64
+        result:
+          type: string
+          enum: [FIRE, NO_FIRE]
+        ai_result:
+          type: string
+          enum: [FIRE, NO_FIRE]
+          nullable: true
+          description: 관제자 판단 전 AI 원본 판정
+        operator_decision:
+          type: string
+          enum: [CONFIRM_FIRE, DISMISS]
+          nullable: true
+        event_status:
+          type: string
+          enum: [CONFIRMED, DISMISSED]
+        event_class:
+          type: string
+          enum: [FLAME, SMOKE, FLAME_SMOKE]
+          nullable: true
+        event_confidence:
+          type: number
+          format: double
+          nullable: true
+        event_detected_frames:
+          type: integer
+          minimum: 0
+        event_threshold_frames:
+          type: integer
+          minimum: 1
+        event_processed_frames:
+          type: integer
+          minimum: 1
+        media:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            properties:
+              media_no:
+                type: integer
+                format: int64
+              media_url:
+                type: string
+              media_is_primary:
+                type: boolean
+              media_is_first:
+                type: boolean
+              media_is_confirmation:
+                type: boolean
+              media_frame_index:
+                type: integer
+                format: int64
+              media_source_offset_sec:
+                type: number
+                format: double

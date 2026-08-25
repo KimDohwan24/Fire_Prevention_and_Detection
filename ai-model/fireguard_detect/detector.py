@@ -10,7 +10,7 @@ from pathlib import Path
 # smoke 는 양쪽이 같아서 표에 없다. 표에 없는 이름은 그대로 통과시킨다.
 CLASS_MAP = {"fire": "flame"}
 
-DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent / "best.pt"
+DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent / "yolo11n_best.pt"
 DEFAULT_CONF = 0.25
 DEFAULT_IOU = 0.7
 DEFAULT_IMGSZ = 640

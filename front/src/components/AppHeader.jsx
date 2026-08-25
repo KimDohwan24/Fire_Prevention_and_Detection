@@ -31,7 +31,7 @@ export default function AppHeader({ currentPage, currentUser, onLogout }) {
           <button
             type="button"
             onClick={() => navigate('/dashboard')}
-            className="h-9 flex items-center gap-2 text-ink focus:outline-none focus-visible:outline-none"
+            className="h-9 flex cursor-pointer items-center gap-2 text-ink focus:outline-none focus-visible:outline-none"
             aria-label="FireGuard 대시보드로 이동"
           >
             <AlertTriangle className="w-5 h-5 shrink-0" />
@@ -60,7 +60,7 @@ export default function AppHeader({ currentPage, currentUser, onLogout }) {
                 aria-current={isActive ? 'page' : undefined}
                 aria-label={item.label}
                 title={item.label}
-                className={`h-9 px-2.5 lg:px-3.5 rounded-full flex items-center justify-center gap-1.5 border text-caption-sm font-semibold whitespace-nowrap focus:outline-none focus-visible:outline-none ${
+                className={`h-9 cursor-pointer px-2.5 lg:px-3.5 rounded-full flex items-center justify-center gap-1.5 border text-caption-sm font-semibold whitespace-nowrap focus:outline-none focus-visible:outline-none ${
                   isActive
                     ? 'border-hairline-strong bg-surface-soft text-ink'
                     : 'border-transparent bg-canvas text-body hover:text-ink hover:border-hairline'
@@ -80,7 +80,7 @@ export default function AppHeader({ currentPage, currentUser, onLogout }) {
           <button
             type="button"
             onClick={onLogout}
-            className="h-9 px-2.5 sm:px-4 rounded-full bg-primary text-on-primary text-caption-sm font-semibold flex items-center gap-1.5 focus:outline-none focus-visible:outline-none"
+            className="h-9 cursor-pointer px-2.5 sm:px-4 rounded-full bg-primary text-on-primary text-caption-sm font-semibold flex items-center gap-1.5 focus:outline-none focus-visible:outline-none"
             aria-label="로그아웃"
             title="로그아웃"
           >

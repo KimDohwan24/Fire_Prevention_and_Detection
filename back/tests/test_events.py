@@ -96,6 +96,18 @@ def test_list_events_excludes_test_events_by_default(client, admin_headers):
     assert len(r.get_json()["items"]) == 2
 
 
+def test_list_events_includes_uploaded_video_tests_when_requested(client, admin_headers):
+    """관제 감사 로그는 include_test=true일 때 VIDEO_TEST 이력을 포함한다."""
+    visible_test = make_event(is_test=True)
+    make_event(is_test=True, source_type="VIDEO_TEST")
+
+    response = client.get("/api/events?include_test=true", headers=admin_headers)
+
+    items = response.get_json()["items"]
+    assert len(items) == 2
+    assert {item["event_no"] for item in items} == {visible_test, visible_test + 1}
+
+
 # ---------- 목록: 필터 ----------
 
 def test_list_events_filter_by_event_status(client, admin_headers):

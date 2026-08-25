@@ -115,7 +115,9 @@ def _find_open_event(cur, cctv_no: int) -> dict | None:
                e.event_detected_frames, e.event_threshold_frames,
                e.event_first_detected_at AS window_started_at
         FROM fire_event e
-        WHERE e.cctv_no = %s AND e.event_status = 'PENDING'
+        WHERE e.cctv_no = %s
+          AND e.event_status = 'PENDING'
+          AND coalesce(e.event_source_type, 'CCTV_LIVE') = 'CCTV_LIVE'
         ORDER BY e.event_no DESC
         LIMIT 1
         """,
@@ -304,6 +306,7 @@ def sweep_stale_pending(now: datetime | None = None) -> int:
             UPDATE fire_event e
             SET event_status = 'DISMISSED'
             WHERE e.event_status = 'PENDING'
+              AND coalesce(e.event_source_type, 'CCTV_LIVE') = 'CCTV_LIVE'
               AND e.event_first_detected_at < %s
             """,
             (cutoff,),

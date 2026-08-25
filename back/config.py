@@ -220,6 +220,22 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:5000")
 
 APP_PORT = int(os.getenv("APP_PORT", "5000"))
 
+# UI sample-video test runner settings.
+AI_MODEL_ROOT = Path(
+    os.getenv("AI_MODEL_ROOT") or (PROJECT_ROOT / "ai-model")
+).resolve()
+_AI_VENV_BIN = "Scripts" if os.name == "nt" else "bin"
+_AI_PYTHON_NAME = "python.exe" if os.name == "nt" else "python"
+AI_PYTHON = Path(
+    os.getenv("AI_PYTHON")
+    or (AI_MODEL_ROOT / ".venv" / _AI_VENV_BIN / _AI_PYTHON_NAME)
+).resolve()
+AI_VALIDATE_SCRIPT = Path(
+    os.getenv("AI_VALIDATE_SCRIPT")
+    or (AI_MODEL_ROOT / "validate_video.py")
+).resolve()
+AI_VIDEO_TEST_TIMEOUT_SEC = int(os.getenv("AI_VIDEO_TEST_TIMEOUT_SEC", "1800"))
+
 # 검출 프레임/클립 실제 파일이 놓이는 루트 디렉터리.
 # 기본값은 프로젝트 루트의 media/ 이고, GET /media/<path> 로 서빙된다
 # (event_media.media_url 의 "/media/events/12/frame_001.jpg" 가 곧 이 아래 경로).

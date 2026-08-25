@@ -286,18 +286,20 @@ def make_social_user(user_id="google_1001", provider="GOOGLE", provider_id="1001
 # ---------- 데이터 헬퍼 (이벤트 계열 테스트에서 사용) ----------
 
 def make_event(cctv_no=1, status="CONFIRMED", event_class="FLAME",
-               confidence=0.9123, is_test=False, detected_at="2026-08-08 14:30:00"):
+               confidence=0.9123, is_test=False, detected_at="2026-08-08 14:30:00",
+               source_type="CCTV_LIVE"):
     row = db.execute_returning(
         """
         INSERT INTO fire_event (cctv_no, event_status, event_class,
                                 event_first_detected_at, event_detected_at,
                                 event_detected_frames, event_threshold_frames,
-                                event_confidence, event_is_test)
+                                event_confidence, event_is_test, event_source_type)
         VALUES (%s, %s, %s, %s::timestamp - interval '10 seconds', %s,
-                32, 30, %s, %s)
+                32, 30, %s, %s, %s)
         RETURNING event_no
         """,
-        (cctv_no, status, event_class, detected_at, detected_at, confidence, is_test),
+        (cctv_no, status, event_class, detected_at, detected_at, confidence,
+         is_test, source_type),
     )
     return row["event_no"]
 

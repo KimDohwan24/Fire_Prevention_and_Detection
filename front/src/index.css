@@ -4,25 +4,25 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  /* Colors */
+  /* Colors - 고대비 & 선명한 가독성 기본 라이트 팔레트 */
   --color-primary: #000000;
   --color-on-primary: #ffffff;
-  --color-ink: #000000;
-  --color-ink-deep: #090909;
-  --color-charcoal: #525252;
-  --color-body: #737373;
-  --color-mute: #a3a3a3;
+  --color-ink: #111827;
+  --color-ink-deep: #030712;
+  --color-charcoal: #374151;
+  --color-body: #4b5563;
+  --color-mute: #6b7280;
   --color-canvas: #ffffff;
-  --color-surface-soft: #fafafa;
+  --color-surface-soft: #f9fafb;
   --color-surface-card: #ffffff;
-  --color-hairline: #e5e5e5;
-  --color-hairline-strong: #d4d4d4;
+  --color-hairline: #e5e7eb;
+  --color-hairline-strong: #d1d5db;
   --color-on-dark: #ffffff;
-  --color-on-dark-mute: rgba(255, 255, 255, 0.7);
-  --color-surface-dark: #171717;
+  --color-on-dark-mute: rgba(255, 255, 255, 0.75);
+  --color-surface-dark: #111827;
   --color-focus-ring: rgba(59, 130, 246, 0.5);
   --color-link: #000000;
-  --color-link-mute: #737373;
+  --color-link-mute: #4b5563;
   --color-terminal-red: #ff5f56;
   --color-terminal-yellow: #ffbd2e;
   --color-terminal-green: #27c93f;
@@ -35,11 +35,11 @@
   /* Typography - Sizes, Line Heights, Letter Spacing */
   --text-display-xl: 36px;
   --text-display-xl--line-height: 1.11;
-  --text-display-xl--font-weight: 500;
+  --text-display-xl--font-weight: 600;
 
   --text-display-lg: 30px;
   --text-display-lg--line-height: 1.2;
-  --text-display-lg--font-weight: 500;
+  --text-display-lg--font-weight: 600;
 
   --text-heading-lg: 24px;
   --text-heading-lg--line-height: 1.33;
@@ -47,11 +47,11 @@
 
   --text-heading-md: 20px;
   --text-heading-md--line-height: 1.4;
-  --text-heading-md--font-weight: 500;
+  --text-heading-md--font-weight: 600;
 
   --text-heading-sm: 18px;
   --text-heading-sm--line-height: 1.56;
-  --text-heading-sm--font-weight: 500;
+  --text-heading-sm--font-weight: 600;
 
   --text-body-md: 16px;
   --text-body-md--line-height: 1.5;
@@ -59,7 +59,7 @@
 
   --text-body-strong: 16px;
   --text-body-strong--line-height: 1.5;
-  --text-body-strong--font-weight: 500;
+  --text-body-strong--font-weight: 600;
 
   --text-body-sm: 14px;
   --text-body-sm--line-height: 1.43;
@@ -67,23 +67,23 @@
 
   --text-body-sm-strong: 14px;
   --text-body-sm-strong--line-height: 1.43;
-  --text-body-sm-strong--font-weight: 500;
+  --text-body-sm-strong--font-weight: 600;
 
   --text-caption-sm: 12px;
   --text-caption-sm--line-height: 1.33;
-  --text-caption-sm--font-weight: 400;
+  --text-caption-sm--font-weight: 500;
 
   --text-code-md: 16px;
   --text-code-md--line-height: 1.5;
-  --text-code-md--font-weight: 400;
+  --text-code-md--font-weight: 500;
 
   --text-code-sm: 14px;
   --text-code-sm--line-height: 1.43;
-  --text-code-sm--font-weight: 400;
+  --text-code-sm--font-weight: 500;
 
   --text-button-md: 14px;
   --text-button-md--line-height: 1;
-  --text-button-md--font-weight: 500;
+  --text-button-md--font-weight: 600;
 
   /* Border Radius */
   --radius-none: 0px;
@@ -104,16 +104,26 @@
 }
 
 @layer base {
+  /* 다크 모드 색상 토큰 정의 (전체 페이지 & 대시보드 공통 적용) */
   .dark {
+    color-scheme: dark;
     --color-primary: #ffffff;
     --color-on-primary: #000000;
-    --color-ink: #ffffff;
-    --color-ink-deep: #e5e5e5;
-    --color-body: rgba(255, 255, 255, 0.7);
-    --color-canvas: #171717;
-    --color-hairline: #333333;
-    --color-mute: #525252;
-    --color-surface-soft: #262626;
+    --color-ink: #f9fafb;
+    --color-ink-deep: #ffffff;
+    --color-charcoal: #e5e7eb;
+    --color-body: #9ca3af;
+    --color-mute: #6b7280;
+    --color-canvas: #111827;
+    --color-surface-soft: #1f2937;
+    --color-surface-card: #1f2937;
+    --color-hairline: #374151;
+    --color-hairline-strong: #4b5563;
+    --color-on-dark: #ffffff;
+    --color-on-dark-mute: rgba(255, 255, 255, 0.8);
+    --color-surface-dark: #030712;
+    --color-link: #ffffff;
+    --color-link-mute: #9ca3af;
   }
 
   body {
@@ -121,6 +131,7 @@
     margin: 0;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   h1, h2, h3, h4, h5, h6 {

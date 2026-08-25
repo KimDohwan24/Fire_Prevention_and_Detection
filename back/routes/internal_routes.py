@@ -1,8 +1,10 @@
 """내부 시스템 API — AI 모델 전용 (JWT 대신 X-Internal-Key 인증).
 
 POST /api/internal/detections   프레임 1장의 검출 결과 수집
+POST /api/internal/video-tests  업로드 영상의 최종 판정과 증거 이미지 저장
 GET  /api/internal/cctvs        감시 대상 카메라 목록 (스트림 주소 최신화)
 """
+import json
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
@@ -10,7 +12,7 @@ from flask import Blueprint, jsonify, request
 import db
 from auth import internal_key_required
 from errors import ApiError
-from services import cctv_service, event_service
+from services import cctv_service, event_service, video_test_runner, video_test_service
 
 bp = Blueprint("internal", __name__)
 
@@ -61,3 +63,41 @@ def ingest_detection():
         detections=detections,
     )
     return jsonify(result)
+
+
+@bp.post("/video-tests")
+@internal_key_required
+def ingest_video_test():
+    """영상 전체 판정 결과와 원본 증거 JPEG 최대 3장을 한 번에 저장한다."""
+    raw_manifest = request.form.get("manifest")
+    if raw_manifest is None:
+        raise ApiError(400, "BAD_REQUEST", "manifest 는 필수 JSON 문자열입니다.",
+                       field="manifest")
+    try:
+        manifest = json.loads(raw_manifest)
+    except (TypeError, json.JSONDecodeError):
+        raise ApiError(400, "BAD_REQUEST", "manifest 는 올바른 JSON이어야 합니다.",
+                       field="manifest")
+
+    result = video_test_service.create_video_test(manifest, request.files)
+    return jsonify(result), 201
+
+
+@bp.post("/video-tests/<job_id>/progress")
+@internal_key_required
+def ingest_video_test_progress(job_id: str):
+    """백그라운드 AI가 최초 감지·화재 확정 순간에 보내는 진행상황."""
+    raw_progress = request.form.get("progress")
+    if raw_progress is None:
+        progress = request.get_json(silent=True)
+        image = None
+    else:
+        try:
+            progress = json.loads(raw_progress)
+        except (TypeError, json.JSONDecodeError):
+            raise ApiError(400, "BAD_REQUEST", "progress는 올바른 JSON이어야 합니다.",
+                           field="progress")
+        image_file = request.files.get("image")
+        image = image_file.read() if image_file else None
+
+    return jsonify(video_test_runner.update_progress(job_id, progress, image))

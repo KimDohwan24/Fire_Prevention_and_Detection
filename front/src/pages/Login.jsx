@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { authApi } from '../api';
+import PasswordInput from '../components/PasswordInput';
+import { useAuth } from '../context/authState';
+import {
+  consumeAuthReturnPath,
+  rememberAuthReturnPath,
+  sanitizeAuthReturnPath,
+} from '../utils/authRouting';
 
 const OAUTH_PROVIDERS = [
   {
@@ -28,15 +35,22 @@ const OAUTH_PROVIDERS = [
 
 const Login = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { completeOAuthLogin, login } = useAuth();
   const [id, setId] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState('');
+  const requestedReturnPath = sanitizeAuthReturnPath(location.state?.from);
+
+  useEffect(() => {
+    if (requestedReturnPath) rememberAuthReturnPath(requestedReturnPath);
+  }, [requestedReturnPath]);
 
   useEffect(() => {
     let isActive = true;
-    const completion = authApi.completeOAuthLogin();
+    const completion = completeOAuthLogin();
 
     if (!completion) {
       return () => {
@@ -47,7 +61,9 @@ const Login = () => {
     setOauthLoading('callback');
     completion
       .then(() => {
-        if (isActive) navigate('/dashboard', { replace: true });
+        if (isActive) {
+          navigate(consumeAuthReturnPath(requestedReturnPath), { replace: true });
+        }
       })
       .catch((error) => {
         if (isActive) {
@@ -61,7 +77,7 @@ const Login = () => {
     return () => {
       isActive = false;
     };
-  }, [navigate]);
+  }, [completeOAuthLogin, navigate, requestedReturnPath]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -70,8 +86,8 @@ const Login = () => {
 
     try {
       // 백엔드 REST API 로그인 호출 (/api/auth/login -> JWT 토큰 발급 및 localStorage 저장)
-      await authApi.login(id.trim(), password);
-      navigate('/dashboard');
+      await login(id.trim(), password);
+      navigate(consumeAuthReturnPath(requestedReturnPath), { replace: true });
     } catch (err) {
       console.error('로그인 실패:', err);
       setErrorMsg(err.message || '로그인에 실패했습니다. 아이디와 비밀번호를 확인해주세요.');
@@ -85,6 +101,7 @@ const Login = () => {
     setOauthLoading(provider);
 
     try {
+      if (requestedReturnPath) rememberAuthReturnPath(requestedReturnPath);
       authApi.oauthLogin(provider);
     } catch (err) {
       console.error('소셜 로그인 시작 실패:', err);
@@ -98,7 +115,11 @@ const Login = () => {
 
       {/* Brand / Logo (Horizontal Layout) */}
       <div className="flex flex-row items-center space-x-5 mb-10">
-        <div className="text-[48px] leading-none">🔥</div>
+        <img
+          src="/fireguard-favicon.png"
+          alt="FireGuard 로고"
+          className="h-16 w-16 object-contain"
+        />
         <div className="flex flex-col">
           <h1 className="font-display text-display-lg font-medium text-ink tracking-tight mb-1">
             FireGuard
@@ -131,8 +152,7 @@ const Login = () => {
             />
           </div>
           <div>
-            <input
-              type="password"
+            <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus-visible:outline-none focus:border-ink transition-all"

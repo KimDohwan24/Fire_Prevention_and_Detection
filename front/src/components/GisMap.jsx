@@ -4,6 +4,10 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Video, Flame, ShieldAlert, MapPin, Layers } from 'lucide-react';
 
+const KOREA_MAP_CENTER = [36.35, 127.85];
+const KOREA_MAP_BOUNDS = [[33.0, 124.5], [38.6, 130.0]];
+const KOREA_MAP_MIN_ZOOM = 7;
+
 // Leaflet 기본 아이콘 경로 지정 (Asset 404 예방)
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -18,13 +22,23 @@ L.Icon.Default.mergeOptions({
 function MapRecenter({ center, zoom, selectedId }) {
   const map = useMap();
   const prevSelectedId = useRef(selectedId);
+  const isInitialized = useRef(false);
 
   useEffect(() => {
+    // 초기 선택 CCTV 때문에 국가 전체 보기 화면이 바로 확대되지 않도록 한다.
+    if (!isInitialized.current) {
+      prevSelectedId.current = selectedId;
+      isInitialized.current = true;
+      return;
+    }
+
     // selectedId가 실제로 변경되었을 때만 지도 이동 (폴링 리렌더 무시)
     if (selectedId !== prevSelectedId.current) {
       prevSelectedId.current = selectedId;
-      if (center && center[0] && center[1]) {
-        map.setView(center, zoom || map.getZoom());
+      const lat = Number(center?.[0]);
+      const lng = Number(center?.[1]);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        map.setView([lat, lng], zoom || map.getZoom());
       }
     }
   }, [center, zoom, selectedId, map]);
@@ -51,7 +65,7 @@ const TILE_PROVIDERS = {
 };
 
 // 커스텀 DIV 아이콘 생성 함수
-const createCustomIcon = (type, isEmergency = false) => {
+const createCustomIcon = (type, alertLevel = null) => {
   if (type === 'firestation') {
     return L.divIcon({
       className: 'custom-leaflet-marker',
@@ -78,7 +92,44 @@ const createCustomIcon = (type, isEmergency = false) => {
     });
   }
 
-  if (isEmergency) {
+  if (alertLevel === 'detecting') {
+    return L.divIcon({
+      className: 'custom-leaflet-marker detecting-pulse',
+      html: `
+        <div style="position: relative; width: 36px; height: 36px;">
+          <div style="
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            background-color: #f59e0b;
+            opacity: 0.7;
+            animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+          "></div>
+          <div style="
+            position: relative;
+            background-color: #f59e0b;
+            color: white;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 10px rgba(245, 158, 11, 0.5);
+            border: 2px solid white;
+          ">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 3.5z"/>
+            </svg>
+          </div>
+        </div>
+      `,
+      iconSize: [36, 36],
+      iconAnchor: [18, 18],
+    });
+  }
+
+  if (alertLevel === 'confirmed' || alertLevel === 'fire' || alertLevel === true) {
     return L.divIcon({
       className: 'custom-leaflet-marker emergency-pulse',
       html: `
@@ -148,10 +199,10 @@ export default function GisMap({
   selectedCCTV,
   onSelectCCTV,
   showFireStation = true,
-  center = [37.5665, 126.9780], // 기본 서울시청 위치
-  zoom = 13
+  center = KOREA_MAP_CENTER,
+  zoom = 7
 }) {
-  const [tileKey, setTileKey] = useState('cartoLight');
+  const [tileKey, setTileKey] = useState('osm');
   const activeTile = TILE_PROVIDERS[tileKey] || TILE_PROVIDERS.cartoLight;
   const mapRef = useRef(null);
 
@@ -189,8 +240,12 @@ export default function GisMap({
       </div>
 
       <MapContainer
-        center={mapCenter}
+        center={center}
         zoom={zoom}
+        minZoom={KOREA_MAP_MIN_ZOOM}
+        maxBounds={KOREA_MAP_BOUNDS}
+        maxBoundsViscosity={1}
+        worldCopyJump={false}
         style={{ width: '100%', height: '100%', minHeight: '380px' }}
         zoomControl={false}
         ref={mapRef}
@@ -204,6 +259,7 @@ export default function GisMap({
           maxZoom={19}
         />
 
+        {/* 북한·일본 등 주변 지역은 배경 타일을 가려 한국 영역만 표시 */}
         {/* 관할 소방서 마커 */}
         {showFireStation && agencyList.map((agency) => {
           const lat = parseFloat(agency.lat || agency.agency_lat);
@@ -237,18 +293,20 @@ export default function GisMap({
           if (!lat || !lng) return null;
 
           const isEmergency = cctv.status === 'FIRE' || cctv.status === 'EMERGENCY' || cctv.isEmergency;
+          const alertLevel = cctv.alertLevel || (isEmergency ? 'confirmed' : null);
+          const hasAlert = alertLevel === 'detecting' || alertLevel === 'confirmed';
           const isSelected = selectedCCTV && selectedCCTV.cctv_no === cctv.cctv_no;
 
           return (
             <React.Fragment key={`cctv-${cctv.cctv_no || cctv.name}`}>
               {/* 긴급 화재 발생 시 주변 감지 범위 원 표시 */}
-              {isEmergency && (
+              {hasAlert && (
                 <Circle
                   center={[lat, lng]}
                   radius={350}
                   pathOptions={{
-                    color: '#ef4444',
-                    fillColor: '#ef4444',
+                    color: alertLevel === 'detecting' ? '#f59e0b' : '#ef4444',
+                    fillColor: alertLevel === 'detecting' ? '#f59e0b' : '#ef4444',
                     fillOpacity: 0.25,
                     weight: 2
                   }}
@@ -257,7 +315,7 @@ export default function GisMap({
 
               <Marker
                 position={[lat, lng]}
-                icon={createCustomIcon('cctv', isEmergency)}
+                icon={createCustomIcon('cctv', alertLevel)}
                 eventHandlers={{
                   click: () => {
                     if (onSelectCCTV) onSelectCCTV(cctv);
@@ -274,8 +332,8 @@ export default function GisMap({
                       <MapPin className="w-3.5 h-3.5" />
                       <span>{cctv.address || '설치 위치 정보'}</span>
                     </div>
-                    {isEmergency && (
-                      <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-[11px]">
+                    {hasAlert && (
+                      <div className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full font-bold text-[11px] ${alertLevel === 'detecting' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
                         <Flame className="w-3 h-3 fill-current" />
                         <span>화재 감지 긴급 상황!</span>
                       </div>

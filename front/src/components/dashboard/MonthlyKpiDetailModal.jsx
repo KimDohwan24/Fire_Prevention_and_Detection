@@ -18,19 +18,19 @@ import { StatusPill } from './DashboardWidgets';
 
 const MODAL_CONFIG = {
   confirmed: {
-    title: '오늘 화재 확정',
-    description: '오늘 확정된 화재 사건을 최신순으로 확인합니다.',
-    emptyTitle: '오늘 확정된 화재가 없습니다.',
+    title: '이번 달 화재 확정',
+    description: '이번 달 확정된 화재 사건을 최신순으로 확인합니다.',
+    emptyTitle: '이번 달 확정된 화재가 없습니다.',
     emptyDescription: '새로운 확정 사건이 발생하면 이곳에 표시됩니다.',
-    loadingMessage: '오늘 화재 확정 내역을 불러오고 있습니다.',
+    loadingMessage: '이번 달 화재 확정 내역을 불러오고 있습니다.',
     Icon: Flame,
   },
   reports: {
-    title: '오늘 119 신고',
-    description: '오늘 전송된 119 신고와 접수 상태를 최신순으로 확인합니다.',
-    emptyTitle: '오늘 등록된 119 신고가 없습니다.',
+    title: '이번 달 119 신고',
+    description: '이번 달 전송된 119 신고와 접수 상태를 최신순으로 확인합니다.',
+    emptyTitle: '이번 달 등록된 119 신고가 없습니다.',
     emptyDescription: '새로운 신고가 전송되면 이곳에 표시됩니다.',
-    loadingMessage: '오늘 119 신고 내역을 불러오고 있습니다.',
+    loadingMessage: '이번 달 119 신고 내역을 불러오고 있습니다.',
     Icon: PhoneCall,
   },
 };
@@ -152,7 +152,7 @@ function ReportRow({ report, event, onOpenEvent }) {
   );
 }
 
-function TodayKpiDetailModal({
+function MonthlyKpiDetailModal({
   type,
   items = [],
   events = [],
@@ -201,8 +201,8 @@ function TodayKpiDetailModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-labelledby="today-kpi-detail-title"
-        aria-describedby="today-kpi-detail-description"
+        aria-labelledby="monthly-kpi-detail-title"
+        aria-describedby="monthly-kpi-detail-description"
         style={{ width: '720px', minWidth: '320px', maxWidth: '95vw' }}
         className="max-h-[calc(100vh-2rem)] shrink-0 box-border flex flex-col rounded-lg border border-hairline bg-canvas"
         onClick={(clickEvent) => clickEvent.stopPropagation()}
@@ -213,10 +213,10 @@ function TodayKpiDetailModal({
               <Icon className="h-4.5 w-4.5" />
             </span>
             <span className="min-w-0">
-              <h2 id="today-kpi-detail-title" className="text-heading-sm font-semibold text-ink">
+              <h2 id="monthly-kpi-detail-title" className="text-heading-sm font-semibold text-ink">
                 {config.title}
               </h2>
-              <p id="today-kpi-detail-description" className="mt-1 text-caption-sm text-mute">
+              <p id="monthly-kpi-detail-description" className="mt-1 text-caption-sm text-mute">
                 {config.description}
               </p>
             </span>
@@ -234,14 +234,14 @@ function TodayKpiDetailModal({
         <div className="max-h-[75vh] overflow-y-auto space-y-4 p-5">
           {!loading && !error && (
             isReports ? (
-              <section className="grid grid-cols-3 gap-2" aria-label="오늘 119 신고 요약">
+              <section className="grid grid-cols-3 gap-2" aria-label="이번 달 119 신고 요약">
                 <SummaryMetric label="전체 신고" value={items.length} />
                 <SummaryMetric label="접수 완료" value={acceptedCount} />
                 <SummaryMetric label="전송 실패" value={failedCount} tone={failedCount > 0 ? 'critical' : 'neutral'} />
               </section>
             ) : (
-              <section className="rounded-lg border border-hairline bg-surface-soft px-5 py-4" aria-label="오늘 화재 확정 요약">
-                <p className="text-caption-sm font-medium text-body">오늘 확정된 화재</p>
+              <section className="rounded-lg border border-hairline bg-surface-soft px-5 py-4" aria-label="이번 달 화재 확정 요약">
+                <p className="text-caption-sm font-medium text-body">이번 달 확정된 화재</p>
                 <div className="mt-1 flex flex-wrap items-end justify-between gap-2">
                   <p className="font-display text-display-lg font-semibold text-ink">{items.length}건</p>
                   <span className="rounded-full border border-hairline bg-canvas px-3 py-1 text-[11px] font-semibold text-body">
@@ -301,4 +301,4 @@ function TodayKpiDetailModal({
   );
 }
 
-export default TodayKpiDetailModal;
+export default MonthlyKpiDetailModal;
