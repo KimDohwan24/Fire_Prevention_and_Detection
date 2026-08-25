@@ -113,6 +113,19 @@ def update_user(user_no: int):
 
     validate_phone(body, "user_phone")
 
+    # 기준선(토큰 폐기) 판단과 비밀번호 규칙 검사가 둘 다 현재 행을 필요로 하므로
+    # 한 번만 읽고 아래에서 재활용한다.
+    target = db.query_one(
+        "SELECT user_id, user_provider, user_role FROM users WHERE user_no = %s",
+        (user_no,),
+    )
+    if not target:
+        raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+
+    # DB 의 role 을 바꿔도 이미 발급된 토큰의 클레임은 옛 값 그대로다(auth.admin_required
+    # 가 보는 것이 그 클레임이다). 폐기 조건에서 쓰려고 여기서 판정해 둔다.
+    role_changed = "user_role" in body and body["user_role"] != target["user_role"]
+
     sets = []
     params: list = []
     for col in UPDATABLE:
@@ -121,12 +134,7 @@ def update_user(user_no: int):
             params.append(body[col])
 
     if "user_pw" in body:
-        # 비밀번호 작성규칙 — 대상 사용자의 아이디 포함 여부는 DB 조회로 확인한다
-        target = db.query_one(
-            "SELECT user_id, user_provider FROM users WHERE user_no = %s", (user_no,)
-        )
-        if not target:
-            raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+        # 비밀번호 작성규칙 — 대상 사용자의 아이디 포함 여부는 위에서 읽은 행으로 확인한다
         # 소셜 계정에 비밀번호를 심으면 CK_USERS_LOCAL_PW 는 통과하지만 정작 로그인은
         # SOCIAL_ACCOUNT 로 계속 막힌다 — 아무 효과 없는 값만 남으므로 미리 거절한다
         if target["user_provider"] != "LOCAL":
@@ -143,7 +151,14 @@ def update_user(user_no: int):
 
     # 정지·탈퇴는 즉시 효력을 가져야 한다. 이 줄이 없으면 관리자가 계정을 정지해도
     # 이미 로그인해 있던 사람은 토큰 만료(기본 12시간)까지 그대로 쓴다.
-    if body.get("user_status") in ("SUSPENDED", "WITHDRAWN"):
+    # 권한 등급 변경도 같은 이유로 즉시 끊는다 — 강등당한 사람의 토큰에는 옛 ADMIN
+    # 클레임이 그대로 남아 있어서, 폐기하지 않으면 만료까지 관리자 API 를 계속 쓴다.
+    # 방향(강등/승격)은 따지지 않는다: 승격이면 옛 토큰으로 새 권한을 못 쓰니 살릴
+    # 값어치가 없고, 방향 조건은 등급이 늘어나는 순간 구멍이 된다.
+    # 비밀번호 변경도 마찬가지다 — 관리자가 유출 의심 계정의 비밀번호를 강제로
+    # 바꿨는데 옛 세션이 살아 있으면 회수 의미가 없다.
+    if (body.get("user_status") in ("SUSPENDED", "WITHDRAWN")
+            or role_changed or "user_pw" in body):
         sets.append("user_token_valid_from = now()")
 
     if not sets:
@@ -208,10 +223,15 @@ def change_password():
 
     # 3. 새 비밀번호 해시화 및 DB 업데이트
     new_pw_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    # 비밀번호가 바뀌었으니 기존 세션을 전부 끊는다 — 도난당한 기기의 토큰도
+    # 비밀번호 변경만으로는 회수되지 않는다. 요청한 이 기기 포함 로그아웃되므로,
+    # 프론트는 직후 요청에서 401 TOKEN_REVOKED 를 받고 로그인 화면으로 돌아간다.
     db.execute(
         """
-        UPDATE users 
-        SET user_pw = %s, user_updated_at = now() 
+        UPDATE users
+        SET user_pw = %s,
+            user_updated_at = now(),
+            user_token_valid_from = now()
         WHERE user_no = %s
         """,
         (new_pw_hash, user_no),

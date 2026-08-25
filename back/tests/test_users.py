@@ -438,3 +438,10 @@ def test_update_password_valid_roundtrip(client, admin_headers):
     # 새 비밀번호로 로그인 성공, 기존 비밀번호는 실패
     assert _login(client, "viewer01", "new#Guard77").status_code == 200
     assert _login(client, "viewer01", PW).status_code == 401
+
+
+def test_update_user_not_found_with_empty_body(client, admin_headers):
+    """없는 사용자는 '고칠 것이 없다'보다 먼저 404 다 — 존재 확인이 UPDATE 앞에 있다."""
+    r = client.put("/api/users/999", headers=admin_headers, json={})
+    assert r.status_code == 404
+    assert r.get_json()["code"] == "USER_NOT_FOUND"
