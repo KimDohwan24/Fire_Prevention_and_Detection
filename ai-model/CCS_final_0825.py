@@ -362,49 +362,108 @@ def get_dataset_paths():
         )
 
 
-    # --------------------------------------------------------
-    # 이번 코드는 일반적인
-    # images/train
-    # images/val
-    # images/test
-    #
-    # 형태를 기준으로 합니다.
-    # --------------------------------------------------------
+    # ========================================================
+    # train
+    # 여러 개의 이미지 경로를 지원
+    # ========================================================
 
-    train_images = (
-        dataset_root
-        / train_value
-    ).resolve()
+    if isinstance(train_value, str):
+
+        train_value = [
+            train_value
+        ]
 
 
-    val_images = (
-        dataset_root
-        / val_value
-    ).resolve()
+    train_images = []
 
 
-    test_images = (
-        dataset_root
-        / test_value
-    ).resolve()
+    for train_path in train_value:
+
+        train_path = Path(
+            train_path
+        )
 
 
-    # --------------------------------------------------------
-    # labels 경로 자동 계산
-    # --------------------------------------------------------
+        if not train_path.is_absolute():
 
-    train_labels = image_to_label_dir(
-        train_images
+            train_path = (
+                dataset_root
+                / train_path
+            )
+
+
+        train_images.append(
+            train_path.resolve()
+        )
+
+
+    # ========================================================
+    # val
+    # 하나의 이미지 경로만 사용
+    # ========================================================
+
+    val_images = Path(
+        val_value
     )
+
+
+    if not val_images.is_absolute():
+
+        val_images = (
+            dataset_root
+            / val_images
+        )
+
+
+    val_images = val_images.resolve()
+
+
+    # ========================================================
+    # test
+    # 하나의 이미지 경로만 사용
+    # ========================================================
+
+    test_images = Path(
+        test_value
+    )
+
+
+    if not test_images.is_absolute():
+
+        test_images = (
+            dataset_root
+            / test_images
+        )
+
+
+    test_images = test_images.resolve()
+
+
+    # ========================================================
+    # labels 경로 자동 계산
+    # ========================================================
+
+    train_labels = [
+        image_to_label_dir(
+            path
+        )
+        for path in train_images
+    ]
+
 
     val_labels = image_to_label_dir(
         val_images
     )
 
+
     test_labels = image_to_label_dir(
         test_images
     )
 
+
+    # ========================================================
+    # return
+    # ========================================================
 
     return {
         "root": dataset_root,
@@ -418,7 +477,6 @@ def get_dataset_paths():
         "test_images": test_images,
         "test_labels": test_labels,
     }
-
 
 # ============================================================
 # 9. images 경로 → labels 경로 변환
