@@ -39,10 +39,10 @@ info:
     |---|---|---|
     | `EVENT_WINDOW_SEC` | 60초 | 관측 창. **최초 감지 시각에 고정**되며 이후 검출로 연장되지 않는다 |
     | `EVENT_THRESHOLD_FRAMES` | 30 | 창 안에서 이만큼 쌓이면 화재 확정. 미달인 채 창이 닫히면 `DISMISSED` |
-    | `ALERT_DEADLINE_SEC` | 30초 | 알림 응답 유예. **이전 `ALERT_DEADLINE_MIN`(3분)에서 바뀐 값** |
-    | `ESCALATION_INTERVAL_SEC` | 5초 | 무응답 스윕 주기. 신고가 최대 이만큼 늦어져 실제 유예는 30~35초 |
+    | `ALERT_DEADLINE_SEC` | 60초 | 알림 응답 유예. **이전 `ALERT_DEADLINE_MIN`(3분)에서 바뀌고, 한때 30초였다가 60초로 다시 올라온 값** |
+    | `ESCALATION_INTERVAL_SEC` | 5초 | 무응답 스윕 주기. 신고가 최대 이만큼 늦어져 실제 유예는 60~65초 |
 
-    Swagger UI 로 취소(`CANCEL`) 흐름을 손수 확인할 때는 30초가 짧아 409 가 나기 쉽다.
+    Swagger UI 로 취소(`CANCEL`) 흐름을 손수 확인할 때는 60초가 짧아 409 가 나기 쉽다.
     로컬 `.env` 에서 `ALERT_DEADLINE_SEC` 를 넉넉히 올리고 테스트할 것.
 
 servers:
@@ -1775,7 +1775,7 @@ paths:
         - `CANCEL` — 오탐으로 취소. `alert_deadline_at` 이전에만 가능하며,
           유예가 지났으면 409 (`DEADLINE_PASSED`) — 이미 신고 절차로 넘어갔기 때문이다.
 
-        > ⚠️ **유예는 기본 30초다** (`ALERT_DEADLINE_SEC`, 실제로는 스윕 주기 때문에 30~35초).
+        > ⚠️ **유예는 기본 60초다** (`ALERT_DEADLINE_SEC`, 실제로는 스윕 주기 때문에 60~65초).
         > Swagger UI 로 손수 눌러 보면 이벤트 확정 → `alert_no` 확인 → 여기까지 오는 사이에
         > 유예가 지나 `CANCEL` 이 409 로 떨어지기 쉽다. 취소 흐름을 확인할 때는
         > 로컬 `.env` 에 `ALERT_DEADLINE_SEC=300` 처럼 넉넉히 잡고 테스트할 것.

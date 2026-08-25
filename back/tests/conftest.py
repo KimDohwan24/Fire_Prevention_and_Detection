@@ -143,6 +143,20 @@ def _agency_takeover_on(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _report_retries_on(monkeypatch):
+    """테스트는 한 기관 재전송이 켜진 상태를 기본으로 한다.
+
+    운영 기본값은 MAX_REPORT_ATTEMPTS=1 이다 — 119 와 한 왕복으로 끝낸다
+    (2026-08-24 시연 단순화). 승계와 마찬가지로 재전송 구현은 그대로 살아 있고
+    .env 한 줄로 되살아나므로, 그 경로가 썩지 않게 테스트는 루프가 도는 상태를 본다.
+
+    운영 기본값 자체(재전송 없음)는 test_report_service.py 의 전용 테스트 두 개가
+    따로 검증한다 — 동작 하나와 config.py 에 적힌 리터럴 하나.
+    """
+    monkeypatch.setattr(config, "MAX_REPORT_ATTEMPTS", 4)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_report_http(monkeypatch):
     """전역 가드: 어떤 테스트도 실제 119 신고 HTTP 를 보내지 않는다.
 

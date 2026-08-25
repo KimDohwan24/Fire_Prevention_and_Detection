@@ -125,7 +125,13 @@ ALERT_DEADLINE_SEC = int(os.getenv("ALERT_DEADLINE_SEC", "60"))
 ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "5"))
 
 # 119 신고: 한 기관에 최대 몇 번 전송을 시도하나 (안쪽 루프, report_attempt_count)
-MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))
+#   1 = 요청 한 번·응답 한 번으로 끝낸다 — 재전송 없음. **기본값**
+#   2 이상 = 재시도할 값어치가 있는 실패(응답 타임아웃·5xx)에 한해 그 횟수까지 재전송
+# 2026-08-24 시연 단순화로 기본을 1 로 두었다. REPORT_MAX_AGENCIES=1(기관 승계
+# 해제)과 짝이다 — 119 와 주고받는 것을 한 왕복으로 보여주는 것이 시연 목표라,
+# 재전송이 남아 있으면 접수 콘솔에 같은 신고가 여러 줄로 찍혀 그림이 흐려진다.
+# 재전송 코드는 그대로 남아 있어 .env 에 MAX_REPORT_ATTEMPTS=4 만 넣으면 되돌아간다.
+MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "1"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
 

@@ -230,11 +230,11 @@ hr.soft{border:0; border-top:1px dashed var(--line); margin:1.6rem 0}
 [event_service]  같은 카메라의 검출을 누적
    │  60초 창 안에 30프레임 쌓이면 → 화재 확정(CONFIRMED)
    ▼
-[alert_service]  CCTV 주인에게 PUSH + SMS 동시 발송, 30초 유예 시계 시작
+[alert_service]  CCTV 주인에게 PUSH + SMS 동시 발송, 60초 유예 시계 시작
    │
    ├─ 사용자가 "화재 맞음(READ)" 누름 ──▶ 즉시 119 신고
    ├─ 사용자가 "오탐(CANCEL)" 누름 ────▶ 종료
-   └─ 30초 무응답 ──▶ [escalation] 5초마다 도는 스케줄러가 잡아냄
+   └─ 60초 무응답 ──▶ [escalation] 5초마다 도는 스케줄러가 잡아냄
                           ▼
                      [report_service]  가장 가까운 소방서부터 신고
                         같은 소방서에 최대 4번 재전송 → 그래도 안 되면
@@ -578,7 +578,7 @@ EVENT_THRESHOLD_FRAMES = <span class="f">int</span>(os.getenv(<span class="s">"E
 <tbody>
 <tr><td><code>EVENT_THRESHOLD_FRAMES</code></td><td>30</td><td>이만큼 프레임이 쌓이면 화재 확정</td></tr>
 <tr><td><code>EVENT_WINDOW_SEC</code></td><td>60</td><td>관측 창 길이. <strong>최초 감지 시각에 고정</strong>되고 연장되지 않음</td></tr>
-<tr><td><code>ALERT_DEADLINE_SEC</code></td><td>30</td><td>알림 응답 유예. 넘기면 119로 넘어감</td></tr>
+<tr><td><code>ALERT_DEADLINE_SEC</code></td><td>60</td><td>알림 응답 유예. 넘기면 119로 넘어감</td></tr>
 <tr><td><code>ESCALATION_INTERVAL_SEC</code></td><td>5</td><td>무응답 감시 스윕 주기</td></tr>
 <tr><td><code>MAX_REPORT_ATTEMPTS</code></td><td>4</td><td>한 소방서에 최대 몇 번 재전송</td></tr>
 <tr><td><code>REPORT_HTTP_TIMEOUT_SEC</code></td><td>3</td><td>소방서 응답을 몇 초까지 기다리나</td></tr>
@@ -587,7 +587,7 @@ EVENT_THRESHOLD_FRAMES = <span class="f">int</span>(os.getenv(<span class="s">"E
 </div>
 
 <div class="box note"><span class="t">알아둘 것</span>
-<p>유예가 30초인데 스윕이 5초 간격이므로 <strong>실제 유예는 30~35초</strong>입니다. 마감을 넘긴 걸 다음 틱에서야 발견하기 때문입니다.
+<p>유예가 60초인데 스윕이 5초 간격이므로 <strong>실제 유예는 60~65초</strong>입니다. 마감을 넘긴 걸 다음 틱에서야 발견하기 때문입니다.
 <code>ALERT_DEADLINE_SEC</code>를 줄이려면 <code>ESCALATION_INTERVAL_SEC</code>도 같이 줄여야 의도한 값에 가까워집니다. (config.py 주석에도 적혀 있음)</p>
 </div>
 
@@ -1176,7 +1176,7 @@ where = <span class="s">f"WHERE {' AND '.join(conds)}"</span> <span class="k">if
     <span class="k">except</span> Exception:
         logger.exception(<span class="s">"화재 확인 신고 시작 실패 ..."</span>)</pre>
 <div class="box note"><span class="t">알아둘 것</span>
-<p>사용자가 “화재 맞다”를 누르면 <strong>기다리지 않고 즉시</strong> 119에 신고합니다. 유예 30초를 다 채울 이유가 없죠.<br>
+<p>사용자가 “화재 맞다”를 누르면 <strong>기다리지 않고 즉시</strong> 119에 신고합니다. 유예 60초를 다 채울 이유가 없죠.<br>
 <code>try/except</code>로 감싼 이유: 신고가 실패해도 <strong>알림 응답 자체는 성공(200)</strong>해야 합니다.
 안 그러면 사용자 화면에 “에러”가 뜨고, 다시 누르면 <code>ALREADY_RESPONDED</code> 409가 나서 아무것도 못 하게 됩니다.</p>
 </div>
@@ -1296,7 +1296,7 @@ X-Internal-Key: &lt;.env 의 INTERNAL_API_KEY 값&gt;
 
 <div class="flow">event_service ──▶ hooks ──▶ alert_service ──▶ sms
       ▲                                    │
-      │                                    ▼ (30초 무응답)
+      │                                    ▼ (60초 무응답)
   escalation ──────────────────────▶ report_service
       ▲
   스케줄러 (5초마다)</div>
@@ -1741,7 +1741,7 @@ INSERT를 <strong>먼저 SENDING으로 꽂아 슬롯을 선점</strong>하면, �
   <span class="s">"image_detections"</span>: [{<span class="s">"cls"</span>:<span class="s">"flame"</span>, ...}]
 }</pre>
 <div class="box why"><span class="t">설계 포인트 3개</span>
-<p><strong><code>first_detected_at</code>을 왜 싣나.</strong> 유예 30초 + 기관 승계가 겹치면 신고가 최초 검출보다 1분 이상 늦을 수 있습니다.
+<p><strong><code>first_detected_at</code>을 왜 싣나.</strong> 유예 60초 + 기관 승계가 겹치면 신고가 최초 검출보다 1분 이상 늦을 수 있습니다.
 소방 입장에선 <em>신고 시각</em>이 아니라 <em>불이 언제 시작됐는지</em>가 중요합니다.</p>
 <p><strong>이미지를 URL이 아니라 base64로 싣는 이유.</strong> 진짜 119 서버는 우리 내부망의 <code>/media/...</code> URL에 접근할 수 없습니다. 파일 자체를 보내야 합니다.</p>
 <p><strong>이미지를 한 번만 읽는 이유.</strong> <code>_primary_frame</code>은 <code>start_report</code>에서 딱 한 번 호출되고 결과를 <code>event</code> dict에 담아 둡니다.
@@ -1964,7 +1964,7 @@ db.execute(<span class="s">"UPDATE cctv SET cctv_stream_url = %s WHERE cctv_no =
        (try/except 로 감쌈 — 신고 실패해도 응답은 200)
 ◀ 200 {"alert_no":45,"alert_status":"READ","alert_responded_at":"..."}
 
-→ 30초를 기다리지 않고 바로 119. 에스컬레이션은 responded_at 이 채워져서 안 걸림.</div>
+→ 60초를 기다리지 않고 바로 119. 에스컬레이션은 responded_at 이 채워져서 안 걸림.</div>
 </div>
 
 <div class="card">
