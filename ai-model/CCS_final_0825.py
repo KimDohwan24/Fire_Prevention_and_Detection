@@ -34,9 +34,8 @@ BASE_DIR = Path(__file__).resolve().parent
 
 DATA_YAML = (
     BASE_DIR
-    / ".."
-    / "data"
-    / "data.yaml"
+    / "./"
+    / "quad_fire_data.yaml"
 ).resolve()
 
 
