@@ -4,13 +4,15 @@ import { adminUpgradeApi } from '../api';
 import {
   User, ShieldCheck, Mail, Phone, Calendar,
   Lock, Bell, Key, CheckCircle, Clock,
-  ArrowLeft, Edit3, Camera, Save, X, AlertTriangle,
+  ArrowLeft, Edit3, Save, X, AlertTriangle,
   FileText, Activity, Smartphone, Monitor, ShieldAlert, Video, MapPin, ExternalLink, Loader2,
   LogOut, RotateCcw, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 import CctvPlayer from '../components/CctvPlayer';
 import AppHeader from '../components/AppHeader';
+import MyPagePasswordGate from '../components/MyPagePasswordGate';
+import PasswordInput from '../components/PasswordInput';
 import { authApi, cctvApi, getCurrentUserFromStorage, userApi } from '../api';
 import {
   appendLocalActivityLog,
@@ -54,6 +56,12 @@ const getPaginationRange = (currentPage, totalPages) => {
 
 export default function MyPage() {
   const navigate = useNavigate();
+
+  // 마이페이지 진입 전 개인정보 보호를 위한 비밀번호 확인 상태
+  const [isPasswordVerified, setIsPasswordVerified] = useState(false);
+  const [myPagePassword, setMyPagePassword] = useState('');
+  const [passwordVerificationError, setPasswordVerificationError] = useState('');
+  const [isPasswordVerifying, setIsPasswordVerifying] = useState(false);
 
   // 내 활동 및 접속 이력 페이지네이션 및 로딩 상태
   const [activityPage, setActivityPage] = useState(1);
@@ -121,6 +129,14 @@ export default function MyPage() {
   useEffect(() => {
     if (!getCurrentUserFromStorage()) {
       navigate('/login', { replace: true });
+    }
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!isPasswordVerified) return;
+
+    if (!getCurrentUserFromStorage()) {
+      navigate('/login', { replace: true });
       return;
     }
 
@@ -182,10 +198,10 @@ export default function MyPage() {
     };
 
     loadCurrentUserAndCctvs();
-  }, [navigate]);
+  }, [isPasswordVerified, navigate]);
 
   useEffect(() => {
-    if (!currentUser?.user_no) return;
+    if (!isPasswordVerified || !currentUser?.user_no) return;
 
     setActivityError('');
 
@@ -198,7 +214,42 @@ export default function MyPage() {
     setActivityTotal(localActivities.length);
     setActivityTotalPages(localTotalPages);
     setIsActivitiesLoading(false);
-  }, [currentUser?.user_no, activityPage, activityRefreshKey]);
+  }, [isPasswordVerified, currentUser?.user_no, activityPage, activityRefreshKey]);
+
+  const handleVerifyMyPagePassword = async (event) => {
+    event.preventDefault();
+
+    if (!myPagePassword) {
+      setPasswordVerificationError('현재 비밀번호를 입력해주세요.');
+      return;
+    }
+
+    setIsPasswordVerifying(true);
+    setPasswordVerificationError('');
+
+    try {
+      const response = await userApi.verifyMyPagePassword(myPagePassword);
+
+      if (!response?.verified) {
+        setPasswordVerificationError(response?.message || '비밀번호가 일치하지 않습니다.');
+        return;
+      }
+
+      setMyPagePassword('');
+      setIsPasswordVerified(true);
+    } catch (error) {
+      if (error.status === 401) {
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      setPasswordVerificationError(
+        error.message || '비밀번호 확인 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+      );
+    } finally {
+      setIsPasswordVerifying(false);
+    }
+  };
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -209,6 +260,22 @@ export default function MyPage() {
 
   const isAdmin = currentUser?.role === 'admin';
   const isSocialAccount = Boolean(currentUser?.authProvider);
+
+  if (!isPasswordVerified) {
+    return (
+      <MyPagePasswordGate
+        password={myPagePassword}
+        onPasswordChange={(value) => {
+          setMyPagePassword(value);
+          if (passwordVerificationError) setPasswordVerificationError('');
+        }}
+        onSubmit={handleVerifyMyPagePassword}
+        onCancel={() => navigate('/dashboard')}
+        errorMessage={passwordVerificationError}
+        isSubmitting={isPasswordVerifying}
+      />
+    );
+  }
 
   const handleResetActivities = () => {
     setActivityPage(1);
@@ -449,7 +516,7 @@ export default function MyPage() {
           <div className="flex flex-col md:flex-row items-start md:items-center gap-6">
             
             {/* 프로필 이미지/아바타 */}
-            <div className="relative group">
+            <div>
               <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-surface-soft border-2 border-hairline-strong flex items-center justify-center text-3xl font-bold text-ink shrink-0 overflow-hidden shadow-inner">
                 {currentUser?.avatar ? (
                   <img src={currentUser.avatar} alt="Profile" className="w-full h-full object-cover" />
@@ -457,13 +524,6 @@ export default function MyPage() {
                   <User className="w-12 h-12 text-mute" />
                 )}
               </div>
-              <button 
-                onClick={openEditModal}
-                className="absolute bottom-0 right-0 bg-primary text-on-primary p-2 rounded-full border border-canvas shadow hover:scale-105 transition-transform cursor-pointer"
-                title="프로필 사진 수정"
-              >
-                <Camera className="w-4 h-4" />
-              </button>
             </div>
 
             {/* 유저 이름 및 권한 정보 */}
@@ -483,7 +543,7 @@ export default function MyPage() {
 
               {/* 관리자 승인 요청 상태 배지 및 버튼 */}
               <div className="pt-2 flex items-center gap-3">
-                {currentUser?.role !== 'ADMIN' && currentUser?.user_role !== 'ADMIN' ? (
+                {!isAdmin ? (
                 currentUser?.status === 'PENDING' || currentUser?.user_status === 'PENDING' ? (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-700 bg-amber-500/10 border border-amber-500/30 px-3.5 py-1.5 rounded-full">
                       <span>⏳</span>
@@ -1049,8 +1109,7 @@ export default function MyPage() {
               <div className="p-6 max-h-[70vh] overflow-y-auto space-y-4">
                 <div>
                   <label className="block text-caption-sm font-bold text-ink mb-1">현재 비밀번호</label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={pwForm.currentPassword}
                     onChange={(e) => setPwForm({ ...pwForm, currentPassword: e.target.value })}
                     className="block box-border w-full h-11 px-4 bg-canvas border border-hairline-strong rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
@@ -1061,8 +1120,7 @@ export default function MyPage() {
 
                 <div>
                   <label className="block text-caption-sm font-bold text-ink mb-1">새 비밀번호</label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={pwForm.newPassword}
                     onChange={(e) => setPwForm({ ...pwForm, newPassword: e.target.value })}
                     className="block box-border w-full h-11 px-4 bg-canvas border border-hairline-strong rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"
@@ -1073,8 +1131,7 @@ export default function MyPage() {
 
                 <div>
                   <label className="block text-caption-sm font-bold text-ink mb-1">새 비밀번호 확인</label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={pwForm.confirmPassword}
                     onChange={(e) => setPwForm({ ...pwForm, confirmPassword: e.target.value })}
                     className="block box-border w-full h-11 px-4 bg-canvas border border-hairline-strong rounded-full text-body-sm text-ink focus:outline-none focus-visible:outline-none focus:border-ink transition-colors"

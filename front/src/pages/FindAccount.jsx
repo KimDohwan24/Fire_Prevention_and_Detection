@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { authApi } from '../api';
+import PasswordInput from '../components/PasswordInput';
 
 const FindAccount = () => {
   const [activeTab, setActiveTab] = useState('findId'); // 'findId' | 'findPw'
@@ -336,8 +337,7 @@ const FindAccount = () => {
                 </div>
 
                 <div>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={newPasswordForm.password}
                     onChange={(e) => setNewPasswordForm({ ...newPasswordForm, password: e.target.value })}
                     className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus-visible:outline-none focus:border-ink transition-all"
@@ -347,8 +347,7 @@ const FindAccount = () => {
                   />
                 </div>
                 <div>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={newPasswordForm.passwordConfirm}
                     onChange={(e) => setNewPasswordForm({ ...newPasswordForm, passwordConfirm: e.target.value })}
                     className="w-full h-[40px] px-4 bg-canvas border border-hairline rounded-full text-body-md text-ink placeholder:text-mute focus:outline-none focus-visible:outline-none focus:border-ink transition-all"

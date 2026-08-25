@@ -329,6 +329,13 @@ export const authApi = {
 
 // 2. 사용자/관리자 API
 export const userApi = {
+  verifyMyPagePassword: async (current_password) => {
+    return await request('/users/mypage-check-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password }),
+    });
+  },
+
   list: async (status = '') => {
     const query = status ? `?user_status=${encodeURIComponent(status)}` : '';
     return await request(`/users${query}`);

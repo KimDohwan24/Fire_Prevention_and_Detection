@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useDaumPostcodePopup } from 'react-daum-postcode';
 
 import { userApi, authApi } from '../api';
+import PasswordInput from '../components/PasswordInput';
 
 const EMAIL_VERIFICATION_DURATION = 5 * 60;
 const ADDRESS_REQUIRED_MESSAGE = '주소 검색을 완료해주세요.';
@@ -381,8 +382,7 @@ if (formData.emailDomain === '직접입력') {
 
           {/* 비밀번호 */}
           <div className="flex flex-col space-y-1.5">
-            <input
-              type="password"
+            <PasswordInput
               name="password"
               value={formData.password}
               onChange={handleChange}
@@ -394,8 +394,7 @@ if (formData.emailDomain === '직접입력') {
 
           {/* 비밀번호 확인 */}
           <div className="flex flex-col space-y-1.5">
-            <input
-              type="password"
+            <PasswordInput
               name="passwordConfirm"
               value={formData.passwordConfirm}
               onChange={handleChange}
