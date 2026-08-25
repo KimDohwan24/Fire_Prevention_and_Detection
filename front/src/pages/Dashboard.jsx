@@ -10,7 +10,6 @@ import {
   RefreshCw,
   Video,
 } from 'lucide-react';
-import { authApi } from '../api';
 import AppHeader from '../components/AppHeader';
 import CctvHealthDetailModal from '../components/dashboard/CctvHealthDetailModal';
 import EventDetailModal from '../components/dashboard/EventDetailModal';
@@ -22,6 +21,7 @@ import {
   RecentEventsTable,
 } from '../components/dashboard/DashboardWidgets';
 import useDashboardData from '../hooks/useDashboardData';
+import { useAuth } from '../context/authState';
 import { useFireAlert } from '../context/FireAlertContext';
 import {
   createDashboardMetrics,
@@ -38,6 +38,7 @@ const createMonitoringPath = (params = {}) => {
 
 function Dashboard() {
   const navigate = useNavigate();
+  const { logout } = useAuth();
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [isCctvStatusModalOpen, setIsCctvStatusModalOpen] = useState(false);
   const [isTrendModalOpen, setIsTrendModalOpen] = useState(false);
@@ -104,17 +105,12 @@ function Dashboard() {
     setSelectedEvent(event);
   };
 
-  const handleLogout = async () => {
-    await authApi.logout();
-    navigate('/');
-  };
-
   return (
     <div className="min-h-screen bg-canvas text-ink font-ui transition-colors duration-300">
       <AppHeader
         currentPage="dashboard"
         currentUser={currentUser}
-        onLogout={handleLogout}
+        onLogout={logout}
       />
 
       <main className="max-w-7xl mx-auto w-full px-4 py-6 sm:px-6 sm:py-8 space-y-6">
@@ -157,12 +153,6 @@ function Dashboard() {
               관제에서 즉시 확인 &rarr;
             </span>
           </button>
-        )}
-
-        {errors.session && (
-          <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-4 py-3 text-caption-sm font-semibold text-amber-900 dark:text-amber-300">
-            저장된 사용자 범위로 현황을 표시하고 있습니다. {errors.session}
-          </div>
         )}
 
         {/* 상단 타이틀 및 액션 바 (다크 모드 지원) */}

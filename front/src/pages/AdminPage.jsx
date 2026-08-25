@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { authApi, cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi, isSuperAdminUser, resolveMediaUrl } from '../api';
+import { cctvApi, userApi, eventApi, reportApi, adminUpgradeApi, agencyApi, isSuperAdminUser, resolveMediaUrl } from '../api';
 import {
   Users, PlusCircle,
   Video, CheckCircle, Trash2,
@@ -11,6 +10,7 @@ import {
 } from 'lucide-react';
 import CctvPlayer from '../components/CctvPlayer';
 import AppHeader from '../components/AppHeader';
+import { useAuth } from '../context/authState';
 import { buildDetectionTimeline, buildSituationActions } from '../utils/eventTimeline';
 
 // 초기 CCTV 데이터
@@ -111,8 +111,7 @@ const enrichEventAuditLog = (log, event) => {
 };
 
 const AdminPage = () => {
-  const navigate = useNavigate();
-  const [currentUser, setCurrentUser] = useState(null);
+  const { logout, user: currentUser } = useAuth();
   const [activeTab, setActiveTab] = useState('cctv'); // 'cctv' | 'users' | 'logs'
 
   // 로딩/버퍼링 상태 관리
@@ -193,24 +192,7 @@ const AdminPage = () => {
   };
 
   useEffect(() => {
-    const stored = localStorage.getItem('currentUser');
-    if (stored) {
-      try {
-        const user = JSON.parse(stored);
-        if (user.role !== 'admin' && !isSuperAdminUser(user)) {
-          alert('관리자만 접근 가능한 페이지입니다.');
-          navigate('/dashboard');
-          return;
-        }
-        setCurrentUser(user);
-      } catch (e) {
-        navigate('/login');
-      }
-    } else {
-      navigate('/login');
-    }
-
-    // 1. 백엔드 CCTV 목록 로드 함수
+    // ProtectedRoute의 관리자 역할 검증을 통과한 뒤에만 관리 API를 호출한다.
     fetchCctvList();
 
     // 2. 백엔드 사용자 목록 로드
@@ -253,7 +235,7 @@ const AdminPage = () => {
 
     // 3. 백엔드 화재 이벤트 감사 로그 로드
     fetchAuditLogs();
-  }, [navigate]);
+  }, []);
 
   const fetchCctvList = async () => {
     setIsCctvLoading(true);
@@ -329,11 +311,6 @@ const AdminPage = () => {
       setIsAssignedCctvsLoading(false);
       setIsActivitiesLoading(false);
     }
-  };
-
-  const handleLogout = async () => {
-    await authApi.logout();
-    navigate('/login');
   };
 
   const fetchAgencyList = async () => {
@@ -512,16 +489,6 @@ const AdminPage = () => {
         prev?.user_no === user.user_no ? updatedUser : prev
       ));
 
-      if (currentUser?.user_no === user.user_no) {
-        const updatedSessionUser = {
-          ...currentUser,
-          role: updatedUser.role,
-          rawRole: nextRole,
-        };
-        setCurrentUser(updatedSessionUser);
-        localStorage.setItem('currentUser', JSON.stringify(updatedSessionUser));
-      }
-
       alert(`[${user.name}] 권한이 ${nextRoleLabel}(으)로 변경되었습니다.`);
     } catch (err) {
       console.error('회원 권한 변경 실패:', err);
@@ -574,7 +541,7 @@ const AdminPage = () => {
       <AppHeader
         currentPage="admin"
         currentUser={currentUser}
-        onLogout={handleLogout}
+        onLogout={logout}
       />
 
       {/* 2. 관리자 메인 타이틀 & 탭 네비게이션 */}

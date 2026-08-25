@@ -7,27 +7,17 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { useLocation, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import {
   alertApi,
   cctvApi,
   eventApi,
-  getAccessToken,
-  getCurrentUserFromStorage,
   videoTestApi,
 } from '../api';
+import { useAuth } from './authState';
 import { appendLocalActivityLog } from '../utils/activityLog';
 
 const FireAlertContext = createContext(null);
-
-const PUBLIC_PATHS = new Set([
-  '/',
-  '/login',
-  '/signup',
-  '/forgot-password',
-  '/find-account',
-  '/find-id-pw',
-]);
 
 const POLL_INTERVAL_MS = 4_000;
 const TEST_END_NOTICE = '비상 알림 테스트가 종료되었습니다.';
@@ -201,7 +191,9 @@ const createEventLog = (event) => {
 };
 
 const filterScopedData = (events, alerts, scope) => {
-  if (scope?.isAdmin || !scope?.cctvNos) return { events, alerts };
+  if (!scope) return { events: [], alerts: [] };
+  if (scope.isAdmin) return { events, alerts };
+  if (!(scope.cctvNos instanceof Set)) return { events: [], alerts: [] };
 
   const scopedEvents = events.filter((event) => scope.cctvNos.has(String(event.cctv_no)));
   const eventNos = new Set(scopedEvents.map((event) => String(event.event_no)));
@@ -215,7 +207,7 @@ const filterScopedData = (events, alerts, scope) => {
 };
 
 function FireAlertProvider({ children }) {
-  const location = useLocation();
+  const { user: currentUser } = useAuth();
   const [searchParams] = useSearchParams();
   const [events, setEvents] = useState([]);
   const [alerts, setAlerts] = useState([]);
@@ -235,10 +227,10 @@ function FireAlertProvider({ children }) {
   const openedQueryEventRef = useRef(null);
   const dataRef = useRef({ events: [], alerts: [] });
 
-  const isProtectedRoute = !PUBLIC_PATHS.has(location.pathname);
-  const storedUser = getCurrentUserFromStorage();
-  const hasSession = Boolean(getAccessToken());
-  const sessionKey = `${hasSession ? 'authenticated' : 'anonymous'}:${storedUser?.user_no ?? ''}`;
+  const currentUserNo = currentUser?.user_no;
+  const currentUserIsAdmin = currentUser?.role === 'admin'
+    || currentUser?.rawRole === 'ADMIN'
+    || Number(currentUserNo) === 1;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -254,7 +246,7 @@ function FireAlertProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    if (!isProtectedRoute || !hasSession) {
+    if (!currentUser) {
       setScope(null);
       setEvents([]);
       setAlerts([]);
@@ -265,26 +257,29 @@ function FireAlertProvider({ children }) {
     }
 
     let cancelled = false;
-    const user = getCurrentUserFromStorage();
-    const isAdmin = user?.role === 'admin' || user?.rawRole === 'ADMIN' || Number(user?.user_no) === 1;
 
-    cctvApi.list(isAdmin ? {} : { user_no: user?.user_no })
+    cctvApi.list(currentUserIsAdmin ? {} : { user_no: currentUserNo })
       .then((response) => {
         if (cancelled) return;
         const cctvs = getItems(response);
         setScope({
-          isAdmin,
-          cctvNos: isAdmin ? null : new Set(cctvs.map((cctv) => String(cctv.cctv_no))),
+          isAdmin: currentUserIsAdmin,
+          cctvNos: currentUserIsAdmin ? null : new Set(cctvs.map((cctv) => String(cctv.cctv_no))),
         });
       })
       .catch(() => {
-        if (!cancelled) setScope({ isAdmin, cctvNos: null });
+        if (!cancelled) {
+          setScope({
+            isAdmin: currentUserIsAdmin,
+            cctvNos: currentUserIsAdmin ? null : new Set(),
+          });
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [hasSession, isProtectedRoute, sessionKey]);
+  }, [currentUser, currentUserIsAdmin, currentUserNo]);
 
   const updateEventLogs = useCallback((nextEvents) => {
     const falseAlarmEvents = readNumberList('falseAlarmEvents');
@@ -335,7 +330,7 @@ function FireAlertProvider({ children }) {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!isProtectedRoute || !hasSession || refreshInFlightRef.current) return;
+    if (!currentUser || refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
     setIsLoading((current) => current || events.length === 0);
 
@@ -366,19 +361,19 @@ function FireAlertProvider({ children }) {
       if (mountedRef.current) setIsLoading(false);
       refreshInFlightRef.current = false;
     }
-  }, [events.length, hasSession, isProtectedRoute, localTestAlert, scope, selectActiveAlert, updateEventLogs]);
+  }, [currentUser, events.length, localTestAlert, scope, selectActiveAlert, updateEventLogs]);
 
   useEffect(() => {
-    if (!isProtectedRoute || !hasSession) return undefined;
+    if (!currentUser) return undefined;
 
     refresh();
     const intervalId = window.setInterval(refresh, POLL_INTERVAL_MS);
     return () => window.clearInterval(intervalId);
-  }, [hasSession, isProtectedRoute, refresh, sessionKey]);
+  }, [currentUser, refresh]);
 
   useEffect(() => {
     const requestedEventNo = searchParams.get('event_no');
-    if (!isProtectedRoute || !requestedEventNo) {
+    if (!requestedEventNo) {
       openedQueryEventRef.current = null;
       return;
     }
@@ -387,7 +382,7 @@ function FireAlertProvider({ children }) {
     openedQueryEventRef.current = requestedEventNo;
     const summary = events.find((event) => String(event.event_no) === String(requestedEventNo));
     setSelectedEvent(summary || { event_no: Number(requestedEventNo) || requestedEventNo });
-  }, [events, isProtectedRoute, searchParams]);
+  }, [events, searchParams]);
 
   const reportTestJob = useCallback((job) => {
     if (!job) return null;
@@ -421,13 +416,12 @@ function FireAlertProvider({ children }) {
       ? { ...job, test_assignment: testAssignment }
       : job;
     const nextAlert = reportTestJob(jobWithAssignment);
-    const currentUser = getCurrentUserFromStorage();
     const isConfirm = decision === 'CONFIRM_FIRE';
     const cctvName = nextAlert?.cctv_name || `CCTV #${jobWithAssignment?.cctv_no ?? '-'}`;
 
     appendLocalActivityLog({
       id: `${jobWithAssignment?.event_no || jobWithAssignment?.job_id}-${decision}`,
-      user_no: currentUser?.user_no,
+      user_no: currentUserNo,
       activity_type: isConfirm ? 'FIRE_CONFIRMED' : 'FIRE_DISMISSED',
       time: new Date().toISOString(),
       type: isConfirm ? 'fire' : 'false_alarm',
@@ -438,7 +432,7 @@ function FireAlertProvider({ children }) {
       ? `${cctvName} 화재 확정 테스트가 반영되었습니다.`
       : `${cctvName} 오탐 처리 테스트가 반영되었습니다.`);
     return nextAlert;
-  }, [activeAlert, reportTestJob]);
+  }, [activeAlert, currentUserNo, reportTestJob]);
 
   const decideTest = useCallback(async (decision) => {
     if (!activeAlert?.isTest || !activeAlert.job_id || activeAlert.severity !== 'detecting' || isActionLoading) return;
@@ -461,12 +455,11 @@ function FireAlertProvider({ children }) {
     try {
       const response = await alertApi.respond(activeAlert.alert_no, action);
       const isConfirm = action === 'READ';
-      const currentUser = getCurrentUserFromStorage();
       const eventNo = activeAlert.event_no;
 
       appendLocalActivityLog({
         id: `${eventNo || activeAlert.alert_no}-${action}`,
-        user_no: currentUser?.user_no,
+        user_no: currentUserNo,
         activity_type: isConfirm ? 'FIRE_CONFIRMED' : 'FALSE_ALARM_CANCELLED',
         time: new Date().toISOString(),
         type: isConfirm ? 'fire' : 'false_alarm',
@@ -486,7 +479,7 @@ function FireAlertProvider({ children }) {
     } finally {
       setIsActionLoading(false);
     }
-  }, [activeAlert, isActionLoading, refresh]);
+  }, [activeAlert, currentUserNo, isActionLoading, refresh]);
 
   const dismissAlert = useCallback(() => {
     if (!activeAlert) return;

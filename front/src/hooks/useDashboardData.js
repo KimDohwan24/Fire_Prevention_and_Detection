@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   alertApi,
-  authApi,
   cctvApi,
   eventApi,
-  getCurrentUserFromStorage,
   reportApi,
-  setCurrentUserToStorage,
 } from '../api';
+import { useAuth } from '../context/authState';
 import { createDashboardMockData } from '../utils/dashboardMockData';
 
 const PAGE_SIZE = 100;
@@ -23,7 +21,6 @@ const EMPTY_DATA = {
 };
 
 const EMPTY_ERRORS = {
-  session: '',
   cctvs: '',
   events: '',
   alerts: '',
@@ -99,20 +96,6 @@ const fetchAllPages = async (requestPage, params = {}) => {
   );
 };
 
-const normalizeSessionUser = (response, fallback) => {
-  const sessionUser = response?.user || response;
-  if (!sessionUser?.user_id || sessionUser?.user_no == null) return fallback;
-
-  return {
-    id: sessionUser.user_id,
-    user_no: sessionUser.user_no,
-    name: sessionUser.user_name || fallback?.name || sessionUser.user_id,
-    role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
-    rawRole: sessionUser.user_role,
-    authProvider: fallback?.authProvider || null,
-  };
-};
-
 const scopeDataForUser = ({ cctvs, events, alerts, reports }, user) => {
   const isAdmin = user?.role === 'admin' || user?.rawRole === 'ADMIN';
   if (isAdmin) return { cctvs, events, alerts, reports };
@@ -150,11 +133,10 @@ const resolveDashboardData = (rawData, user, keepDemoData = false) => {
 };
 
 export default function useDashboardData() {
-  const storedUser = getCurrentUserFromStorage();
+  const { user: currentUser } = useAuth();
   const initialData = DASHBOARD_DEMO_ENABLED
-    ? getDemoDashboardData(storedUser)
+    ? getDemoDashboardData(currentUser)
     : EMPTY_DATA;
-  const [currentUser, setCurrentUser] = useState(storedUser);
   const [data, setData] = useState(initialData);
   const [errors, setErrors] = useState(EMPTY_ERRORS);
   const [isLoading, setIsLoading] = useState(true);
@@ -167,8 +149,12 @@ export default function useDashboardData() {
   const refreshInFlightRef = useRef(false);
   const liveDataInFlightRef = useRef(false);
   const dataRef = useRef(initialData);
-  const userRef = useRef(storedUser);
+  const userRef = useRef(currentUser);
   const demoDataRef = useRef(DASHBOARD_DEMO_ENABLED);
+
+  useEffect(() => {
+    userRef.current = currentUser;
+  }, [currentUser]);
 
   const updateData = useCallback((updater) => {
     setData((previous) => {
@@ -185,20 +171,7 @@ export default function useDashboardData() {
     if (!silent) setIsRefreshing(true);
     if (!initializedRef.current) setIsLoading(true);
 
-    let resolvedUser = userRef.current;
-    let sessionError = '';
-
-    try {
-      const sessionResponse = await authApi.me();
-      resolvedUser = normalizeSessionUser(sessionResponse, resolvedUser);
-      if (resolvedUser && mountedRef.current) {
-        userRef.current = resolvedUser;
-        setCurrentUser(resolvedUser);
-        setCurrentUserToStorage(resolvedUser);
-      }
-    } catch (error) {
-      sessionError = getErrorMessage(error, '로그인 사용자 정보를 확인하지 못했습니다.');
-    }
+    const resolvedUser = userRef.current;
 
     const isAdmin = resolvedUser?.role === 'admin' || resolvedUser?.rawRole === 'ADMIN';
     const cctvFilters = isAdmin || resolvedUser?.user_no == null
@@ -236,7 +209,6 @@ export default function useDashboardData() {
       setIsDemoData(resolvedData.isDemoData);
 
       const nextErrors = {
-        session: sessionError,
         cctvs: cctvResult.status === 'rejected'
           ? getErrorMessage(cctvResult.reason, 'CCTV 현황을 불러오지 못했습니다.')
           : '',

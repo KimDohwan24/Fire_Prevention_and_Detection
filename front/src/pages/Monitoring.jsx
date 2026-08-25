@@ -1,18 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import {
   Search, Bell, CheckCircle,
   Video, MapPin, Search as SearchIcon, VideoOff, X, ArrowLeft,
   Users, PlusCircle, Settings, ShieldAlert, UserCheck, Loader2,
   Flame, Siren, PhoneCall, CheckCircle2, XCircle, Clock, ExternalLink, FileText, RefreshCw
 } from 'lucide-react';
-import { authApi, cctvApi, agencyApi } from '../api';
+import { cctvApi, agencyApi } from '../api';
 import CctvPlayer from '../components/CctvPlayer';
 import ItsCctvModal from '../components/ItsCctvModal';
 import VideoTestModal from '../components/VideoTestModal';
 import GisMap from '../components/GisMap';
 import AppHeader from '../components/AppHeader';
 import { getLocalActivityLogs, normalizeActivityRecord } from '../utils/activityLog';
+import { useAuth } from '../context/authState';
 import { useFireAlert } from '../context/FireAlertContext';
 
 const DEFAULT_AGENCIES = [];
@@ -40,6 +41,7 @@ const isSameRegisteredCctv = (registered, incoming) => {
 };
 
 function Monitoring() {
+  const { logout, user: currentUser } = useAuth();
   const {
     activeAlert: activeAlertBanner,
     eventLogs,
@@ -47,9 +49,7 @@ function Monitoring() {
     recordTestDecision,
     reportTestJob,
   } = useFireAlert();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [currentUser, setCurrentUser] = useState(null);
   const [cctvList, setCctvList] = useState(INITIAL_CCTVS);
   const [selectedCCTV, setSelectedCCTV] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -124,54 +124,8 @@ function Monitoring() {
       setLoading(false);
     }, 2500);
 
-    // 1. localStorage에서 현재 로그인 유저 정보 가져오기
-    let loggedInUser = null;
-    const storedUser = localStorage.getItem('currentUser');
-    if (storedUser) {
-      try {
-        const user = JSON.parse(storedUser);
-        if (user.name) {
-          user.name = user.name.replace(/\s*님$/, '');
-        }
-        loggedInUser = user;
-        setCurrentUser(user);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    // localStorage는 이전 로그인 정보가 남아 있을 수 있으므로, CCTV 권한 판단은
-    // 현재 JWT의 사용자 정보로 다시 확인한다.
-    const refreshCurrentUserFromSession = async () => {
-      try {
-        const sessionResponse = await authApi.me();
-        const sessionUser = sessionResponse?.user || sessionResponse;
-
-        if (sessionUser?.user_no == null || !sessionUser?.user_id) {
-          throw new Error('현재 로그인 사용자 정보를 확인할 수 없습니다.');
-        }
-
-        const verifiedUser = {
-          id: sessionUser.user_id,
-          user_no: sessionUser.user_no,
-          name: sessionUser.user_name || loggedInUser?.name || sessionUser.user_id,
-          role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
-          rawRole: sessionUser.user_role,
-          authProvider: loggedInUser?.authProvider || null,
-        };
-
-        loggedInUser = verifiedUser;
-        localStorage.setItem('currentUser', JSON.stringify(verifiedUser));
-        setCurrentUser(verifiedUser);
-      } catch (error) {
-        // 서버에서 세션을 확인하지 못한 사용자는 CCTV 목록을 볼 수 없다.
-        loggedInUser = null;
-        setCurrentUser(null);
-        setCctvList([]);
-        setSelectedCCTV(null);
-        console.warn('현재 사용자 세션 확인 오류:', error.message);
-      }
-    };
+    // ProtectedRoute에서 검증이 끝난 사용자만 이 화면을 마운트한다.
+    const loggedInUser = currentUser;
 
     // 2. 초기 데이터 수신 (소방서 DB 및 CCTV 목록 - 최초 1회만 호출)
     const fetchInitialData = async () => {
@@ -388,10 +342,11 @@ function Monitoring() {
 
     // 최초 마운트 시 1회 호출
     */
-    refreshCurrentUserFromSession().finally(fetchInitialData);
+    fetchInitialData();
 
     // 알림 및 이벤트 데이터는 즉시 1회 호출 후 4초 간격 폴링
-  }, []);
+    return () => clearTimeout(safetyTimer);
+  }, [currentUser]);
 
   const isAdmin = currentUser?.role === 'admin';
   const bannerIsDetecting = activeAlertBanner?.severity === 'detecting';
@@ -459,11 +414,6 @@ function Monitoring() {
     const top = Math.max(10, Math.min(88, stationY + Math.sin(angle) * radiusY));
 
     return { top: `${top}%`, left: `${left}%` };
-  };
-
-  const handleLogout = async () => {
-    await authApi.logout();
-    navigate('/login');
   };
 
   const handleAddCCTV = (e) => {
@@ -797,7 +747,7 @@ function Monitoring() {
       <AppHeader
         currentPage="monitoring"
         currentUser={currentUser}
-        onLogout={handleLogout}
+        onLogout={logout}
       />
 
       {/* 2. 메인 레이아웃 (지도 + 우측 패널) */}

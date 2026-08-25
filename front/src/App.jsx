@@ -8,13 +8,14 @@ import Monitoring from './pages/Monitoring';
 import AdminPage from './pages/AdminPage';
 import MyPage from './pages/MyPage';
 import DarkModeToggle from './components/DarkModeToggle';
-import GlobalFireAlertOverlay from './components/GlobalFireAlertOverlay';
-import FireAlertProvider from './context/FireAlertContext';
+import ProtectedAppLayout from './components/auth/ProtectedAppLayout';
+import ProtectedRoute from './components/auth/ProtectedRoute';
+import AuthProvider from './context/AuthContext';
 
 function App() {
   return (
     <BrowserRouter>
-      <FireAlertProvider>
+      <AuthProvider>
         <Routes>
           <Route path="/" element={<Login />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
@@ -22,16 +23,23 @@ function App() {
           <Route path="/forgot-password" element={<FindAccount />} />
           <Route path="/find-account" element={<FindAccount />} />
           <Route path="/find-id-pw" element={<FindAccount />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/monitoring" element={<Monitoring />} />
-          <Route path="/admin" element={<AdminPage />} />
-          <Route path="/mypage" element={<MyPage />} />
+
+          <Route element={<ProtectedRoute />}>
+            <Route element={<ProtectedAppLayout />}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/monitoring" element={<Monitoring />} />
+              <Route path="/mypage" element={<MyPage />} />
+              <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+                <Route path="/admin" element={<AdminPage />} />
+              </Route>
+            </Route>
+          </Route>
+
           {/* Placeholder for other routes */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-        <GlobalFireAlertOverlay />
         <DarkModeToggle />
-      </FireAlertProvider>
+      </AuthProvider>
     </BrowserRouter>
   );
 }

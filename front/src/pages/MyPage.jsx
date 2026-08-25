@@ -13,7 +13,8 @@ import CctvPlayer from '../components/CctvPlayer';
 import AppHeader from '../components/AppHeader';
 import MyPagePasswordGate from '../components/MyPagePasswordGate';
 import PasswordInput from '../components/PasswordInput';
-import { authApi, cctvApi, getCurrentUserFromStorage, userApi } from '../api';
+import { cctvApi, userApi } from '../api';
+import { useAuth } from '../context/authState';
 import {
   appendLocalActivityLog,
   getLocalActivityLogs,
@@ -56,6 +57,7 @@ const getPaginationRange = (currentPage, totalPages) => {
 
 export default function MyPage() {
   const navigate = useNavigate();
+  const { logout, refreshSession, user: currentUser } = useAuth();
 
   // 마이페이지 진입 전 개인정보 보호를 위한 비밀번호 확인 상태
   const [isPasswordVerified, setIsPasswordVerified] = useState(false);
@@ -71,21 +73,6 @@ export default function MyPage() {
   const [activityError, setActivityError] = useState('');
   const [activityRefreshKey, setActivityRefreshKey] = useState(0);
   const ITEMS_PER_PAGE = 5;
-
-  // 사용자 프로필 정보 (실시간 DB / 세션 복원 및 안전한 초기값)
-  const [currentUser, setCurrentUser] = useState(() => {
-    return getCurrentUserFromStorage() || {
-      id: 'admin',
-      name: '최고 관리자',
-      email: 'admin@fireguard.or.kr',
-      role: 'ADMIN',
-      user_status: 'ACTIVE',
-      phone: '010-1234-5678',
-      joinedAt: '2026-01-01',
-      lastLogin: '접속 중',
-      assignedZone: '전체 관제 구역'
-    };
-  });
 
   // 내 관리 CCTV 모달 및 로딩 상태
   const [myCctvs, setMyCctvs] = useState([]);
@@ -127,54 +114,22 @@ export default function MyPage() {
   const [toastMessage, setToastMessage] = useState(null);
 
   useEffect(() => {
-    if (!getCurrentUserFromStorage()) {
-      navigate('/login', { replace: true });
-    }
-  }, [navigate]);
+    if (!isPasswordVerified || !currentUser?.user_no) return undefined;
 
-  useEffect(() => {
-    if (!isPasswordVerified) return;
+    let cancelled = false;
+    setIsCctvsLoading(true);
 
-    if (!getCurrentUserFromStorage()) {
-      navigate('/login', { replace: true });
-      return;
-    }
-
-    const loadCurrentUserAndCctvs = async () => {
+    const loadCurrentUserCctvs = async () => {
       try {
-        const sessionResponse = await authApi.me();
-        const sessionUser = sessionResponse?.user || sessionResponse;
-        const storedUser = getCurrentUserFromStorage();
-        const storedAuthProvider = storedUser?.authProvider || null;
-        if (sessionUser?.user_no == null || !sessionUser?.user_id) {
-          throw new Error('현재 로그인 사용자 정보를 확인할 수 없습니다.');
-        }
-
-        const user = {
-          id: sessionUser.user_id,
-          user_no: sessionUser.user_no,
-          name: sessionUser.user_name || sessionUser.user_id,
-          user_status: sessionUser.user_status,
-          email: sessionUser.user_email || `${sessionUser.user_id}@fireguard.or.kr`,
-          phone: sessionUser.user_phone || '',
-          role: sessionUser.user_role === 'ADMIN' ? 'admin' : 'user',
-          authProvider: storedAuthProvider,
-          joinedAt: '2026-01-01',
-          lastLogin: '최근 접속 중',
-          assignedZone: 'A동 및 외곽 관제 구역'
-        };
-        setCurrentUser(user);
-        localStorage.setItem('currentUser', JSON.stringify(user));
-
-        const isSessionAdmin = user.role === 'admin';
+        const isSessionAdmin = currentUser.role === 'admin';
         const cctvResponse = await cctvApi.list(
-          isSessionAdmin ? {} : { user_no: user.user_no }
+          isSessionAdmin ? {} : { user_no: currentUser.user_no }
         );
         const items = cctvResponse?.items || cctvResponse || [];
         const accessibleItems = Array.isArray(items)
           ? isSessionAdmin
             ? items
-            : items.filter((item) => String(item.user_no) === String(user.user_no))
+            : items.filter((item) => String(item.user_no) === String(currentUser.user_no))
           : [];
 
         const mapped = accessibleItems.map(item => ({
@@ -188,17 +143,20 @@ export default function MyPage() {
           stream_url: item.cctv_stream_url,
           history: []
         }));
-        setMyCctvs(mapped);
+        if (!cancelled) setMyCctvs(mapped);
       } catch (error) {
-        setMyCctvs([]);
+        if (!cancelled) setMyCctvs([]);
         console.warn('MyPage CCTV 권한 확인 오류:', error.message);
       } finally {
-        setIsCctvsLoading(false);
+        if (!cancelled) setIsCctvsLoading(false);
       }
     };
 
-    loadCurrentUserAndCctvs();
-  }, [isPasswordVerified, navigate]);
+    loadCurrentUserCctvs();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser, isPasswordVerified]);
 
   useEffect(() => {
     if (!isPasswordVerified || !currentUser?.user_no) return;
@@ -239,7 +197,6 @@ export default function MyPage() {
       setIsPasswordVerified(true);
     } catch (error) {
       if (error.status === 401) {
-        navigate('/login', { replace: true });
         return;
       }
 
@@ -283,11 +240,6 @@ export default function MyPage() {
     showToast('활동 이력을 최신 상태로 초기화했습니다.');
   };
 
-  const handleLogout = async () => {
-    await authApi.logout();
-    navigate('/login');
-  };
-
   // 프로필 수정 모달 열기
   const openEditModal = () => {
     setEditForm({
@@ -303,20 +255,13 @@ export default function MyPage() {
   const handleRequestUpgrade = async () => {
     try {
       await adminUpgradeApi.requestUpgrade();
-      
-      const stored = localStorage.getItem('currentUser');
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          parsed.adminRequested = true;
-          parsed.adminRequestStatus = 'PENDING';
-          localStorage.setItem('currentUser', JSON.stringify(parsed));
-        } catch (e) {}
-      }
-
-      window.location.reload(); 
+      await refreshSession().catch((sessionError) => {
+        console.warn('관리자 승격 요청 상태 갱신 오류:', sessionError);
+      });
+      showToast('관리자 승격 요청을 전송했습니다.');
     } catch (err) {
       console.error('승급 요청 실패:', err);
+      showToast(err.message || '관리자 승격 요청에 실패했습니다.');
     }
   };
 
@@ -348,8 +293,9 @@ export default function MyPage() {
         phone,
         ...(isSocialAccount ? {} : { email }),
       };
-      setCurrentUser(updatedUser);
-      localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+      await refreshSession().catch((sessionError) => {
+        console.warn('수정된 프로필 세션 갱신 오류:', sessionError);
+      });
       appendLocalActivityLog({
         user_no: updatedUser.user_no,
         activity_type: 'PROFILE_UPDATE',
@@ -466,7 +412,7 @@ export default function MyPage() {
       <AppHeader
         currentPage="mypage"
         currentUser={currentUser}
-        onLogout={handleLogout}
+        onLogout={logout}
       />
 
       {/* 메인 컨텐츠 영역 */}
