@@ -13,6 +13,7 @@
 """
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+import hmac
 
 import jwt
 from flask import g, request
@@ -145,6 +146,19 @@ def admin_required(f):
     return wrapper
 
 
+def _key_matches(header_name: str, expected: str) -> bool:
+    """헤더 값을 상수 시간에 대조한다.
+
+    문자열 != 는 첫 불일치에서 비교를 멈추므로 '접두어가 몇 글자 맞았는지'가
+    응답 시간으로 새어 나간다(타이밍 어택). compare_digest 는 결과와 무관하게
+    같은 시간에 끝난다. str 이 아니라 bytes 로 비교하는 것은 compare_digest 가
+    ASCII 밖의 str 을 TypeError 로 거절하기 때문이다 — 이상한 인코딩 헤더로
+    500 이 나는 것까지 막는다.
+    """
+    supplied = request.headers.get(header_name) or ""
+    return hmac.compare_digest(supplied.encode(), expected.encode())
+
+
 def internal_key_required(f):
     """내부 시스템(AI 모델) 전용 인증 — X-Internal-Key 헤더를 비교한다.
 
@@ -152,8 +166,7 @@ def internal_key_required(f):
     """
     @wraps(f)
     def wrapper(*args, **kwargs):
-        key = request.headers.get("X-Internal-Key")
-        if key != config.INTERNAL_API_KEY:
+        if not _key_matches("X-Internal-Key", config.INTERNAL_API_KEY):
             raise ApiError(401, "INTERNAL_UNAUTHORIZED", "내부 API 키가 올바르지 않습니다.")
         return f(*args, **kwargs)
     wrapper._auth = "internal"
@@ -169,8 +182,7 @@ def agency_key_required(f):
     """
     @wraps(f)
     def wrapper(*args, **kwargs):
-        key = request.headers.get("X-Agency-Key")
-        if key != config.AGENCY_CALLBACK_KEY:
+        if not _key_matches("X-Agency-Key", config.AGENCY_CALLBACK_KEY):
             raise ApiError(401, "AGENCY_UNAUTHORIZED", "기관 인증 키가 올바르지 않습니다.")
         return f(*args, **kwargs)
     wrapper._auth = "agency"

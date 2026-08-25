@@ -26,6 +26,7 @@ import jwt
 import config
 import db
 from conftest import PW
+from services import account_recovery
 
 
 def _login(client, user_id="admin01"):
@@ -172,13 +173,13 @@ def test_plain_profile_update_does_not_revoke(client):
     assert client.get("/api/auth/me", headers=viewer).status_code == 200
 
 
-# ---------- 폐기하지 않기로 한 것 ----------
+# ---------- 비밀번호 변경 · 재설정 ----------
 
-def test_password_change_keeps_existing_tokens_alive(client, admin_headers):
-    """비밀번호를 바꿔도 기존 토큰은 살아있다 — 명시적으로 그렇게 정했다.
+def test_password_change_revokes_existing_tokens(client, admin_headers):
+    """비밀번호를 바꾸면 기존 토큰을 죽인다 — 도난당한 기기까지 회수하기 위해서.
 
-    보안만 보면 폐기하는 쪽이 맞다 (탈취된 토큰이 만료까지 살아있다). 방침이
-    뒤집히면 이 테스트가 먼저 빨개져서 알려준다.
+    예전에는 '살려둔다'가 명시적 방침이었지만 2026-08-25 에 뒤집혔다. 관리자가
+    유출 의심 계정의 비밀번호를 강제로 바꿨는데 옛 세션이 살아 있으면 회수 의미가 없다.
     """
     viewer = _aged_token(2, "viewer01", role="VIEWER")
 
@@ -186,7 +187,47 @@ def test_password_change_keeps_existing_tokens_alive(client, admin_headers):
                      json={"user_pw": "Reset#2026"})
     assert res.status_code == 200
 
-    assert client.get("/api/auth/me", headers=viewer).status_code == 200
+    res = client.get("/api/auth/me", headers=viewer)
+    assert res.status_code == 401
+    assert res.get_json()["code"] == "TOKEN_REVOKED"
+
+
+def test_own_password_change_kills_other_devices(client):
+    """본인 비밀번호 변경(PUT /api/users/password)도 모든 세션을 끊는다.
+
+    요청에 쓴 토큰조차 죽는 것이 표준 동작이다 — 프론트는 직후 401 TOKEN_REVOKED
+    를 받아 로그인 화면으로 돌아간다. 폐기 해상도가 1초라 '지금' 발급된 토큰은
+    같은 초 컷오프와 비교돼 살아남으므로, 위 테스트들과 같이 발급 시각을
+    명시한 토큰으로 경계를 지정한다.
+    """
+    phone = _aged_token(2, "viewer01", role="VIEWER")
+    desktop = _aged_token(2, "viewer01", role="VIEWER", seconds_ago=3)
+
+    res = client.put("/api/users/password", headers=desktop,
+                     json={"current_password": PW, "new_password": "Rotate#2026"})
+    assert res.status_code == 200
+
+    # 방금 요청에 쓴 기기(desktop)와 다른 기기(phone) 둘 다 끊긴다
+    assert client.get("/api/auth/me", headers=desktop).status_code == 401
+    res = client.get("/api/auth/me", headers=phone)
+    assert res.status_code == 401
+    assert res.get_json()["code"] == "TOKEN_REVOKED"
+
+
+def test_password_reset_kills_existing_tokens(client):
+    """계정찾기로 재설정하면 옛 토큰 전부 폐기 — 도난 시나리오의 핵심 경로."""
+    victim = _aged_token(2, "viewer01", role="VIEWER")
+    row = db.query_one("SELECT user_no, user_pw FROM users WHERE user_no = 2")
+    code = account_recovery.issue_code(row["user_no"], row["user_pw"])
+
+    res = client.post("/api/auth/password-reset/confirm",
+                      json={"user_id": "viewer01", "code": code,
+                            "user_pw": "Rotate#2026"})
+    assert res.status_code == 200
+
+    res = client.get("/api/auth/me", headers=victim)
+    assert res.status_code == 401
+    assert res.get_json()["code"] == "TOKEN_REVOKED"
 
 
 # ---------- 경계 ----------
@@ -270,3 +311,58 @@ def test_end_to_end_with_real_clock(client):
     res = client.get("/api/auth/me", headers=headers)
     assert res.status_code == 401
     assert res.get_json()["code"] == "TOKEN_REVOKED"
+
+
+# ---------- 권한 등급 변경 ----------
+
+def test_demoting_an_admin_kills_their_token(client, admin_headers):
+    """강등은 즉시 효력을 가져야 한다.
+
+    권한 검사는 DB 가 아니라 **토큰에 박힌 user_role** 을 본다(auth.admin_required).
+    폐기하지 않으면 강등당한 사람의 토큰 클레임은 여전히 ADMIN 이라 만료(기본 12시간)
+    까지 관리자 API 를 그대로 쓴다.
+    """
+    db.execute("UPDATE users SET user_role = 'ADMIN' WHERE user_no = 2")
+    victim = _aged_token(2, "viewer01", role="ADMIN")
+    assert client.get("/api/users", headers=victim).status_code == 200
+
+    res = client.put("/api/users/2", headers=admin_headers, json={"user_role": "VIEWER"})
+    assert res.status_code == 200
+
+    res = client.get("/api/users", headers=victim)
+    assert res.status_code == 401
+    assert res.get_json()["code"] == "TOKEN_REVOKED"
+
+
+def test_promoting_a_user_also_kills_their_token(client, admin_headers):
+    """승격도 폐기한다 — '등급이 달라졌다'만 보고 방향은 따지지 않는다.
+
+    옛 토큰으로는 어차피 새 권한을 못 쓰므로(클레임이 VIEWER 그대로) 살려둘 값어치가
+    없고, 방향을 따지는 조건은 나중에 등급이 늘면 곧바로 구멍이 된다.
+    """
+    viewer = _aged_token(2, "viewer01", role="VIEWER")
+    assert client.get("/api/auth/me", headers=viewer).status_code == 200
+
+    client.put("/api/users/2", headers=admin_headers, json={"user_role": "ADMIN"})
+
+    assert client.get("/api/auth/me", headers=viewer).status_code == 401
+
+
+def test_writing_the_same_role_does_not_revoke(client, admin_headers):
+    """값이 그대로면 폐기 사유가 아니다 — 폼이 통째로 PUT 하는 경우를 죽이지 않는다."""
+    viewer = _aged_token(2, "viewer01", role="VIEWER")
+
+    res = client.put("/api/users/2", headers=admin_headers,
+                     json={"user_role": "VIEWER", "user_name": "그대로"})
+    assert res.status_code == 200
+
+    assert client.get("/api/auth/me", headers=viewer).status_code == 200
+
+
+def test_demoting_one_user_leaves_others_alone(client, admin_headers):
+    viewer = _aged_token(2, "viewer01", role="VIEWER")
+
+    client.put("/api/users/2", headers=admin_headers, json={"user_role": "ADMIN"})
+
+    assert client.get("/api/users", headers=admin_headers).status_code == 200
+    assert client.get("/api/auth/me", headers=viewer).status_code == 401
