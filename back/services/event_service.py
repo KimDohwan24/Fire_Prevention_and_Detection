@@ -41,9 +41,10 @@ def _normalize_media_url(media_url) -> str | None:
 
     AI 모델은 MEDIA_ROOT 기준 **상대경로**("events/2026-08-13/1_143005.jpg")를
     보내는데, 이 값을 쓰는 쪽은 전부 "/media/..." 를 기대한다 — 프론트는
-    <img src> 에 그대로 넣고, report_service._primary_frame 은 "/media/" 를
+    <img src> 에 그대로 넣고, event_frame.load_primary_frame 은 "/media/" 를
     떼어 파일을 읽는다. 그래서 수집 경계인 여기서 한 형태로 못박는다.
-    (안 맞추면 프론트는 상대경로 해석으로 404, 119 신고는 이미지 없이 나간다)
+    (안 맞추면 프론트는 상대경로 해석으로 404, 119 신고와 텔레그램 알림은
+     이미지 없이 나간다)
 
     - 이미 "/" 로 시작하면 그대로 둔다 — 접두어가 두 번 붙지 않고,
       의도적으로 절대경로를 넣은 값을 여기서 지어내지 않는다.

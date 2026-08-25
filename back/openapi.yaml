@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: 파이어가드 API
-  version: 0.10.1
+  version: 0.11.1
   description: |
     CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
 
@@ -1310,6 +1310,84 @@ paths:
                         type: array
                         items:
                           $ref: "#/components/schemas/UserActivity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/me/telegram:
+    get:
+      tags: [me]
+      summary: 텔레그램 연동 상태와 연동 링크
+      description: |
+        화재 알림을 받을 텔레그램 대화방의 연동 상태와, 연동을 시작하는 딥링크를 준다.
+
+        **왜 텔레그램인가**: 화재 알림은 유예(`ALERT_DEADLINE_SEC`) 안에 사용자의
+        확인/취소를 되받아야 의미가 있다 — 무응답이면 119 자동 신고로 넘어가기
+        때문이다. 문자·알림톡은 **회신을 받을 수 없고**(수신번호는 월정액 임대),
+        발송조차 발신번호 사전등록이 전제이며 알림톡은 사업자등록증이 필요하다.
+        텔레그램은 알림에 인라인 버튼을 붙여 그 자리에서 응답을 받는다.
+
+        `link_url` 을 열면 텔레그램이 뜨면서 `/start <코드>` 가 자동으로 채워진다.
+        사용자는 시작 버튼만 누르면 되고 코드를 손으로 옮겨 적을 일이 없다.
+        코드는 **저장하지 않는다** — 서버가 HMAC 으로 매번 계산해 대조하므로
+        이 요청은 DB 에 아무것도 쓰지 않는다. 유효시간은 `code_valid_sec` 초이고,
+        지나면 이 엔드포인트를 다시 불러 새 링크를 받으면 된다.
+
+        봇 토큰을 넣지 않은 환경에서도 **200 으로 답한다** (`configured: false`,
+        `link_url: null`). 화면이 뜨지 않으면 팀원이 원인을 찾기 어렵기 때문이다.
+        이때 알림은 기존 문자 경로로만 나간다.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 조회 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                    description: 서버에 봇 토큰·봇 이름이 설정돼 있나. false 면 `link_url` 은 null 이다.
+                    example: true
+                  linked:
+                    type: boolean
+                    description: 내 계정에 텔레그램 대화방이 붙어 있나
+                    example: false
+                  link_url:
+                    type: string
+                    nullable: true
+                    description: "연동을 시작하는 텔레그램 딥링크 (configured 가 false 면 null)"
+                    example: "https://t.me/fireguard_bot?start=7-A3F9K2LMNP"
+                  code_valid_sec:
+                    type: integer
+                    description: 링크에 실린 연동 코드의 유효시간(초)
+                    example: 300
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    delete:
+      tags: [me]
+      summary: 텔레그램 연동 해제
+      description: |
+        내 계정에 붙은 텔레그램 대화방을 뗀다. 이후 화재 알림은 기존 문자 경로로 나간다.
+
+        **멱등이다** — 이미 연동돼 있지 않아도 200 을 준다. 끊는 요청에 404 를 주면
+        화면이 "이미 끊긴 상태"를 오류로 다뤄야 하는데, 사용자가 원한 결과는
+        어느 쪽이든 이미 이뤄져 있다.
+
+        사용자가 텔레그램 앱에서 봇에게 `/stop` 을 보내도 같은 결과가 된다.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 해제 완료 (이미 해제 상태여도 200)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  linked:
+                    type: boolean
+                    example: false
         "401":
           $ref: "#/components/responses/Unauthorized"
 

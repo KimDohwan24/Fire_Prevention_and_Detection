@@ -170,14 +170,20 @@ def check_id():
         return jsonify({"detail": "아이디를 입력해주세요."}), 400
     
     # 2. 아이디 유효성 검사 (영문과 숫자만 허용)
-    if not re.match(r"^[a-zA-Z0-9]+$", user_id):
-        print("🚨 [디버깅] 정규식 차단 작동함 (한글/특수문자 감지)")  # 👈 정규식 통과 실패 시 찍힘
-        return jsonify({"detail": "아이디는 영문과 숫자만 사용할 수 있습니다."}), 400
+    # if not re.match(r"^[a-zA-Z0-9]+$", user_id):
+    #     print("🚨 [디버깅] 정규식 차단 작동함 (한글/특수문자 감지)")  # 👈 정규식 통과 실패 시 찍힘
+    #     return jsonify({"detail": "아이디는 영문과 숫자만 사용할 수 있습니다."}), 400
+    
+    if not re.match(r"^(?=.*[a-zA-Z])(?=.*\d)[a-zA-Z0-9]{5,20}$", user_id):
+        return jsonify({"detail": "아이디는 5~20자의 영문과 숫자를 각각 최소 1개 이상 포함해야 합니다."}), 400
     
     # 3. 데이터베이스 중복 조회
     user = query_one("SELECT * FROM users WHERE user_id = %s", (user_id,))
     if user:
         return jsonify({"detail": "이미 존재하는 아이디입니다."}), 400
+
+    if not (5 <= len(user_id) <= 20):
+        return jsonify({"detail": "아이디는 5자 이상 20자 이하로 입력해주세요."}), 400
 
     return jsonify({
         "message": "사용 가능한 아이디입니다.",

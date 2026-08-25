@@ -171,3 +171,63 @@ AI_VIDEO_TEST_TIMEOUT_SEC = int(os.getenv("AI_VIDEO_TEST_TIMEOUT_SEC", "1800"))
 # (event_media.media_url 의 "/media/events/12/frame_001.jpg" 가 곧 이 아래 경로).
 # 실행 위치(cwd)에 따라 달라지지 않도록 임포트 시점에 절대경로로 확정한다.
 MEDIA_ROOT = str(Path(os.getenv("MEDIA_ROOT") or (PROJECT_ROOT / "media")).resolve())
+
+# ── 로깅 ────────────────────────────────────────────────────────────────────
+# 서비스 코드는 logging.getLogger("fireguard.*") 로 로그를 남기기만 하고,
+# 어디에 어떤 모양으로 쓸지는 app.setup_logging() 이 한 곳에서 정한다.
+# 남기는 쪽 44곳은 이 값들과 무관하게 그대로다.
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# 로그 파일이 쌓이는 곳. 기본은 back/logs/ 이고 .gitignore 의 logs/ 에 걸린다.
+# MEDIA_ROOT 와 달리 프로젝트 루트가 아니라 back/ 아래인 이유는 이게 백엔드
+# 서버의 산출물이라서다 (ai-model 은 자기 로그를 따로 남긴다).
+LOG_DIR = str(Path(os.getenv("LOG_DIR") or (Path(__file__).resolve().parent / "logs")))
+
+# 하루치씩 끊어 며칠분을 남길지. 자정마다 fireguard.log.2026-08-22 로 넘어간다.
+LOG_BACKUP_DAYS = int(os.getenv("LOG_BACKUP_DAYS", "14"))
+
+# ----- 텔레그램 알림 (화재 알림 발송 + 버튼 응답 수신) -----
+# 화재 알림을 사용자 휴대폰으로 보내고, 알림에 붙은 버튼으로 '확인/취소'를 되받는 채널.
+#
+# **왜 SMS 가 아니라 텔레그램인가** (2026-08-22 결정):
+#   문자·알림톡은 건당 과금 이전에 발신번호 사전등록(통신사 본인·사업자 확인)이
+#   법적 전제고, 알림톡은 사업자등록증이 있어야 시작조차 못 한다. 더 결정적인 건
+#   **회신을 받을 수 없다**는 점이다 — 수신 번호는 월정액 임대 영역이라 무료가 없다.
+#   우리 알림은 유예 안에 '확인/취소'를 되받아야 의미가 있으므로(services/escalation.py)
+#   단방향 채널로는 기능 자체가 성립하지 않는다.
+#   텔레그램은 무료·무제한이고 인라인 버튼으로 회신을 받으며, 롱폴링 방식이라
+#   공인 IP·HTTPS 웹훅이 필요 없다 — 로컬 시연 구성 그대로 돈다.
+#   상용 전환 시에는 services/sms.py 를 실제 발송으로 갈아끼우면 된다. 알림 발송은
+#   services/notify.py 한 곳을 지나므로 두 채널이 공존해도 호출부는 바뀌지 않는다.
+#
+# 발급: 텔레그램에서 @BotFather 에게 /newbot → 토큰과 봇 이름을 받아 .env 에 넣는다.
+# **비어 있으면 텔레그램 발송·폴링이 통째로 꺼지고 기존 모의 SMS 로만 나간다** —
+# 토큰 없이도 서버는 그대로 뜨고 나머지 경로는 전부 살아 있다.
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+# 봇 사용자명(@ 없이). 마이페이지가 t.me/<이름>?start=<코드> 딥링크를 만들 때 쓴다.
+TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
+# Bot API HTTP 타임아웃(초). 알림 발송은 확정 경로 안에서 부르므로 짧게 둔다.
+# 롱폴링(getUpdates)에서는 이 값이 **여유분**으로 쓰인다 — services/telegram.py 의
+# _http_timeout 참고. 서버가 25초 붙잡는 요청에 5초 타임아웃을 걸면 매번 터진다.
+TELEGRAM_HTTP_TIMEOUT_SEC = float(os.getenv("TELEGRAM_HTTP_TIMEOUT_SEC", "5"))
+
+# 버튼 응답을 받아오는 방식은 **롱폴링**이다. 이 값은 텔레그램 서버가 응답을 붙잡고
+# 기다려 주는 시간(초)이지 폴링 '주기'가 아니다 — 주기라는 개념 자체가 없어졌다.
+#
+# 2026-08-22 이전에는 timeout=0 짧은 폴링을 APScheduler 잡으로 2초마다 돌렸고,
+# 로그가 `skipped: maximum number of running instances reached (1)` 로 계속 더러웠다.
+# 원인을 실측으로 잡았다 (api.telegram.org, 왕복은 235ms 로 고정):
+#   - getMe 는 몇 번을 불러도 235ms. 망도, requests.Session 재사용도 멀쩡했다.
+#   - getUpdates 는 **직전 getUpdates 로부터 3.0초 안에 도착하면 서버가 정확히
+#     3.000초 붙잡았다가** 빈 배열을 돌려준다. 호출 간격을 바꿔 가며 확인:
+#       간격 2.74초 → 두 번에 한 번 3초 홀드,  3.04초 → 0/5 회 (한 번도 안 걸림).
+#   - 그래서 2초 주기는 원리상 지킬 수 없다. 틱이 0.24초 / 3.24초로 번갈아 걸리고
+#     6초마다 한 번씩 잡이 통째로 건너뛰어진다. '틱 1회가 6초'의 정체가 이것이다.
+# 롱폴링은 이 바닥에 아예 닿지 않는다 — timeout=25 로 쉬지 않고 4회 연속 호출해도
+# 매번 25.00초 정확히였고 얹히는 지연은 0이었다.
+#
+# 25초로 둔 이유: 3초 바닥에서 충분히 멀고, 중간 프록시·NAT 의 유휴 커넥션 정리
+# 시간(대개 60초 이상)보다는 짧아 끊길 일이 없다. **이 값을 줄여도 버튼 반응이
+# 빨라지지 않는다** — 업데이트가 생기면 서버가 기다림을 끊고 곧바로 돌려주는 것이
+# 롱폴링의 계약이라, 반응 속도는 이 값과 무관하고 빈 요청 수만 늘어난다.
+TELEGRAM_LONG_POLL_SEC = int(os.getenv("TELEGRAM_LONG_POLL_SEC", "25"))
