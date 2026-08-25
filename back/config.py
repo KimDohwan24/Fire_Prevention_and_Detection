@@ -33,6 +33,65 @@ INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key")
 # INTERNAL_API_KEY 와 나눠 쓴다 — 하나가 새면 AI 검출 수집 경로까지 함께 열린다.
 AGENCY_CALLBACK_KEY = os.getenv("AGENCY_CALLBACK_KEY", "dev-agency-key")
 
+# ----- 시크릿 가드: 위 세 값이 기본값이면 서버를 띄우지 않는다 -----
+#
+# 위 세 줄의 `os.getenv(이름, "dev-...")` 는 **조용하다.** `.env` 에 값이 없으면
+# 경고 한 줄 없이 저 문자열로 돌아간다. 그런데 JWT_SECRET 하나가
+#   로그인 토큰 서명(auth.py)          OAuth state HMAC(services/oauth_provider.py)
+#   계정찾기 인증코드(services/account_recovery.py)  텔레그램 연동코드(services/telegram_link.py)
+# 를 전부 떠받친다. 소스코드에 적힌 공개 문자열이 서명 키가 되는 순간, 공격자는
+# 서버를 거치지 않고 자기 자리에서 `user_role: ADMIN` 짜리 토큰을 만들어 넣을 수
+# 있다 — 서명이 실제로 맞으므로 jwt.decode 가 통과시킨다. 비밀번호도 로그인도
+# 필요 없다. 토큰 폐기 검사(auth._assert_not_revoked)도 못 막는다: 그건 '훔친 진짜
+# 토큰'용이고, 위조 토큰은 iat 를 지금 시각으로 넣으면 그만이다.
+#
+# **잘못 뜬 서버보다 안 뜨는 서버가 낫다.** 안 뜨면 사람이 알아채지만, 잘못 뜬 것은
+# 아무도 모른다. 그래서 조용한 기본값을 시끄러운 실패로 바꾼다.
+#
+# 기본값을 지우고 여기서 바로 raise 하지 않는 이유: config 는 임포트만 해도
+# 평가되는 모듈이라, 서버와 무관한 도구(스키마 점검 스크립트 등)까지 임포트
+# 순간에 죽는다. 판정은 값으로 두고 **차단은 앱 팩토리(app.create_app)에서** 한다.
+INSECURE_DEFAULTS = {
+    "JWT_SECRET": "dev-secret-change-me",
+    "INTERNAL_API_KEY": "dev-internal-key",
+    "AGENCY_CALLBACK_KEY": "dev-agency-key",
+}
+
+
+def insecure_secret_names(values: dict | None = None) -> list[str]:
+    """설정되지 않았거나 개발용 기본값 그대로인 시크릿 이름들. 정상이면 빈 리스트.
+
+    `values` 를 주면 그것을, 안 주면 이 모듈의 실제 설정값을 본다 (테스트용 구멍이
+    아니라, 가드 자체를 서버 기동 없이 검증하기 위한 입력 분리다).
+
+    빈 문자열도 '미설정'으로 본다 — `.env.example` 을 복사해 만든 `.env` 는
+    `JWT_SECRET=` 처럼 **빈 값**이고, 그러면 os.getenv 는 그것을 '값 있음'으로
+    보고 위의 기본값조차 쓰지 않는다. 서명 키가 "" 가 되는 쪽이 더 나쁘다.
+    내부 키가 "" 면 `X-Internal-Key:` 를 빈 값으로 보낸 요청까지 통과한다
+    (auth.internal_key_required 는 헤더 값과 이 값을 그대로 비교한다).
+    """
+    source = globals() if values is None else values
+    return [name for name, default in INSECURE_DEFAULTS.items()
+            if (source.get(name) or "").strip() in ("", default)]
+
+
+def assert_secrets_configured(values: dict | None = None) -> None:
+    """시크릿이 하나라도 기본값/미설정이면 RuntimeError. app.create_app 이 부른다.
+
+    문제를 **한 번에 전부** 나열한다 — 하나 고쳐 재기동, 또 하나 고쳐 재기동을
+    반복하게 만들지 않으려는 것이다.
+    """
+    bad = insecure_secret_names(values)
+    if not bad:
+        return
+    raise RuntimeError(
+        "보안 설정이 비어 있어 서버를 띄우지 않습니다: " + ", ".join(bad) + "\n"
+        "  이 값들은 로그인 토큰 서명과 내부 API 인증에 쓰이는 시크릿입니다.\n"
+        "  기본값 그대로 두면 누구나 관리자 토큰을 위조할 수 있습니다.\n"
+        "  루트 .env 에 각각 임의의 값을 넣어 주세요. 값 만들기:\n"
+        "    python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+    )
+
 # 화재 확정 기준: 관측 창 안에서 이 프레임 수만큼 검출이 쌓이면 CONFIRMED
 #
 # 이 값은 EVENT_WINDOW_SEC 와 독립이 아니다 — **검출 프레임 레이트에 묶여 있다.**
@@ -66,7 +125,13 @@ ALERT_DEADLINE_SEC = int(os.getenv("ALERT_DEADLINE_SEC", "60"))
 ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "5"))
 
 # 119 신고: 한 기관에 최대 몇 번 전송을 시도하나 (안쪽 루프, report_attempt_count)
-MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "4"))
+#   1 = 요청 한 번·응답 한 번으로 끝낸다 — 재전송 없음. **기본값**
+#   2 이상 = 재시도할 값어치가 있는 실패(응답 타임아웃·5xx)에 한해 그 횟수까지 재전송
+# 2026-08-24 시연 단순화로 기본을 1 로 두었다. REPORT_MAX_AGENCIES=1(기관 승계
+# 해제)과 짝이다 — 119 와 주고받는 것을 한 왕복으로 보여주는 것이 시연 목표라,
+# 재전송이 남아 있으면 접수 콘솔에 같은 신고가 여러 줄로 찍혀 그림이 흐려진다.
+# 재전송 코드는 그대로 남아 있어 .env 에 MAX_REPORT_ATTEMPTS=4 만 넣으면 되돌아간다.
+MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "1"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
 

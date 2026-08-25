@@ -36,7 +36,10 @@ class FakeSession:
 def make_sender(*responses, **kwargs):
     session = FakeSession(*responses)
     kwargs.setdefault("base_url", "http://localhost:5000")
-    kwargs.setdefault("internal_key", "dev-internal-key")
+    # 아무 문자열이어도 되는 자리다 (FakeSession 은 값을 보지 않는다).
+    # 예전에는 여기에 `dev-internal-key` 를 썼는데, 그건 백엔드 기본값과 같은
+    # 값이라 '진짜 기본값이 있다'는 오해를 남긴다 — 그 기본값은 없어졌다.
+    kwargs.setdefault("internal_key", "test-key")
     return DetectionSender(session=session, **kwargs), session
 
 

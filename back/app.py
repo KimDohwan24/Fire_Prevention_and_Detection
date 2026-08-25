@@ -187,6 +187,12 @@ def _print_effective_config():
 
 def create_app(start_scheduler: bool = False) -> Flask:
     """앱 팩토리."""
+    # 시크릿이 개발용 기본값/빈 값이면 여기서 죽는다 (config.assert_secrets_configured
+    # 주석에 이유가 있다). __main__ 이 아니라 팩토리에 두는 이유는 WSGI 서버로
+    # 띄우는 경로까지 덮기 위해서다 — 그쪽은 __main__ 을 아예 지나지 않는다.
+    # 블루프린트 등록보다 먼저 부른다: 어차피 못 쓸 앱을 조립하고 죽을 이유가 없다.
+    config.assert_secrets_configured()
+
     app = Flask(__name__)
     
     # 💡 1. 302 리다이렉트 문제 해결을 위해 전역 설정 추가

@@ -241,3 +241,37 @@ def list_user_activities(user_no: int):
 
     page, size = get_page_params()
     return jsonify(activity_service.list_for_user(user_no, page, size))
+
+
+#사용자가 마이페이지에 진입할 때 비밀번호를 확인하는 API
+@bp.post("mypage-check-password")
+@login_required
+def mypage_pw_check():
+    user_no = g.user.get("user_no") #로그인된 사용자의 유저 번호 가져옴
+    print("유저 번호: ", user_no)
+    
+    #프론트에서 보낸 JSON 형태의 데이터(Requset Body)를 파이썬 딕셔너리로 받아옴
+    body = request.get_json(silent=True) or {}
+    
+    #사용자가 작성한 비밀번호를 current_password에 담기
+    current_password = body.get("current_password")
+    print("Mypage에 접속하기 위해서 사용자가 입력한 비밀번호: ", current_password)
+
+    #current_password에 빈 문자열이나 아예 안 들어왔을 때 발생
+    if not current_password:
+            return jsonify({"verified": False, "message": "비밀번호를 입력해주세요"}), 400
+        
+    #사용자의 유저 번호를 이용해 DB에서 사용자 정보 불러오기
+    user = db.query_one(
+            "SELECT  user_pw, user_provider FROM users WHERE user_no = %s",
+            (user_no,),
+    )
+    if not user:
+            raise ApiError(404, "USER_NOT_FOUND", "사용자를 찾을 수 없습니다.")
+        
+    if not bcrypt.checkpw(current_password.encode(), user["user_pw"].encode()):
+            return  jsonify({"verified": False, "message": "비밀번호가 일치하지 않습니다."}), 400
+        
+    #비밀번호가 일치할 경우    
+    return jsonify({"verified": True})    
+        

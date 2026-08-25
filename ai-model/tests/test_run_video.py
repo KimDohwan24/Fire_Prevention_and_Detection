@@ -48,11 +48,34 @@ def test_dotenv_is_read_when_env_var_is_absent(monkeypatch, tmp_path):
     assert run_video.load_internal_key("") == "from-dotenv"
 
 
-def test_falls_back_to_the_backend_default(monkeypatch, tmp_path):
-    """back/config.py 의 기본값과 같아야 조용히 401 이 나지 않는다."""
+def test_missing_key_is_an_error(monkeypatch, tmp_path):
+    """어디에도 키가 없으면 **에러다.** 예전에는 `dev-internal-key` 로 폴백했다.
+
+    그 값은 백엔드가 키 미설정 시 조용히 쓰던 기본값과 짝을 맞춘 것이었는데,
+    2026-08-24 부로 백엔드는 기본값이면 아예 뜨지 않는다(back/config.py 의 시크릿
+    가드). 그래서 이 폴백은 **항상 틀린 키**가 됐다 — 폴백이 살아 있으면 전송이
+    프레임마다 401 로 깨지고, 원인은 '키를 안 넣었다'인데 증상은 '인증 실패'로만
+    보인다. 보낼 것도 없이 시작할 때 멈추는 편이 낫다.
+    """
     monkeypatch.setattr(run_video, "PROJECT_ROOT", tmp_path)
 
-    assert run_video.load_internal_key("") == "dev-internal-key"
+    with pytest.raises(ValueError, match="INTERNAL_API_KEY"):
+        run_video.load_internal_key("")
+
+
+def test_missing_key_message_survives_the_windows_console(monkeypatch, tmp_path):
+    """에러 메시지가 cp949 로 인코딩돼야 한다.
+
+    이 파일은 mock-119 와 달리 stdout/stderr 인코딩을 고정하지 않는다. 윈도우
+    기본 콘솔(cp949)에서 em-dash(—) 같은 문자를 print 하면 UnicodeEncodeError 로
+    죽어서, '키가 없다'는 진짜 원인 대신 엉뚱한 예외만 보인다. 실제로 이 메시지를
+    처음 쓸 때 em-dash 를 넣었다가 여기서 걸렸다.
+    """
+    monkeypatch.setattr(run_video, "PROJECT_ROOT", tmp_path)
+
+    with pytest.raises(ValueError) as exc:
+        run_video.load_internal_key("")
+    str(exc.value).encode("cp949")  # 못 넣는 문자가 있으면 여기서 터진다
 
 
 def test_dotenv_comments_and_blanks_are_ignored(monkeypatch, tmp_path):

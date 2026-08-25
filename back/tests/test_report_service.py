@@ -4,7 +4,8 @@
 - 트리거: 사용자가 화재 확인(USER_CONFIRMED) 또는 무응답 에스컬레이션(NO_RESPONSE_TIMEOUT).
 - 대상 기관: 활성(agency_is_active) 기관을 CCTV 좌표 기준 PostGIS 거리 오름차순으로 시도.
   (거리 계산·정렬은 DB 가 한다 — 최근접 탐색 자체의 검증은 test_geo_postgis.py)
-- 안쪽 루프: 한 기관에 최대 MAX_REPORT_ATTEMPTS(기본 4)회 전송(report_attempt_count).
+- 안쪽 루프: 한 기관에 최대 MAX_REPORT_ATTEMPTS(운영 기본 1 = 재전송 없음)회
+  전송(report_attempt_count). 테스트는 conftest 가 4 로 올려 루프 경로를 지킨다.
 - 바깥 루프: 기관 승계(report_sequence 1, 2, ...). 소진된 기관 행은 NO_RESPONSE,
   마지막 기관까지 소진되면 그 행만 FAILED.
 - DB 부분 유니크 인덱스(UX_report_119_active)로 이벤트당 진행 중 신고 1건 강제.
@@ -579,6 +580,49 @@ def test_max_attempts_configurable(monkeypatch):
     rows = get_report_rows(event_no)
     assert [r["report_attempt_count"] for r in rows] == [2, 2]
     assert len(calls) == 4  # 2개 기관 × 2회
+
+
+# ---------- 운영 기본값: 한 기관에 한 번만 (재전송 없음) ----------
+
+def test_default_sends_once_without_retrying(monkeypatch):
+    """MAX_REPORT_ATTEMPTS=1(운영 기본값): 실패해도 같은 기관에 다시 보내지 않는다.
+
+    2026-08-24 시연 단순화 — 119 와는 요청 한 번·응답 한 번으로 끝낸다.
+    5xx 는 원래 '재시도할 값어치가 있는' 실패라 루프가 도는 경로인데, 그 경로에서도
+    한 번으로 끝나는지를 봐야 기본값이 실제로 먹은 것이다.
+    """
+    monkeypatch.setattr(config, "MAX_REPORT_ATTEMPTS", 1)
+    monkeypatch.setattr(config, "REPORT_MAX_AGENCIES", 1)
+    set_distinct_endpoints()
+    calls = patch_post(monkeypatch, lambda ep, pl, n: FakeResponse(503))
+    event_no = make_event()
+
+    result = report_service.start_report(event_no, "USER_CONFIRMED")
+
+    rows = get_report_rows(event_no)
+    assert len(rows) == 1
+    assert rows[0]["report_attempt_count"] == 1
+    assert rows[0]["report_status"] == "FAILED"
+    assert result["report_status"] == "FAILED"
+    assert [ep for ep, _ in calls] == ["http://a1/report"]
+
+
+def test_production_default_is_single_attempt():
+    """config.py 에 적힌 기본값 자체가 1 이다 (conftest 가 테스트용으로 4 로 올린다).
+
+    동작 테스트만 두면 기본값이 조용히 4 로 돌아가도 아무도 못 잡는다. 환경변수가
+    아니라 파일에 적힌 리터럴을 본다 — config 를 reload 하면 다른 테스트가 쓰는
+    모듈 상태까지 되돌아가므로 소스를 읽는 쪽이 안전하다.
+    """
+    import pathlib
+    import re
+
+    source = (pathlib.Path(config.__file__)).read_text(encoding="utf-8")
+    match = re.search(
+        r'^MAX_REPORT_ATTEMPTS = int\(os\.getenv\("MAX_REPORT_ATTEMPTS", "(\d+)"\)\)',
+        source, re.M)
+    assert match, "config.py 에서 MAX_REPORT_ATTEMPTS 기본값을 찾지 못했다"
+    assert match.group(1) == "1"
 
 
 # ---------- 실패 종류별 분기 (재시도할 값어치가 있는가) ----------

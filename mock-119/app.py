@@ -23,7 +23,12 @@
     백엔드는 신고마다 `report_uid`(화재 하나에 하나)를 실어 보낸다. 재전송이든
     기관 승계든 같은 값이다. 이 서버는 접수한 uid 를 기억해 두고, 같은 uid 가
     다시 오면 **새로 접수하지 않고 먼저 발급한 접수번호만 다시 알려준다**.
-    3초 타임아웃 뒤의 재전송 4회가 출동 4건이 되는 것을 막는 장치다.
+
+    ⚠️ 2026-08-24 현재 백엔드 기본값은 재전송도 승계도 없다
+    (MAX_REPORT_ATTEMPTS=1, REPORT_MAX_AGENCIES=1) — 요청 한 번·응답 한 번으로
+    끝나므로 같은 uid 가 두 번 오는 일 자체가 기본 경로에는 없다. 이 장치는
+    .env 로 재전송·승계를 되살렸을 때를 위한 안전망이다: 그때는 타임아웃 뒤의
+    재전송이 출동 여러 건이 되는 것을 막아 준다.
 
     실제로는 소방서마다 서버가 따로 있으므로 중복 검사도 서버별이다.
     이 데모는 한 프로세스로 여러 소방서를 흉내내야 해서 `station` 쿼리
@@ -58,15 +63,26 @@ API:
                                중계하지 않는다 — 백엔드가 CORS 전 오리진 허용이다)
     GET  /health               {"status": "ok"}
 
-두 기관 승계(승계 시연) 데모:
-    1. 이 서버를 한 개 띄운다 (포트 8119).
-    2. DB agency 테이블에서 기관 1 endpoint 를
-       'http://localhost:8119/report?mode=timeout&station=1' (또는 mode=fail),
-       기관 2 endpoint 를 'http://localhost:8119/report?mode=ok&station=2' 로 설정한다.
-    3. 백엔드에서 신고를 트리거하면: 기관 1은 4회 시도 모두 실패(NO_RESPONSE)
-       → 기관 2로 승계되어 접수(ACCEPTED). 이 서버 콘솔에서 수신 로그로 확인한다.
-       mode=timeout 이면 기관 1도 실제로는 접수하므로, GET /reports 에서
-       기관 1 수신 4건 중 1건만 접수이고 나머지는 duplicate 인 것을 보여줄 수 있다.
+기본 시연 (요청 한 번 · 응답 한 번):
+    1. 이 서버를 띄운다 (포트 8119).
+    2. DB agency 테이블에서 가장 가까운 기관의 endpoint 를
+       'http://127.0.0.1:8119/report?mode=ok&station=1' 로 설정한다.
+       (localhost 대신 127.0.0.1 — localhost 는 IPv6 를 먼저 시도하다 2초를
+        버리는 경우가 있고, 신고 타임아웃이 3초라 그걸 거의 다 먹는다.)
+    3. 백엔드에서 신고를 트리거하면 접수 콘솔에 **한 줄**이 뜬다.
+       이벤트 1건 → 요청 1건 → 접수 1건. 그게 전부다.
+
+    ⚠️ 2026-08-24 이전 이 자리에는 "두 기관 승계 데모" 절차가 있었다. 백엔드가
+    기관 1에 4회 재전송하고 실패하면 기관 2로 승계하는 흐름이었는데, 둘 다
+    기본값에서 꺼졌다 (2026-08-21 승계 해제, 2026-08-24 재전송 해제). 그대로
+    따라 하면 기관 2 로 넘어가지 않고 기관 1 에서 FAILED 로 끝난다.
+
+되살리려면 (재전송·승계 경로는 코드에 그대로 있다):
+    .env 에 MAX_REPORT_ATTEMPTS=4 / REPORT_MAX_AGENCIES=0 을 넣으면 예전 동작으로
+    돌아간다. 그때는 기관 1 을 '?mode=timeout&station=1', 기관 2 를
+    '?mode=ok&station=2' 로 두면 승계가 보인다 — mode=timeout 은 기관 1 도 결국
+    접수하므로 GET /reports 에서 기관 1 수신 4건 중 1건만 접수이고 나머지는
+    duplicate 로 찍히는 것까지 확인할 수 있다.
 """
 import base64
 import itertools
@@ -82,6 +98,33 @@ from flask import Flask, Response, jsonify, request
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 app = Flask(__name__)
+
+
+def _agency_key() -> str:
+    """접수 콘솔 입력칸에 미리 채워 둘 X-Agency-Key 값.
+
+    2026-08-24 이전에는 화면에 `dev-agency-key` 를 박아 뒀는데, 그건 백엔드가
+    키 미설정 시 조용히 쓰던 기본값이었다. 이제 백엔드는 기본값이면 아예 뜨지
+    않으므로(back/config.py 의 시크릿 가드) 박아 둔 값은 항상 틀린 값이 된다.
+    그래서 백엔드와 같은 곳(루트 .env)에서 읽어 온다 — 시연자가 매번 키를
+    복사해 붙여넣지 않아도 되고, 두 곳에 값이 갈라지지도 않는다.
+
+    못 찾으면 빈 칸으로 둔다. 틀린 값을 채워 두는 것보다 비어 있는 편이
+    "여기에 무언가 넣어야 한다"가 분명하다.
+    """
+    from pathlib import Path
+
+    if os.environ.get("AGENCY_CALLBACK_KEY"):
+        return os.environ["AGENCY_CALLBACK_KEY"]
+    env_file = Path(__file__).resolve().parent.parent / ".env"
+    if not env_file.exists():
+        return ""
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        name, _, value = line.strip().partition("=")
+        if name.strip() == "AGENCY_CALLBACK_KEY":
+            return value.strip()
+    return ""
+
 
 # 이번 세션에 수신한 요청 목록 (메모리 보관 — 서버 재시작 시 초기화).
 # 재전송도 전부 남는다. 접수된 것만 보려면 duplicate 가 False 인 것을 세면 된다.
@@ -595,28 +638,6 @@ setInterval(poll, 2000);
 """
 
 
-def _agency_key() -> str:
-    """출동 지령에 실을 X-Agency-Key 기본값.
-
-    백엔드의 AGENCY_CALLBACK_KEY 와 같아야 통지가 접수된다. 키를 소스에 박아
-    두면 저장소에 비밀값이 남으므로, 환경변수 → 저장소 루트 .env 순서로 읽고
-    둘 다 없으면 개발용 더미를 쓴다 (그때는 ⚙ 에서 직접 바꿔 넣으면 된다).
-    """
-    key = os.environ.get("AGENCY_CALLBACK_KEY")
-    if key:
-        return key
-    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-    try:
-        with open(env_path, encoding="utf-8") as f:
-            for line in f:
-                name, _, value = line.strip().partition("=")
-                if name == "AGENCY_CALLBACK_KEY" and value:
-                    return value
-    except OSError:
-        pass
-    return "dev-agency-key"
-
-
 @app.get("/")
 def console():
     """소방서 접수 콘솔 화면 (시연용).
@@ -627,6 +648,8 @@ def console():
     """
     # charset 은 적지 않는다 — werkzeug 3 이 text/* 에 charset=utf-8 을 무조건
     # 덧붙여서, 여기에 또 쓰면 Content-Type 에 charset 이 두 번 들어간다.
+    # 인증키는 매 요청 채워 넣는다 — 서버 기동 뒤에 .env 를 고쳐도 새로고침만
+    # 하면 반영된다. CONSOLE_HTML 은 JS 중괄호가 가득해서 .format 을 쓸 수 없다.
     return Response(CONSOLE_HTML.replace("__AGENCY_KEY__", _agency_key()),
                     mimetype="text/html")
 
