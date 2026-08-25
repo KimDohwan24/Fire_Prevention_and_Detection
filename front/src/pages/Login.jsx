@@ -115,7 +115,11 @@ const Login = () => {
 
       {/* Brand / Logo (Horizontal Layout) */}
       <div className="flex flex-row items-center space-x-5 mb-10">
-        <div className="text-[48px] leading-none">🔥</div>
+        <img
+          src="/fireguard-favicon.png"
+          alt="FireGuard 로고"
+          className="h-16 w-16 object-contain"
+        />
         <div className="flex flex-col">
           <h1 className="font-display text-display-lg font-medium text-ink tracking-tight mb-1">
             FireGuard

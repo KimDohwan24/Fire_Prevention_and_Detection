@@ -4,9 +4,11 @@ import { useDaumPostcodePopup } from 'react-daum-postcode';
 
 import { userApi, authApi } from '../api';
 import PasswordInput from '../components/PasswordInput';
+import PrivacyConsentModal from '../components/PrivacyConsentModal';
 
 const EMAIL_VERIFICATION_DURATION = 5 * 60;
 const ADDRESS_REQUIRED_MESSAGE = '주소 검색을 완료해주세요.';
+const PRIVACY_CONSENT_REQUIRED_MESSAGE = '개인정보 수집·이용 동의 항목을 체크해야 회원가입을 진행할 수 있습니다.';
 
 const Signup = () => {
   const navigate = useNavigate();
@@ -37,6 +39,9 @@ const Signup = () => {
   const [emailVerificationTimeLeft, setEmailVerificationTimeLeft] = useState(EMAIL_VERIFICATION_DURATION);
   const [emailVerificationCode, setEmailVerificationCode] = useState('');
   const [addressErrorMsg, setAddressErrorMsg] = useState('');
+  const [isPrivacyConsentChecked, setIsPrivacyConsentChecked] = useState(false);
+  const [isPrivacyConsentModalOpen, setIsPrivacyConsentModalOpen] = useState(false);
+  const [privacyConsentError, setPrivacyConsentError] = useState(false);
 
   const openPostcode = useDaumPostcodePopup();
 
@@ -269,6 +274,14 @@ if (formData.emailDomain === '직접입력') {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
+
+    if (!isPrivacyConsentChecked) {
+      setPrivacyConsentError(true);
+      setErrorMsg(PRIVACY_CONSENT_REQUIRED_MESSAGE);
+      return;
+    }
+
+    setPrivacyConsentError(false);
 
     if (!validateAddress()) {
       return;
@@ -694,10 +707,69 @@ if (formData.emailDomain === '직접입력') {
             </div>
           </div>
 
+          {/* 개인정보 수집·이용 동의 */}
+          <div className="rounded-2xl border border-hairline bg-surface-soft p-4">
+            <div className="flex items-start gap-3">
+              <input
+                id="privacy-consent"
+                type="checkbox"
+                checked={isPrivacyConsentChecked}
+                onChange={(event) => {
+                  const isChecked = event.target.checked;
+                  setIsPrivacyConsentChecked(isChecked);
+                  if (isChecked) {
+                    setPrivacyConsentError(false);
+                    if (errorMsg === PRIVACY_CONSENT_REQUIRED_MESSAGE) {
+                      setErrorMsg('');
+                    }
+                  }
+                }}
+                className="mt-1 h-5 w-5 shrink-0 cursor-pointer accent-primary focus:outline-none focus-visible:outline-none"
+                aria-describedby={privacyConsentError
+                  ? 'privacy-consent-description privacy-consent-error'
+                  : 'privacy-consent-description'}
+                aria-invalid={privacyConsentError}
+              />
+              <div className="min-w-0 flex-1">
+                <label htmlFor="privacy-consent" className="block cursor-pointer text-body-sm-strong text-ink">
+                  <span className="mr-1 text-mute">[필수]</span>
+                  개인정보 수집·이용에 동의합니다.
+                </label>
+                <p id="privacy-consent-description" className="mt-1 text-caption-sm leading-5 text-body">
+                  회원가입과 서비스 운영을 위해 개인정보를 수집·이용합니다.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setIsPrivacyConsentModalOpen(true)}
+                  className="mt-2 text-caption-sm text-body underline decoration-hairline underline-offset-4 transition-colors hover:text-ink focus:outline-none focus-visible:outline-none"
+                >
+                  자세히 보기
+                </button>
+              </div>
+            </div>
+            {privacyConsentError && (
+              <p
+                id="privacy-consent-error"
+                role="alert"
+                className="mt-3 px-2 text-caption-sm font-semibold text-red-500"
+              >
+                {PRIVACY_CONSENT_REQUIRED_MESSAGE}
+              </p>
+            )}
+          </div>
+
           <div className="pt-6 pb-2">
             <button
               type="submit"
               onClick={(event) => {
+                if (!isPrivacyConsentChecked) {
+                  event.preventDefault();
+                  setPrivacyConsentError(true);
+                  setErrorMsg(PRIVACY_CONSENT_REQUIRED_MESSAGE);
+                  document.getElementById('privacy-consent')?.focus();
+                  return;
+                }
+
                 if (!validateAddress()) {
                   event.preventDefault();
                 }
@@ -716,6 +788,11 @@ if (formData.emailDomain === '직접입력') {
           </div>
         </form>
       </div>
+
+      <PrivacyConsentModal
+        isOpen={isPrivacyConsentModalOpen}
+        onClose={() => setIsPrivacyConsentModalOpen(false)}
+      />
     </div>
   );
 };
