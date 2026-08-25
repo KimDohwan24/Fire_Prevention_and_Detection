@@ -34,8 +34,9 @@ BASE_DIR = Path(__file__).resolve().parent
 
 DATA_YAML = (
     BASE_DIR
-    / "./"
-    / "quad_fire_data.yaml"
+    / ".."
+    / "data"
+    / "data.yaml"
 ).resolve()
 
 
@@ -533,12 +534,10 @@ def check_dataset():
 
     paths = get_dataset_paths()
 
-
     print()
     print("=" * 70)
     print("DATASET 경로")
     print("=" * 70)
-
 
     print()
     print("[TRAIN]")
@@ -553,7 +552,6 @@ def check_dataset():
         f"{paths['train_labels']}"
     )
 
-
     print()
     print("[VAL]")
 
@@ -566,7 +564,6 @@ def check_dataset():
         f"Label : "
         f"{paths['val_labels']}"
     )
-
 
     print()
     print("[TEST]")
@@ -581,34 +578,42 @@ def check_dataset():
         f"{paths['test_labels']}"
     )
 
-
     # --------------------------------------------------------
     # 폴더 존재 확인
     # --------------------------------------------------------
 
     folders = [
-
         paths["train_images"],
         paths["train_labels"],
-
         paths["val_images"],
         paths["val_labels"],
-
         paths["test_images"],
         paths["test_labels"],
     ]
 
-
     for folder in folders:
 
-        if not folder.exists():
+        if isinstance(folder, list):
 
-            raise FileNotFoundError(
-                "\n"
-                "데이터 폴더를 찾을 수 없습니다.\n"
-                f"{folder}"
-            )
+            for subfolder in folder:
 
+                if not subfolder.exists():
+
+                    raise FileNotFoundError(
+                        "\n"
+                        "데이터 폴더를 찾을 수 없습니다.\n"
+                        f"{subfolder}"
+                    )
+
+        else:
+
+            if not folder.exists():
+
+                raise FileNotFoundError(
+                    "\n"
+                    "데이터 폴더를 찾을 수 없습니다.\n"
+                    f"{folder}"
+                )
 
     return paths
 
@@ -892,62 +897,109 @@ def print_dataset_statistics(
     label_dir
 ):
 
-    images = find_images(
-        image_dir
-    )
+    # --------------------------------------------------------
+    # 단일 경로 / 여러 경로 처리
+    # --------------------------------------------------------
+
+    if isinstance(image_dir, list):
+
+        image_dirs = image_dir
+        label_dirs = label_dir
+
+    else:
+
+        image_dirs = [image_dir]
+        label_dirs = [label_dir]
 
 
     fire_images = 0
-
     smoke_images = 0
-
     background_images = 0
 
     fire_boxes = 0
-
     smoke_boxes = 0
 
+    total_images = 0
 
-    for image_path in images:
 
-        label_path = find_label_path(
+    # --------------------------------------------------------
+    # 각 이미지 폴더 처리
+    # --------------------------------------------------------
 
-            image_path,
+    for current_image_dir, current_label_dir in zip(
+        image_dirs,
+        label_dirs
+    ):
 
-            image_dir,
-
-            label_dir
+        images = find_images(
+            current_image_dir
         )
 
 
-        label_boxes = read_label_boxes(label_path)
-
-        if not label_boxes:
-
-            background_images += 1
-
-            continue
-
-        label_classes = [int(box[0]) for box in label_boxes]
-
-        found_fire = 0 in label_classes
-
-        found_smoke = 1 in label_classes
-
-        fire_boxes += label_classes.count(0)
-
-        smoke_boxes += label_classes.count(1)
+        total_images += len(images)
 
 
-        if found_fire:
+        # ----------------------------------------------------
+        # 이미지별 라벨 분석
+        # ----------------------------------------------------
 
-            fire_images += 1
+        for image_path in images:
+
+            label_path = find_label_path(
+
+                image_path,
+
+                current_image_dir,
+
+                current_label_dir
+            )
 
 
-        if found_smoke:
+            label_boxes = read_label_boxes(
+                label_path
+            )
 
-            smoke_images += 1
 
+            if not label_boxes:
+
+                background_images += 1
+
+                continue
+
+
+            label_classes = [
+                int(box[0])
+                for box in label_boxes
+            ]
+
+
+            found_fire = (
+                0 in label_classes
+            )
+
+            found_smoke = (
+                1 in label_classes
+            )
+
+
+            fire_boxes += label_classes.count(0)
+
+            smoke_boxes += label_classes.count(1)
+
+
+            if found_fire:
+
+                fire_images += 1
+
+
+            if found_smoke:
+
+                smoke_images += 1
+
+
+    # --------------------------------------------------------
+    # 출력
+    # --------------------------------------------------------
 
     print()
     print("-" * 70)
@@ -956,7 +1008,7 @@ def print_dataset_statistics(
 
     print(
         f"전체 이미지             : "
-        f"{len(images)}"
+        f"{total_images}"
     )
 
     print(
@@ -983,6 +1035,7 @@ def print_dataset_statistics(
         f"Smoke Bounding Box      : "
         f"{smoke_boxes}"
     )
+
 
 
 # ============================================================
@@ -1027,6 +1080,8 @@ def print_all_dataset_statistics(
 
         paths["test_labels"]
     )
+
+
 
 
 # ============================================================
