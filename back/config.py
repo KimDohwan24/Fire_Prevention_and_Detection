@@ -109,6 +109,11 @@ EVENT_THRESHOLD_FRAMES = int(os.getenv("EVENT_THRESHOLD_FRAMES", "10"))
 # 이후 검출로 연장되지 않는다 — 미달인 채로 창이 닫히면 기준미달(DISMISSED)
 EVENT_WINDOW_SEC = int(os.getenv("EVENT_WINDOW_SEC", "60"))
 
+# 확정(CONFIRMED) 후 재판정 억제 시간(초): 이 시간 동안 같은 카메라의 검출 프레임은
+# 새 이벤트를 만들지 않고, 마지막으로 확정된 화재에 증거 프레임(media)만 적재한다.
+# 화재 하나에 알림·119 신고가 반복되는 것(알람 폭풍)을 막는다.
+EVENT_COOLDOWN_SEC = int(os.getenv("EVENT_COOLDOWN_SEC", "600"))
+
 # 알림 응답 유예 시간(초): alert_deadline_at = alert_sent_at + 이 값
 # 마감까지 무응답이면 에스컬레이션이 곧바로 119 신고로 넘어간다.
 # 2026-08-13 에 30 → 60 으로 올렸다. 알림을 문자로 받고, 링크를 열고, 취소를

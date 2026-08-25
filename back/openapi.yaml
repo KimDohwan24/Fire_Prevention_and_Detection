@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: 파이어가드 API
-  version: 0.11.1
+  version: 0.12.0
   description: |
     CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
 
@@ -1153,6 +1153,72 @@ paths:
         "404":
           $ref: "#/components/responses/UserNotFound"
 
+  /api/users/mypage-check-password:
+    post:
+      tags: [users]
+      summary: 마이페이지 진입 전 본인 비밀번호 재확인
+      description: |
+        마이페이지(개인정보 화면)에 들어가기 전에 로그인한 사용자의 비밀번호를
+        한 번 더 확인한다. 토큰만으로 통과시키면 자리를 비운 사이 브라우저를
+        잡은 사람이 개인정보를 열람할 수 있어서다.
+
+        대상 `user_no` 는 받지 않고 토큰에서 꺼내 쓴다 — 남의 비밀번호를
+        확인할 통로가 애초에 없다. 검증만 하고 아무것도 바꾸지 않는다.
+
+        실패 응답도 `Error` 스키마가 아니라 `{verified, message}` 형태다 —
+        프론트가 성공/실패를 같은 모양으로 읽고 message 를 그대로 띄운다.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password]
+              properties:
+                current_password:
+                  type: string
+                  description: 사용자가 입력한 현재 비밀번호
+      responses:
+        "200":
+          description: 비밀번호 일치 — 마이페이지 진입 허용
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified:
+                    type: boolean
+              example:
+                verified: true
+        "400":
+          description: 입력 누락 · 비밀번호 불일치
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified:
+                    type: boolean
+                  message:
+                    type: string
+              examples:
+                missing:
+                  summary: 비밀번호 미입력
+                  value:
+                    verified: false
+                    message: 비밀번호를 입력해주세요
+                mismatch:
+                  summary: 비밀번호 불일치
+                  value:
+                    verified: false
+                    message: 비밀번호가 일치하지 않습니다.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/UserNotFound"
+
   /api/users/{user_no}:
     put:
       tags: [users]
@@ -1165,6 +1231,14 @@ paths:
 
         `user_status: "WITHDRAWN"` 을 보내면 탈퇴 일시가 함께 기록된다.
         보낸 필드만 갱신되며, 갱신할 필드가 하나도 없으면 400 이다.
+        없는 `user_no` 는 그보다 먼저 404 다 (빈 본문이어도 404).
+
+        **정지·탈퇴·권한 등급 변경은 그 사용자의 토큰을 즉시 폐기한다.**
+        권한 검사는 DB 가 아니라 토큰에 박힌 `user_role` 을 보기 때문에, 폐기하지
+        않으면 강등당한 사람이 만료(기본 12시간)까지 관리자 API 를 계속 쓴다.
+        방향은 따지지 않는다 — 승격도 폐기 대상이다. 값이 원래와 같으면 폐기하지
+        않는다. 폐기된 토큰으로 보낸 다음 요청은 401 `TOKEN_REVOKED` 를 받으므로,
+        **관리자가 자기 자신의 등급을 바꾸면 본인도 재로그인해야 한다.**
       security:
         - bearerAuth: []
       parameters:
@@ -2697,7 +2771,7 @@ components:
         **안내 문구는 갈라주는 편이 낫다.**
 
         `TOKEN_REVOKED` 는 사용자가 잘못한 게 없는데 튕기는 경우다 — 다른 기기에서
-        로그아웃했거나 관리자가 계정을 정지했을 때 나온다. 이유를 안 알려주면
+        로그아웃했거나, 관리자가 계정을 정지·탈퇴시켰거나 권한 등급을 바꿨을 때 나온다. 이유를 안 알려주면
         사용자는 영문도 모르고 튕긴 것으로 느낀다.
       content:
         application/json:

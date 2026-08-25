@@ -305,8 +305,12 @@ def password_reset_confirm():
                        "인증코드가 올바르지 않거나 만료되었습니다.")
 
     pw_hash = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt()).decode()
+    # 해시가 바뀌었으니 기존 세션도 함께 끊는다 — 도난당한 기기에서 쓰던
+    # 토큰은 비밀번호 재설정만으로는 회수되지 않는다.
     db.execute(
-        "UPDATE users SET user_pw = %s, user_updated_at = now() WHERE user_no = %s",
+        "UPDATE users SET user_pw = %s, user_updated_at = now(),"
+        " user_token_valid_from = now()"
+        " WHERE user_no = %s",
         (pw_hash, user["user_no"]),
     )
     activity_service.record(user["user_no"], activity_service.PASSWORD_CHANGED,
