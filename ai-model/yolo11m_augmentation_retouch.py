@@ -27,7 +27,7 @@ DATA_YAML = (BASE_DIR / ".." / "data" / "data.yaml").resolve()
 RUNS_DIR = (BASE_DIR / "runs" / "data").resolve()
 
 EPOCHS = 50
-PATIENCE = 10
+PATIENCE = 12
 IMAGE_SIZE = 640
 BATCH_SIZE = 16
 WORKERS = 4
@@ -76,6 +76,63 @@ def load_original_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def add_dataset_yaml_compatibility(base):
+    """Let the legacy result helper accept one-item YAML split lists.
+
+    Ultralytics accepts both ``train: images/train`` and
+    ``train: [images/train]``. The legacy yolo11_m_version_test.py only
+    accepts the first form, so its path resolver is replaced while all of its
+    checking and reporting functions remain unchanged.
+    """
+    try:
+        import yaml
+    except ImportError as error:
+        raise ImportError("PyYAML is required: pip install pyyaml") from error
+
+    def get_dataset_paths_compatible():
+        with DATA_YAML.open("r", encoding="utf-8") as file:
+            yaml_data = yaml.safe_load(file) or {}
+
+        yaml_root = yaml_data.get("path", "")
+        dataset_root = Path(yaml_root) if yaml_root else DATA_YAML.parent
+        if not dataset_root.is_absolute():
+            dataset_root = DATA_YAML.parent / dataset_root
+        dataset_root = dataset_root.resolve()
+
+        def split_path(name):
+            value = yaml_data.get(name)
+            if value is None:
+                raise ValueError(f"data.yaml에 {name} 항목이 없습니다.")
+            if isinstance(value, (list, tuple)):
+                if len(value) != 1:
+                    raise ValueError(
+                        f"기존 결과 평가 코드는 data.yaml의 {name} 경로를 하나만 "
+                        f"지원합니다. 현재 {len(value)}개입니다: {value}"
+                    )
+                value = value[0]
+            if not isinstance(value, (str, Path)):
+                raise TypeError(
+                    f"data.yaml의 {name}은 경로 문자열이어야 합니다: {value!r}"
+                )
+            path = Path(value)
+            return path.resolve() if path.is_absolute() else (dataset_root / path).resolve()
+
+        train_images = split_path("train")
+        val_images = split_path("val")
+        test_images = split_path("test")
+        return {
+            "root": dataset_root,
+            "train_images": train_images,
+            "train_labels": base.image_to_label_dir(train_images),
+            "val_images": val_images,
+            "val_labels": base.image_to_label_dir(val_images),
+            "test_images": test_images,
+            "test_labels": base.image_to_label_dir(test_images),
+        }
+
+    base.get_dataset_paths = get_dataset_paths_compatible
 
 
 def print_experiment_settings(args):
@@ -223,6 +280,7 @@ def main():
     base = load_original_module()
     base.DATA_YAML = DATA_YAML
     base.RUNS_DIR = RUNS_DIR
+    add_dataset_yaml_compatibility(base)
     base.check_yaml()
     paths = base.check_dataset()
     base.print_all_dataset_statistics(paths)
