@@ -20,6 +20,7 @@ import pytest
 import requests
 from conftest import make_event
 
+import config
 import db
 from services import report_service
 
@@ -110,6 +111,30 @@ def test_report_dispatched_via_real_mock_server(mock119_server, monkeypatch):
     # mock 서버가 신고를 실제로 수신했는지 확인 (/reports 디버그 API)
     received = requests.get(f"{mock119_server}/reports", timeout=2).json()
     assert any(r["event_no"] == event_no for r in received)
+
+
+def test_video_test_report_dispatched_via_real_mock_server(mock119_server, monkeypatch):
+    """영상 테스트 CONFIRM_FIRE 도 실제 mock-119 접수 화면에 나타난다."""
+    use_real_http(monkeypatch)
+    monkeypatch.setattr(
+        config, "MOCK119_TEST_ENDPOINT",
+        f"{mock119_server}/report?mode=ok&station=test",
+    )
+    event_no = make_event(is_test=True)
+
+    result = report_service.send_test_report(event_no)
+
+    assert result["report_status"] == "ACCEPTED"
+    assert re.fullmatch(r"R-\d+", result["report_external_id"])
+    assert db.query("SELECT report_no FROM report_119 WHERE event_no = %s",
+                    (event_no,)) == []
+
+    received = requests.get(f"{mock119_server}/reports", timeout=2).json()
+    assert any(
+        r["event_no"] == event_no
+        and r["report_uid"] == f"FG-TEST-{event_no}"
+        for r in received
+    )
 
 
 def test_takeover_between_two_real_agencies(mock119_server, monkeypatch):
