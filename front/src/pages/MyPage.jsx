@@ -988,26 +988,6 @@ export default function MyPage() {
                   />
                 </div>
 
-                <div className="p-3.5 bg-surface-soft border border-hairline rounded-xl space-y-1">
-                  <span className="block text-caption-sm font-bold text-charcoal">📹 내가 설치 / 등록한 CCTV 카메라 ({myCctvs.length}대 - 클릭시 실시간 재생)</span>
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {myCctvs.map(c => (
-                      <button
-                        type="button"
-                        key={c.id}
-                        onClick={() => {
-                          setIsEditProfileOpen(false);
-                          setSelectedMyCctv(c);
-                        }}
-                        className="text-xs font-bold text-ink bg-canvas hover:bg-surface-soft hover:border-ink px-2.5 py-1 rounded-lg border border-hairline flex items-center gap-1 transition-colors cursor-pointer"
-                        title={`${c.name} 실시간 비디오 모니터링`}
-                      >
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                        <span>{c.name} ({c.id})</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
               </div>
 
               <div className="px-6 py-4 border-t border-hairline bg-surface-soft flex items-center justify-end gap-3 shrink-0">
