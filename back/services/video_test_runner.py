@@ -85,13 +85,14 @@ def _cctv_exists(cctv_no: int) -> bool:
     ))
 
 
-def _new_job(job_id: str, sample_name: str, cctv_no: int) -> dict:
+def _new_job(job_id: str, sample_name: str, cctv_no: int, live: bool = False) -> dict:
     return {
         "job_id": job_id,
         "status": "QUEUED",
         "phase": "QUEUED",
         "sample_name": sample_name,
         "cctv_no": cctv_no,
+        "live": live,
         "started_at": None,
         "finished_at": None,
         "event_no": None,
@@ -329,22 +330,110 @@ def _run_job(job_id: str, sample_path: Path, cctv_no: int) -> None:
         )
 
 
-def start_sample(sample_name: str, cctv_no: int) -> dict:
-    """샘플 분석 작업을 등록하고 즉시 job 상태를 반환한다."""
+def _run_live_job(job_id: str, sample_path: Path, cctv_no: int) -> None:
+    """실전 모드 워커: run_video.py --send 로 영상을 실검출 API에 흘려보낸다.
+
+    모의 판정(_run_job)과 달리 프레임이 POST /api/internal/detections 로 들어가
+    실제 이벤트 판정 → 알림(텔레그램) → 무응답 시 119 신고까지 이어진다.
+    run_video.py 에는 진행상황(progress) 콜백이 없으므로 중간 갱신 없이
+    최종 stdout 만으로 결과를 판정한다 — 확정 시
+    ">>> 화재 확정 CONFIRMED  event_no=61" 형식 한 줄이 찍힌다.
+    """
+    _update_job(job_id, status="RUNNING", phase="ANALYZING", started_at=_now())
+
+    command = [
+        str(config.AI_PYTHON),
+        str(Path(config.AI_MODEL_ROOT) / "run_video.py"),
+        "--video", str(sample_path),
+        "--send",
+        "--cctv-no", str(cctv_no),
+        "--api", f"http://127.0.0.1:{config.APP_PORT}",
+    ]
+    child_env = os.environ.copy()
+    # run_video.py 는 X-Internal-Key 를 --key > 환경변수 > 루트 .env 순으로 찾는다
+    # — 환경변수 주입이면 충분하다
+    child_env["INTERNAL_API_KEY"] = config.INTERNAL_API_KEY
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(config.AI_MODEL_ROOT),
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=config.AI_VIDEO_TEST_TIMEOUT_SEC,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _update_job(job_id, status="FAILED", phase="FAILED", finished_at=_now(),
+                    error={"code": "AI_TIMEOUT",
+                           "message": "AI 영상 분석 시간이 제한을 초과했습니다."})
+        return
+    except FileNotFoundError:
+        _update_job(job_id, status="FAILED", phase="FAILED", finished_at=_now(),
+                    error={"code": "AI_NOT_CONFIGURED",
+                           "message": "AI 실행 파일을 찾을 수 없습니다."})
+        return
+    except OSError as exc:
+        _update_job(job_id, status="FAILED", phase="FAILED", finished_at=_now(),
+                    error={"code": "AI_UNAVAILABLE", "message": str(exc)})
+        return
+    except Exception as exc:  # 백그라운드 스레드 예외는 job 상태로 남긴다.
+        _update_job(job_id, status="FAILED", phase="FAILED", finished_at=_now(),
+                    error={"code": "AI_UNAVAILABLE", "message": str(exc)})
+        return
+
+    stdout = completed.stdout or ""
+    if completed.returncode != 0:
+        _update_job(job_id, status="FAILED", phase="FAILED", finished_at=_now(),
+                    error={"code": "AI_PROCESS_FAILED",
+                           "message": _subprocess_error_message(stdout)})
+        return
+
+    # 확정 여부는 stdout 의 "event_no=NN" 유무로 판정한다.
+    # 없으면 관측 창 안에서 임계값 미달 — 기준미달(DISMISSED)로 끝난 것이다.
+    match = re.search(r"event_no=(\d+)", stdout)
+    changes = {
+        "status": "SUCCEEDED",
+        "finished_at": _now(),
+        # 원본 판정 로그의 꼬리를 요약으로 남긴다 — DISMISSED 원인 추적용
+        "result": {"stdout_tail": stdout[-2000:]},
+    }
+    if match:
+        changes.update(phase="FIRE_CONFIRMED", alarm_triggered=True,
+                       event_no=int(match.group(1)))
+    else:
+        changes.update(phase="DISMISSED")
+    _update_job(job_id, **changes)
+
+
+def start_sample(sample_name: str, cctv_no: int, live: bool = False) -> dict:
+    """샘플 분석 작업을 등록하고 즉시 job 상태를 반환한다.
+
+    live=False(기본)면 모의 판정(validate_video.py) 경로 그대로다.
+    live=True 면 run_video.py --send 로 영상을 실검출 API에 흘려보낸다 —
+    실제 알림(텔레그램)과 무응답 시 119 신고까지 이어지는 실전 파이프라인이다.
+    """
     sample_path = _resolve_sample(sample_name)
     if not _cctv_exists(cctv_no):
         raise ApiError(404, "CCTV_NOT_FOUND", "카메라를 찾을 수 없습니다.",
                        field="cctv_no")
-    if not Path(config.AI_PYTHON).is_file() or not Path(config.AI_VALIDATE_SCRIPT).is_file():
+    # 실행할 스크립트가 모드마다 다르므로 존재 확인도 그 스크립트로 한다
+    script = (Path(config.AI_MODEL_ROOT) / "run_video.py") if live \
+        else Path(config.AI_VALIDATE_SCRIPT)
+    if not Path(config.AI_PYTHON).is_file() or not script.is_file():
         raise ApiError(503, "AI_NOT_CONFIGURED",
-                       "AI 실행 환경 또는 영상 검증 스크립트를 찾을 수 없습니다.")
+                       "AI 실행 환경 또는 영상 분석 스크립트를 찾을 수 없습니다.")
 
     job_id = uuid.uuid4().hex
     with _jobs_lock:
-        _jobs[job_id] = _new_job(job_id, sample_path.name, cctv_no)
+        _jobs[job_id] = _new_job(job_id, sample_path.name, cctv_no, live)
 
     worker = threading.Thread(
-        target=_run_job,
+        target=_run_live_job if live else _run_job,
         args=(job_id, sample_path, cctv_no),
         name=f"fireguard-video-test-{job_id[:8]}",
         daemon=True,

@@ -48,6 +48,7 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
   const [runState, setRunState] = useState('idle');
   const [errorMessage, setErrorMessage] = useState('');
   const [job, setJob] = useState(null);
+  const [liveMode, setLiveMode] = useState(false);
   const [decisionState, setDecisionState] = useState('idle');
   const [decisionError, setDecisionError] = useState('');
   const [agencies, setAgencies] = useState([]);
@@ -73,6 +74,7 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
       setSelectedSample('');
       setSelectedCctvNo('');
       setRunState('idle');
+      setLiveMode(false);
       setJob(null);
       jobRef.current = null;
       notifiedPhaseRef.current = null;
@@ -149,7 +151,9 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
         setJob(current);
         jobRef.current = current;
 
-        const shouldNotify = ['DETECTING', 'FIRE_CONFIRMED', 'DISMISSED'].includes(current.phase);
+        // live job 은 실전 파이프라인(텔레그램·관제 배너)이 알림을 담당하므로 테스트 경보 콜백을 쏘지 않는다.
+        const shouldNotify = !current.live
+          && ['DETECTING', 'FIRE_CONFIRMED', 'DISMISSED'].includes(current.phase);
         const phaseKey = `${current.job_id}:${current.phase}`;
         if (shouldNotify && notifiedPhaseRef.current !== phaseKey) {
           notifiedPhaseRef.current = phaseKey;
@@ -188,12 +192,14 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
 
   const isRunning = Boolean(job && !TERMINAL_STATES.has(job.status));
   const canRun = Boolean(selectedSample && selectedCctvNo) && !isRunning;
+  const isLiveJob = Boolean(job?.live);
   const finalResult = job?.result;
   const statistics = finalResult?.statistics || {};
   const evidence = Array.isArray(finalResult?.media) ? finalResult.media : [];
   const isFire = finalResult?.result === 'FIRE';
+  // live job 은 실전 응답 경로(텔레그램/관제 배너)가 담당하므로 모달 내 관제자 판단을 띄우지 않는다.
   const needsHumanReview = Boolean(
-    job?.phase === 'DETECTING' && job?.human_review_required && job?.event_no,
+    !isLiveJob && job?.phase === 'DETECTING' && job?.human_review_required && job?.event_no,
   );
   const nearestAgency = useMemo(
     () => findNearestAgency(selectedCctv, agencies),
@@ -230,6 +236,7 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
       const response = enrichTestJob(await videoTestApi.runSample({
         sample_name: selectedSample,
         cctv_no: Number(selectedCctvNo),
+        live: liveMode,
       }));
       setJob(response);
       jobRef.current = response;
@@ -281,9 +288,36 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
         </div>
 
         <div className="p-6 max-h-[75vh] overflow-y-auto space-y-5">
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-caption-sm text-amber-700">
-            선택한 CCTV의 실시간 스트림은 변경되지 않습니다. 테스트 경보와 119 신고는 모의 처리로만 기록되며 실제 신고는 발생하지 않습니다.
-          </div>
+          {liveMode ? (
+            <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-caption-sm font-bold text-red-600">
+              ⚠️ 실전 모드: 실제 텔레그램 알림이 발송되고, 무응답 60초 후 119 자동 신고(mock-119)까지 나갑니다.
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-caption-sm text-amber-700">
+              선택한 CCTV의 실시간 스트림은 변경되지 않습니다. 테스트 경보와 119 신고는 모의 처리로만 기록되며 실제 신고는 발생하지 않습니다.
+            </div>
+          )}
+
+          <label
+            className={`flex items-start gap-3 rounded-xl border px-4 py-3 transition-colors ${liveMode ? 'border-red-500/40 bg-red-500/10' : 'border-hairline bg-surface-soft hover:border-red-500/40'} ${isRunning ? 'opacity-60 cursor-wait' : 'cursor-pointer'}`}
+          >
+            <input
+              type="checkbox"
+              checked={liveMode}
+              disabled={isRunning}
+              onChange={(event) => setLiveMode(event.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-red-600 cursor-pointer disabled:cursor-wait"
+            />
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5 text-body-sm font-bold text-ink">
+                <Siren className="w-4 h-4 text-red-500" />
+                실전 모드
+              </span>
+              <span className="mt-0.5 block text-caption-sm text-mute">
+                체크하면 모의 판정 대신 실전 파이프라인으로 영상을 전송합니다.
+              </span>
+            </span>
+          </label>
 
           <section className="space-y-2">
             <div className="flex items-center justify-between gap-3">
@@ -336,7 +370,9 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
                 <div className="min-w-0">
                   <h4 className="text-body-sm font-bold text-ink">테스트 예상 소방서 배정</h4>
                   <p className="mt-0.5 text-caption-sm text-mute">
-                    실제 119 신고 없이, 선택한 CCTV라면 배정될 최근접 활성 소방서입니다.
+                    {liveMode
+                      ? '실전 모드에서 무응답 60초가 지나면 이 최근접 활성 소방서로 자동 119 신고(mock-119)가 전송됩니다.'
+                      : '실제 119 신고 없이, 선택한 CCTV라면 배정될 최근접 활성 소방서입니다.'}
                   </p>
                 </div>
               </div>
@@ -440,7 +476,22 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
             </section>
           )}
 
-          {job && !TERMINAL_STATES.has(job.status) && (
+          {job && !TERMINAL_STATES.has(job.status) && isLiveJob && (
+            <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-4 space-y-2">
+              <div className="flex items-center gap-2 text-red-600">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <p className="text-body-sm font-bold">실전 파이프라인으로 영상 전송 중</p>
+              </div>
+              <p className="text-caption-sm text-mute">
+                {selectedCctv?.name || `CCTV #${job.cctv_no}`} · {job.sample_name}
+              </p>
+              <p className="text-caption-sm font-semibold text-red-600">
+                화재가 확정되면 실제 텔레그램 알림이 발송됩니다.
+              </p>
+            </div>
+          )}
+
+          {job && !TERMINAL_STATES.has(job.status) && !isLiveJob && (
             <div className={`rounded-xl border px-4 py-4 space-y-2 ${job.phase === 'DETECTING' ? 'border-amber-500/40 bg-amber-500/10' : job.phase === 'DISMISSED' ? 'border-slate-400/40 bg-slate-500/10' : 'border-red-500/30 bg-red-500/10'}`}>
               <div className={`flex items-center gap-2 ${job.phase === 'DETECTING' ? 'text-amber-700' : job.phase === 'DISMISSED' ? 'text-slate-600' : 'text-red-600'}`}>
                 {job.alarm_triggered ? <Siren className="w-5 h-5 animate-pulse" /> : <Loader2 className="w-5 h-5 animate-spin" />}
@@ -514,7 +565,34 @@ function VideoTestModal({ isOpen, onClose, cctvs = [], onStatus, onDecision }) {
             </div>
           )}
 
-          {runState === 'success' && finalResult && (
+          {runState === 'success' && isLiveJob && (
+            job.phase === 'FIRE_CONFIRMED' ? (
+              <section className="space-y-2 rounded-xl border border-red-500/40 bg-red-500/10 p-4">
+                <p className="flex items-center gap-2 text-body-sm font-bold text-red-600">
+                  <Siren className="w-4 h-4 shrink-0" />
+                  화재 확정{job.event_no != null && ` · 이벤트 #${job.event_no}`} — 실제 텔레그램 알림 발송됨
+                </p>
+                <p className="text-caption-sm text-red-600">
+                  관리자가 응답하지 않으면 60초 후 자동 119 신고(mock-119)가 전송됩니다.
+                </p>
+                <p className="text-caption-sm text-mute">
+                  이후 진행 상황은 관제 배너와 mock-119 접수 콘솔에서 확인하세요.
+                </p>
+              </section>
+            ) : (
+              <section className="space-y-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+                <p className="flex items-center gap-2 text-body-sm font-bold text-emerald-700">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  화재 미확정 — 알림 없음
+                </p>
+                <p className="text-caption-sm text-mute">
+                  실전 파이프라인에서 화재 확정 기준에 도달하지 않아 텔레그램 알림과 119 신고가 발생하지 않았습니다.
+                </p>
+              </section>
+            )
+          )}
+
+          {runState === 'success' && !isLiveJob && finalResult && (
             <section className="space-y-3 rounded-xl border border-hairline bg-surface-soft p-4">
               <div className="flex items-center justify-between gap-3">
                 <h4 className="text-body-sm font-bold text-ink flex items-center gap-2">

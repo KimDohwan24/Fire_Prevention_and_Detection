@@ -322,3 +322,170 @@ def test_run_sample_rejects_invalid_cctv_number(client, admin_headers, tmp_path,
 
     assert response.status_code == 400
     assert response.get_json()["field"] == "cctv_no"
+
+
+# ---------- 실전 모드(live) ----------
+#
+# live=true 면 모의 판정(validate_video.py) 대신 run_video.py --send 를 돌려서
+# 검출이 실검출 API(POST /api/internal/detections)로 들어간다 — 실제 텔레그램
+# 알림과 무응답 시 119 신고까지 이어지는 경로다. run_video.py 는 진행상황
+# 콜백이 없으므로 최종 stdout 의 "event_no=NN" 한 줄로만 결과를 판정한다.
+
+def _setup_live_env(tmp_path, monkeypatch):
+    """AI 실행 환경(가짜 파이썬 + run_video.py + 샘플)을 만든다."""
+    model_root = tmp_path / "ai-model"
+    sample_root = model_root / "samples"
+    sample_root.mkdir(parents=True)
+    sample_path = sample_root / "fire_test.mp4"
+    sample_path.write_bytes(b"sample")
+    python_path = model_root / ".venv" / "Scripts" / "python.exe"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_bytes(b"python")
+    (model_root / "run_video.py").write_text("# fake", encoding="utf-8")
+    script_path = model_root / "validate_video.py"
+    script_path.write_text("# fake", encoding="utf-8")
+    monkeypatch.setattr(config, "AI_MODEL_ROOT", model_root)
+    monkeypatch.setattr(config, "AI_PYTHON", python_path)
+    monkeypatch.setattr(config, "AI_VALIDATE_SCRIPT", script_path)
+    return model_root, sample_path
+
+
+def test_run_sample_rejects_non_boolean_live(client, admin_headers, tmp_path, monkeypatch):
+    """live 는 boolean 만 받는다 — 문자열 "true" 같은 값은 400."""
+    (tmp_path / "samples").mkdir()
+    (tmp_path / "samples" / "fire_test.mp4").write_bytes(b"sample")
+    monkeypatch.setattr(config, "AI_MODEL_ROOT", tmp_path)
+
+    response = client.post(
+        "/api/video-tests/run-sample",
+        json={"sample_name": "fire_test.mp4", "cctv_no": 1, "live": "true"},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["field"] == "live"
+
+
+def test_live_run_builds_run_video_send_command_and_confirms(
+    client, admin_headers, tmp_path, monkeypatch,
+):
+    """live=true: run_video.py --send 명령이 구성되고, stdout 의 event_no 로 확정 처리."""
+    model_root, sample_path = _setup_live_env(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=">>> 화재 확정 CONFIRMED  event_no=61\n",
+        )
+
+    monkeypatch.setattr("services.video_test_runner.subprocess.run", fake_run)
+
+    response = client.post(
+        "/api/video-tests/run-sample",
+        json={"sample_name": "fire_test.mp4", "cctv_no": 2, "live": True},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 202
+    job = response.get_json()
+    assert job["live"] is True
+
+    completed = _wait_for_terminal(client, job["job_id"], admin_headers)
+    assert completed["status"] == "SUCCEEDED"
+    assert completed["phase"] == "FIRE_CONFIRMED"
+    assert completed["alarm_triggered"] is True
+    assert completed["event_no"] == 61
+    assert completed["finished_at"] is not None
+
+    command = captured["command"]
+    assert command[0] == str(config.AI_PYTHON)
+    assert command[1] == str(model_root / "run_video.py")
+    assert "--send" in command
+    assert command[command.index("--video") + 1] == str(sample_path.resolve())
+    assert command[command.index("--cctv-no") + 1] == "2"
+    assert command[command.index("--api") + 1] == f"http://127.0.0.1:{config.APP_PORT}"
+    assert captured["kwargs"]["cwd"] == str(model_root)
+    # run_video.py 는 X-Internal-Key 를 --key > 환경변수 > 루트 .env 순으로 찾는다
+    assert captured["kwargs"]["env"]["INTERNAL_API_KEY"] == config.INTERNAL_API_KEY
+
+
+def test_live_run_without_event_no_is_dismissed(
+    client, admin_headers, tmp_path, monkeypatch,
+):
+    """stdout 에 event_no 가 없으면(확정 미달) DISMISSED 로 끝난다."""
+    _setup_live_env(tmp_path, monkeypatch)
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="검출 없음 — 판정 종료\n")
+
+    monkeypatch.setattr("services.video_test_runner.subprocess.run", fake_run)
+
+    response = client.post(
+        "/api/video-tests/run-sample",
+        json={"sample_name": "fire_test.mp4", "cctv_no": 1, "live": True},
+        headers=admin_headers,
+    )
+    assert response.status_code == 202
+
+    completed = _wait_for_terminal(client, response.get_json()["job_id"], admin_headers)
+    assert completed["status"] == "SUCCEEDED"
+    assert completed["phase"] == "DISMISSED"
+    assert completed["alarm_triggered"] is False
+    assert completed["event_no"] is None
+
+
+def test_live_run_nonzero_exit_fails_with_stdout_tail(
+    client, admin_headers, tmp_path, monkeypatch,
+):
+    """run_video.py 가 0 이 아닌 코드로 죽으면 FAILED + stdout 꼬리가 에러 메시지."""
+    _setup_live_env(tmp_path, monkeypatch)
+
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="Traceback: 모델 로드 실패\n")
+
+    monkeypatch.setattr("services.video_test_runner.subprocess.run", fake_run)
+
+    response = client.post(
+        "/api/video-tests/run-sample",
+        json={"sample_name": "fire_test.mp4", "cctv_no": 1, "live": True},
+        headers=admin_headers,
+    )
+    assert response.status_code == 202
+
+    completed = _wait_for_terminal(client, response.get_json()["job_id"], admin_headers)
+    assert completed["status"] == "FAILED"
+    assert completed["error"]["code"] == "AI_PROCESS_FAILED"
+    assert "모델 로드 실패" in completed["error"]["message"]
+
+
+def test_run_sample_without_live_keeps_mock_path(
+    client, admin_headers, tmp_path, monkeypatch,
+):
+    """live 생략 시 기존 validate_video.py 경로 그대로다 — job 의 live 는 false."""
+    model_root, _ = _setup_live_env(tmp_path, monkeypatch)
+
+    def fake_run(command, **kwargs):
+        result_path = Path(command[command.index("--result-json") + 1])
+        result_path.write_text(json.dumps({
+            "event_no": 77, "result": "NO_FIRE", "cctv_no": 1,
+        }), encoding="utf-8")
+        assert command[1] == str(model_root / "validate_video.py")
+        return SimpleNamespace(returncode=0, stdout="AI output")
+
+    monkeypatch.setattr("services.video_test_runner.subprocess.run", fake_run)
+
+    response = client.post(
+        "/api/video-tests/run-sample",
+        json={"sample_name": "fire_test.mp4", "cctv_no": 1},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 202
+    job = response.get_json()
+    assert job["live"] is False
+
+    completed = _wait_for_terminal(client, job["job_id"], admin_headers)
+    assert completed["status"] == "SUCCEEDED"

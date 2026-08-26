@@ -9,7 +9,7 @@ openapi: 3.0.3
 
 info:
   title: 파이어가드 API
-  version: 0.12.0
+  version: 0.13.0
   description: |
     CCTV 화재 감지 → 관리자 알림 → 무응답 시 119 자동 신고·승계 백엔드 API.
 
@@ -2412,6 +2412,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              examples:
+                bad_progress:
+                  summary: progress 가 JSON 객체가 아님
+                  value:
+                    code: BAD_REQUEST
+                    message: progress는 JSON 객체여야 합니다.
+                    field: progress
+                bad_phase:
+                  summary: 지원하지 않는 진행 단계
+                  value:
+                    code: BAD_REQUEST
+                    message: 지원하지 않는 영상 테스트 진행 단계입니다.
+                    field: progress.phase
         "401":
           $ref: "#/components/responses/InternalUnauthorized"
         "404":
@@ -2420,6 +2433,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              example:
+                code: VIDEO_TEST_JOB_NOT_FOUND
+                message: 영상 테스트 작업을 찾을 수 없습니다.
 
   # ---------------------------------------------------------------- 관리자 AI 영상 테스트
   /api/video-tests/samples:
@@ -2452,6 +2468,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              example:
+                code: SAMPLE_DIRECTORY_UNAVAILABLE
+                message: AI 샘플 영상 디렉터리를 찾을 수 없습니다.
 
   /api/video-tests/run-sample:
     post:
@@ -2477,6 +2496,12 @@ paths:
                   minimum: 1
                   description: 판정 결과를 연결할 등록 CCTV 번호
                   example: 8
+                live:
+                  type: boolean
+                  default: false
+                  description: >-
+                    true 면 모의 판정 대신 실전 파이프라인(run_video --send)으로 전송 —
+                    실제 텔레그램 알림과 무응답 시 119 신고가 발생한다
       responses:
         "202":
           description: 백그라운드 AI 영상 분석 작업 접수
@@ -2490,6 +2515,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              examples:
+                bad_cctv_no:
+                  summary: cctv_no 형식 오류
+                  value:
+                    code: BAD_REQUEST
+                    message: cctv_no는 1 이상의 정수여야 합니다.
+                    field: cctv_no
+                bad_live:
+                  summary: live 가 boolean 이 아님
+                  value:
+                    code: BAD_REQUEST
+                    message: live는 true 또는 false여야 합니다.
+                    field: live
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2500,24 +2538,46 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              examples:
+                sample_not_found:
+                  summary: 샘플 영상 없음
+                  value:
+                    code: SAMPLE_NOT_FOUND
+                    message: 선택한 샘플 영상을 찾을 수 없습니다.
+                    field: sample_name
+                cctv_not_found:
+                  summary: CCTV 없음
+                  value:
+                    code: CCTV_NOT_FOUND
+                    message: 카메라를 찾을 수 없습니다.
+                    field: cctv_no
         "502":
           description: AI 프로세스 또는 결과 오류
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              example:
+                code: AI_PROCESS_FAILED
+                message: AI 영상 분석 프로세스가 결과 없이 종료되었습니다.
         "503":
           description: AI 실행 환경을 사용할 수 없음
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              example:
+                code: AI_NOT_CONFIGURED
+                message: AI 실행 환경 또는 영상 분석 스크립트를 찾을 수 없습니다.
         "504":
           description: AI 영상 분석 시간 초과
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              example:
+                code: AI_TIMEOUT
+                message: AI 영상 분석 시간이 제한을 초과했습니다.
 
   /api/video-tests/jobs/{job_id}:
     get:
@@ -2549,6 +2609,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              example:
+                code: VIDEO_TEST_JOB_NOT_FOUND
+                message: 영상 테스트 작업을 찾을 수 없습니다.
 
   /api/video-tests/jobs/{job_id}/decision:
     post:
@@ -2595,6 +2658,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              example:
+                code: BAD_REQUEST
+                message: decision은 CONFIRM_FIRE 또는 DISMISS여야 합니다.
+                field: decision
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2605,12 +2672,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              example:
+                code: VIDEO_TEST_JOB_NOT_FOUND
+                message: 영상 테스트 작업을 찾을 수 없습니다.
         "409":
           description: 이미 종료되었거나 다른 판단이 반영됨
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+              examples:
+                already_finished:
+                  summary: 이미 종료된 테스트
+                  value:
+                    code: VIDEO_TEST_ALREADY_FINISHED
+                    message: 이미 종료된 영상 테스트는 판단을 변경할 수 없습니다.
+                decision_conflict:
+                  summary: 다른 관제자 판단이 먼저 반영됨
+                  value:
+                    code: VIDEO_TEST_DECISION_CONFLICT
+                    message: 이미 다른 관제자 판단이 반영된 테스트입니다.
 
   # ---------------------------------------------------------------- 시스템
   /api/health:
@@ -2659,6 +2740,41 @@ paths:
               schema:
                 type: string
                 format: binary
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /media/video-tests/samples/{filename}:
+    get:
+      tags: [system]
+      summary: AI 테스트용 샘플 영상 서빙
+      description: |
+        `ai-model/samples` 안의 샘플 영상 파일을 그대로 내려준다.
+        영상 테스트 화면의 `<video src>` 가 쓰는 경로로,
+        샘플 목록 응답의 `preview_url` 값이 곧 이 경로다.
+
+        `/media/{filename}` 과 같은 이유로 인증을 걸지 않는다 —
+        브라우저의 `<video>` 태그는 `Authorization` 헤더를 붙일 수 없다.
+        저장 루트 바깥을 노리는 경로(`../`)는 404 로 막힌다.
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          description: "`ai-model/samples` 기준 파일명"
+          schema:
+            type: string
+          example: fire_test.mp4
+      responses:
+        "200":
+          description: 영상 파일 본문
+          content:
             video/mp4:
               schema:
                 type: string
@@ -3929,6 +4045,11 @@ components:
           type: string
         cctv_no:
           type: integer
+        live:
+          type: boolean
+          description: >-
+            실전 파이프라인(run_video --send)으로 실행된 작업인지 —
+            true 면 실제 알림·119 신고가 발생하는 경로다
         event_no:
           type: integer
           format: int64
@@ -3975,8 +4096,16 @@ components:
           type: integer
           minimum: 1
         result:
-          $ref: "#/components/schemas/VideoTestResult"
           nullable: true
+          description: >-
+            모의 판정 작업은 VideoTestResult, 실전(live) 작업은
+            run_video stdout 꼬리 요약({stdout_tail})
+          oneOf:
+            - $ref: "#/components/schemas/VideoTestResult"
+            - type: object
+              properties:
+                stdout_tail:
+                  type: string
         error:
           $ref: "#/components/schemas/Error"
           nullable: true

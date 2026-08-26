@@ -475,10 +475,12 @@ export const videoTestApi = {
     return await request('/video-tests/samples');
   },
 
-  runSample: async ({ sample_name, cctv_no }) => {
+  // live: true 면 모의 판정 대신 실전 파이프라인으로 전송된다(실제 텔레그램 알림 + 119 자동 신고).
+  // 기본 false — 기존 호출부는 body 가 그대로 유지된다.
+  runSample: async ({ sample_name, cctv_no, live = false }) => {
     return await request('/video-tests/run-sample', {
       method: 'POST',
-      body: JSON.stringify({ sample_name, cctv_no }),
+      body: JSON.stringify({ sample_name, cctv_no, ...(live ? { live: true } : {}) }),
     });
   },
 
