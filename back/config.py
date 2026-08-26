@@ -139,6 +139,12 @@ ESCALATION_INTERVAL_SEC = int(os.getenv("ESCALATION_INTERVAL_SEC", "5"))
 MAX_REPORT_ATTEMPTS = int(os.getenv("MAX_REPORT_ATTEMPTS", "1"))
 # 119 신고: 기관 endpoint HTTP 전송 타임아웃(초)
 REPORT_HTTP_TIMEOUT_SEC = float(os.getenv("REPORT_HTTP_TIMEOUT_SEC", "3"))
+# 영상 테스트에서 관제자가 CONFIRM_FIRE 를 눌렀을 때만 쓰는 모의 접수 주소.
+# 실제 119 신고(start_report)의 기관 선택·report_119 기록과 분리한다.
+MOCK119_TEST_ENDPOINT = os.getenv(
+    "MOCK119_TEST_ENDPOINT",
+    "http://127.0.0.1:8119/report?mode=ok&station=test",
+)
 
 # 119 신고에서 시도할 최대 기관 수 (가까운 순).
 #   1 = 가장 가까운 한 곳에만 신고하고 끝낸다 — 기관 승계 없음. **기본값**

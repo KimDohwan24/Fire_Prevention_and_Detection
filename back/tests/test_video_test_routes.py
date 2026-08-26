@@ -271,6 +271,11 @@ def test_operator_can_decide_after_first_detection(
             "FIRE_CONFIRMED" if decision == "CONFIRM_FIRE" else "DISMISSED"
         )
         assert decided["alarm_triggered"] is expected_alarm
+        if decision == "CONFIRM_FIRE":
+            assert decided["test_report"]["report_status"] == "ACCEPTED"
+            assert decided["test_report"]["report_external_id"] == "MOCK-OK"
+        else:
+            assert decided["test_report"] is None
 
         event = db.query_one(
             "SELECT event_status, event_source_metadata FROM fire_event WHERE event_no = %s",
