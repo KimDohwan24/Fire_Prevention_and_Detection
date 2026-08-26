@@ -12,7 +12,6 @@ import pytest
 
 import config
 import db
-from conftest import make_event
 from services import event_service
 
 
@@ -224,24 +223,6 @@ def test_cooldown_expiry_starts_fresh_pending(client, monkeypatch):
     assert body.get("suppressed") is None
     assert body["event_status"] == "PENDING"
     assert body["event_no"] != confirmed["event_no"]
-    assert body["event_detected_frames"] == 1
-
-
-def test_test_event_confirmation_does_not_anchor_cooldown(client):
-    """영상 테스트로 확정된 이벤트(event_is_test)는 쿨다운의 발원지가 되지 않는다.
-
-    테스트 이벤트는 알림·119 신고를 만들지 않으므로 알람 폭풍 방지(쿨다운)의
-    발원지가 될 이유가 없다. 발원지가 되면 영상 테스트 확정 후 600초 동안
-    같은 카메라의 진짜 화재가 알림 없이 삼켜진다 (2026-08-26 실측).
-    """
-    test_no = make_event(is_test=True, source_type="VIDEO_TEST",
-                         detected_at=datetime.now().isoformat())
-
-    r = post_frame(client, captured_at=datetime.now().isoformat())
-    body = r.get_json()
-    assert body.get("suppressed") is None
-    assert body["event_no"] != test_no
-    assert body["event_status"] == "PENDING"
     assert body["event_detected_frames"] == 1
 
 

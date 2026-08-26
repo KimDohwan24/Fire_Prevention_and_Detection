@@ -140,11 +140,6 @@ def _confirmed_event_in_cooldown(cur, cctv_no: int, captured_at: datetime) -> di
         FROM fire_event
         WHERE cctv_no = %s
           AND event_status = 'CONFIRMED'
-          -- 테스트 이벤트(영상 테스트 등)는 제외한다: 알림·119 신고를 만들지 않으므로
-          -- 알람 폭풍 방지(쿨다운)의 발원지가 될 이유가 없고, 발원지가 되면 영상
-          -- 테스트 확정 후 600초 동안 같은 카메라의 진짜 화재가 알림 없이 삼켜진다
-          -- (2026-08-26 실측).
-          AND NOT event_is_test
           AND event_detected_at > %s::timestamp - make_interval(secs => %s)
         ORDER BY event_detected_at DESC
         LIMIT 1

@@ -22,18 +22,12 @@ def run_video_test_sample():
     body = request.get_json(silent=True) or {}
     sample_name = body.get("sample_name")
     cctv_no = body.get("cctv_no")
-    live = body.get("live", False)
 
     if isinstance(cctv_no, bool) or not isinstance(cctv_no, int) or cctv_no < 1:
         raise ApiError(400, "BAD_REQUEST", "cctv_no는 1 이상의 정수여야 합니다.",
                        field="cctv_no")
-    # live=true 면 모의 판정 대신 실전 파이프라인(run_video --send)으로 돈다 —
-    # 실제 알림·119 신고가 나가는 스위치라 "true" 같은 어중간한 값은 받지 않는다.
-    if not isinstance(live, bool):
-        raise ApiError(400, "BAD_REQUEST", "live는 true 또는 false여야 합니다.",
-                       field="live")
 
-    job = video_test_runner.start_sample(sample_name, cctv_no, live=live)
+    job = video_test_runner.start_sample(sample_name, cctv_no)
     return jsonify(job), 202
 
 
