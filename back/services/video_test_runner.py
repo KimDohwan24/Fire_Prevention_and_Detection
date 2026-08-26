@@ -112,6 +112,7 @@ def _new_job(job_id: str, sample_name: str, cctv_no: int) -> dict:
         "operator_user_no": None,
         "operator_decided_at": None,
         "operator_reason": None,
+        "test_report": None,
     }
 
 
@@ -467,7 +468,7 @@ def decide(job_id: str, decision: str, user_no: int, reason: str = "") -> dict:
         event_no = job["event_no"]
 
     from services import video_test_service
-    video_test_service.apply_video_test_operator_decision(
+    decision_result = video_test_service.apply_video_test_operator_decision(
         event_no, decision, user_no, reason
     )
 
@@ -481,5 +482,6 @@ def decide(job_id: str, decision: str, user_no: int, reason: str = "") -> dict:
             "human_review_required": False,
             "phase": "FIRE_CONFIRMED" if decision == "CONFIRM_FIRE" else "DISMISSED",
             "alarm_triggered": decision == "CONFIRM_FIRE",
+            "test_report": decision_result.get("test_report"),
         })
         return _public_job(job)

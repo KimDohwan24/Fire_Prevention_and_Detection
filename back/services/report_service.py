@@ -66,6 +66,23 @@ def nearest_agencies(cctv_no: int) -> list[dict]:
 #    INSERT 가 유니크 위반(23505)으로 터진다. 바꿀 때는 db/schema.sql 도 같이 바꾼다.
 ACTIVE_STATUSES = ("SENDING", "ACCEPTED", "DISPATCHED")
 
+_REPORT_EVENT_SQL = """
+    SELECT e.event_no, e.event_class, e.event_confidence, e.event_is_test,
+           e.event_first_detected_at, e.event_detected_frames,
+           e.event_threshold_frames,
+           c.cctv_no, c.cctv_name, c.cctv_location, c.cctv_address,
+           c.cctv_lat, c.cctv_lng, c.cctv_stream_url,
+           c.cctv_width, c.cctv_height, c.cctv_status
+    FROM fire_event e
+    JOIN cctv c ON c.cctv_no = e.cctv_no
+    WHERE e.event_no = %s
+"""
+
+
+def _load_report_event(event_no: int) -> dict | None:
+    """119 payload 조립에 필요한 이벤트·CCTV 정보를 읽는다."""
+    return db.query_one(_REPORT_EVENT_SQL, (event_no,))
+
 
 def report_uid(event_no: int) -> str:
     """119 에 보내는 신고 ID — 화재(이벤트) 하나에 하나.
@@ -171,6 +188,115 @@ def _primary_frame(event_no: int) -> tuple[str | None, list | None]:
     if content is None:
         return None, None
     return base64.b64encode(content).decode("ascii"), detections
+
+
+def _test_report_payload(event: dict) -> dict:
+    """영상 테스트용 mock-119 접수 payload를 만든다.
+
+    테스트 신고는 실제 기관 선택·report_119 장부와 분리하지만, mock-119 접수
+    화면에서 실제 신고와 같은 형태로 보이도록 기존 119 payload 구조를 따른다.
+    """
+    image_base64, image_detections = _primary_frame(event["event_no"])
+    confidence = event.get("event_confidence")
+    lat = event.get("cctv_lat")
+    lng = event.get("cctv_lng")
+    return {
+        "report_uid": f"FG-TEST-{event['event_no']}",
+        "event_no": event["event_no"],
+        "address": _report_address(event),
+        "place": event.get("cctv_location"),
+        "lat": None if lat is None else float(lat),
+        "lng": None if lng is None else float(lng),
+        "event_class": event.get("event_class"),
+        "confidence": None if confidence is None else float(confidence),
+        "first_detected_at": (
+            event["event_first_detected_at"].isoformat(timespec="seconds")
+            if event.get("event_first_detected_at") else None
+        ),
+        "reported_at": datetime.now().isoformat(timespec="seconds"),
+        "image_base64": image_base64,
+        "image_detections": image_detections,
+        "callback_url": f"{config.PUBLIC_BASE_URL}/api/reports/dispatch",
+        "cctv": {
+            "cctv_no": event["cctv_no"],
+            "name": event.get("cctv_name"),
+            "location": event.get("cctv_location"),
+            "address": event.get("cctv_address"),
+            "lat": None if lat is None else float(lat),
+            "lng": None if lng is None else float(lng),
+            "stream_url": event.get("cctv_stream_url"),
+            "width": event.get("cctv_width"),
+            "height": event.get("cctv_height"),
+            "status": event.get("cctv_status"),
+        },
+        "detection": {
+            "frames": event.get("event_detected_frames"),
+            "threshold_frames": event.get("event_threshold_frames"),
+        },
+        "agency": {
+            "name": "mock-119 (영상 테스트)",
+            "distance_km": None,
+        },
+    }
+
+
+def send_test_report(event_no: int) -> dict | None:
+    """영상 테스트 확정 결과를 mock-119에만 전송한다.
+
+    실제 운영 신고인 :func:`start_report`와 달리 ``report_119`` 행을 만들거나
+    관할기관을 고르지 않는다. 테스트 이벤트가 아닌 이벤트에는 안전을 위해
+    전송하지 않는다.
+    """
+    event = _load_report_event(event_no)
+    if event is None:
+        logger.warning("테스트 신고 불가 — 이벤트 없음 (event_no=%s)", event_no)
+        return None
+    if not event["event_is_test"]:
+        logger.warning("테스트 신고 생략 — 테스트 이벤트가 아님 (event_no=%s)", event_no)
+        return None
+
+    endpoint = config.MOCK119_TEST_ENDPOINT
+    payload = _test_report_payload(event)
+    try:
+        response = _post_report(endpoint, payload)
+    except requests.exceptions.RequestException as exc:
+        logger.warning("테스트 mock-119 연결 실패 (event_no=%s): %s", event_no, exc)
+        return {
+            "report_status": "FAILED",
+            "report_endpoint": endpoint,
+            "report_http_status": None,
+            "report_error": str(exc)[:500],
+        }
+
+    http_status = response.status_code
+    try:
+        response_body = response.json()
+    except (ValueError, AttributeError):
+        response_body = None
+
+    if 200 <= http_status < 300:
+        external_id = (
+            response_body.get("external_id")
+            if isinstance(response_body, dict) else None
+        )
+        logger.info("테스트 mock-119 접수 확인 (event_no=%s, external_id=%s)",
+                    event_no, external_id)
+        return {
+            "report_status": "ACCEPTED",
+            "report_endpoint": endpoint,
+            "report_http_status": http_status,
+            "report_external_id": external_id,
+            "report_response": response_body,
+        }
+
+    logger.warning("테스트 mock-119 접수 거절 (event_no=%s, status=%s)",
+                   event_no, http_status)
+    return {
+        "report_status": "FAILED",
+        "report_endpoint": endpoint,
+        "report_http_status": http_status,
+        "report_response": response_body,
+    }
 
 
 def _find_active_report(event_no: int) -> dict | None:
@@ -395,20 +521,7 @@ def start_report(event_no: int, trigger_reason: str) -> dict | None:
     - 반환: 최종 신고 정보 dict. 점검 모드 이벤트/이벤트 없음/활성 기관 없음이면 None.
     - 멱등: 이미 진행 중(SENDING/ACCEPTED) 신고가 있으면 그 정보를 그대로 돌려준다.
     """
-    event = db.query_one(
-        """
-        SELECT e.event_no, e.event_class, e.event_confidence, e.event_is_test,
-               e.event_first_detected_at, e.event_detected_frames,
-               e.event_threshold_frames,
-               c.cctv_no, c.cctv_name, c.cctv_location, c.cctv_address,
-               c.cctv_lat, c.cctv_lng, c.cctv_stream_url,
-               c.cctv_width, c.cctv_height, c.cctv_status
-        FROM fire_event e
-        JOIN cctv c ON c.cctv_no = e.cctv_no
-        WHERE e.event_no = %s
-        """,
-        (event_no,),
-    )
+    event = _load_report_event(event_no)
     if event is None:
         logger.warning("신고 불가 — 이벤트 없음 (event_no=%s)", event_no)
         return None

@@ -6,6 +6,7 @@
 """
 import io
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,8 @@ from PIL import Image, UnidentifiedImageError
 import config
 import db
 from errors import ApiError
+
+logger = logging.getLogger("fireguard.video_test")
 
 MAX_EVIDENCE_IMAGES = 3
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -514,6 +517,20 @@ def apply_video_test_operator_decision(event_no: int, decision: str,
         result = dict(cur.fetchone())
         result["cctv_name"] = event["cctv_name"]
         result["operator_decision"] = decision
+
+    if decision == "CONFIRM_FIRE":
+        from services import report_service
+
+        try:
+            result["test_report"] = report_service.send_test_report(event_no)
+        except Exception as exc:  # noqa: BLE001
+            # 테스트 판정 저장은 성공했으므로 mock 서버 장애가 판정 자체를
+            # 실패시키지 않게 하고, API 응답에 전송 실패를 남긴다.
+            logger.exception("테스트 mock-119 신고 전송 실패 (event_no=%s)", event_no)
+            result["test_report"] = {
+                "report_status": "FAILED",
+                "report_error": str(exc)[:500],
+            }
 
     # 사람의 판단은 사용자 활동이력에도 별도로 남긴다.
     from services import activity_service
