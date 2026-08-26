@@ -405,7 +405,7 @@ function FireAlertProvider({ children }) {
     return nextAlert;
   }, []);
 
-  const recordTestDecision = useCallback((decision, job) => {
+  const recordTestDecision = useCallback((decision, job, reason = '') => {
     const isSameTestJob = Boolean(
       activeAlert?.isTest
       && (!job?.job_id || activeAlert.job_id === job.job_id),
@@ -417,6 +417,7 @@ function FireAlertProvider({ children }) {
       : job;
     const nextAlert = reportTestJob(jobWithAssignment);
     const isConfirm = decision === 'CONFIRM_FIRE';
+    const isAutoDecision = reason === '60초 무응답 자동 신고';
     const cctvName = nextAlert?.cctv_name || `CCTV #${jobWithAssignment?.cctv_no ?? '-'}`;
 
     appendLocalActivityLog({
@@ -425,8 +426,12 @@ function FireAlertProvider({ children }) {
       activity_type: isConfirm ? 'FIRE_CONFIRMED' : 'FIRE_DISMISSED',
       time: new Date().toISOString(),
       type: isConfirm ? 'fire' : 'false_alarm',
-      title: isConfirm ? '영상 테스트 119 신고(테스트)' : '영상 테스트 오탐 처리',
-      detail: `${cctvName} - ${isConfirm ? '관제자 119 신고 모의 처리' : '관제자 오탐 처리'}`,
+      title: isConfirm
+        ? isAutoDecision ? '영상 테스트 119 신고(무응답 자동)' : '영상 테스트 119 신고(테스트)'
+        : '영상 테스트 오탐 처리',
+      detail: `${cctvName} - ${isConfirm
+        ? isAutoDecision ? '60초 무응답 자동 신고 모의 처리' : '관제자 119 신고 모의 처리'
+        : '관제자 오탐 처리'}`,
     });
     setActionNotice(isConfirm
       ? `${cctvName} 화재 확정 테스트가 반영되었습니다.`
@@ -434,13 +439,19 @@ function FireAlertProvider({ children }) {
     return nextAlert;
   }, [activeAlert, currentUserNo, reportTestJob]);
 
-  const decideTest = useCallback(async (decision) => {
-    if (!activeAlert?.isTest || !activeAlert.job_id || activeAlert.severity !== 'detecting' || isActionLoading) return;
+  const decideTest = useCallback(async (decision, reason = '') => {
+    if (
+      !activeAlert?.isTest
+      || !activeAlert.job_id
+      || activeAlert.event_no == null
+      || activeAlert.operator_decision
+      || isActionLoading
+    ) return;
     setIsActionLoading(true);
     setActionNotice(null);
     try {
-      const job = await videoTestApi.decide(activeAlert.job_id, decision);
-      recordTestDecision(decision, job);
+      const job = await videoTestApi.decide(activeAlert.job_id, decision, reason);
+      recordTestDecision(decision, job, reason);
     } catch (error) {
       setActionNotice(error?.message || '테스트 판정을 반영하지 못했습니다.');
     } finally {

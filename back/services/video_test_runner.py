@@ -455,8 +455,15 @@ def decide(job_id: str, decision: str, user_no: int, reason: str = "") -> dict:
     with _jobs_lock:
         job = _get_job(job_id)
         if job["status"] in {"SUCCEEDED", "FAILED"}:
-            raise ApiError(409, "VIDEO_TEST_ALREADY_FINISHED",
-                           "이미 종료된 영상 테스트는 판단을 변경할 수 없습니다.")
+            can_confirm_unanswered_test = (
+                job["status"] == "SUCCEEDED"
+                and decision == "CONFIRM_FIRE"
+                and job.get("event_no")
+                and not job.get("operator_decision")
+            )
+            if not can_confirm_unanswered_test:
+                raise ApiError(409, "VIDEO_TEST_ALREADY_FINISHED",
+                               "이미 종료된 영상 테스트는 판단을 변경할 수 없습니다.")
         if not job.get("event_no"):
             raise ApiError(409, "VIDEO_TEST_DETECTION_NOT_READY",
                            "최초 화염 감지 후에 관제자 판단을 할 수 있습니다.")
