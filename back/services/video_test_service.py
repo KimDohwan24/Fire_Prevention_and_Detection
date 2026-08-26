@@ -494,12 +494,17 @@ def apply_video_test_operator_decision(event_no: int, decision: str,
             raise ApiError(409, "VIDEO_TEST_DECISION_CONFLICT",
                            "이미 다른 관제자 판단이 반영된 테스트 이벤트입니다.")
 
+        clean_reason = reason.strip() if isinstance(reason, str) else ""
         metadata.update({
             "operator_decision": decision,
             "operator_user_no": user_no,
             "operator_decided_at": now.isoformat(),
-            "operator_reason": reason.strip() if isinstance(reason, str) else "",
-            "decision_source": "HUMAN",
+            "operator_reason": clean_reason,
+            "decision_source": (
+                "AUTO_TIMEOUT"
+                if clean_reason == "60초 무응답 자동 신고"
+                else "HUMAN"
+            ),
         })
         status = "CONFIRMED" if decision == "CONFIRM_FIRE" else "DISMISSED"
         detected_at = now if decision == "CONFIRM_FIRE" else None

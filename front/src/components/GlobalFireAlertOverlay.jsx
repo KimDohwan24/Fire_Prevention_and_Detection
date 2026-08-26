@@ -1,7 +1,10 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Flame, Siren, X } from 'lucide-react';
 import EventDetailModal from './dashboard/EventDetailModal';
 import { useFireAlert } from '../context/FireAlertContext';
+
+const TEST_AUTO_REPORT_DELAY_MS = 60 * 1000;
+const TEST_AUTO_REPORT_REASON = '60초 무응답 자동 신고';
 
 function GlobalFireAlertOverlay() {
   const {
@@ -17,6 +20,58 @@ function GlobalFireAlertOverlay() {
     setActionNotice,
     setSelectedEvent,
   } = useFireAlert();
+  const [autoReportSecondsLeft, setAutoReportSecondsLeft] = useState(null);
+  const decideTestRef = useRef(decideTest);
+  const autoReportAttemptedJobRef = useRef(null);
+
+  useEffect(() => {
+    decideTestRef.current = decideTest;
+  }, [decideTest]);
+
+  useEffect(() => {
+    const jobId = activeAlert?.job_id;
+    const eventNo = activeAlert?.event_no;
+    const timerKey = jobId && eventNo != null ? `${jobId}:${eventNo}` : null;
+    const shouldAutoReport = Boolean(
+      activeAlert?.isTest
+      && timerKey
+      && !activeAlert?.operator_decision,
+    );
+
+    if (
+      !shouldAutoReport
+      || isActionLoading
+      || autoReportAttemptedJobRef.current === timerKey
+    ) {
+      setAutoReportSecondsLeft(null);
+      return undefined;
+    }
+
+    const startedAt = Date.now();
+    const delaySeconds = TEST_AUTO_REPORT_DELAY_MS / 1000;
+    setAutoReportSecondsLeft(delaySeconds);
+
+    const countdownTimer = window.setInterval(() => {
+      const elapsedMs = Date.now() - startedAt;
+      const secondsLeft = Math.max(
+        0,
+        Math.ceil((TEST_AUTO_REPORT_DELAY_MS - elapsedMs) / 1000),
+      );
+      setAutoReportSecondsLeft(secondsLeft);
+      if (secondsLeft <= 0) window.clearInterval(countdownTimer);
+    }, 1000);
+
+    const autoReportTimer = window.setTimeout(() => {
+      autoReportAttemptedJobRef.current = timerKey;
+      setAutoReportSecondsLeft(0);
+      decideTestRef.current?.('CONFIRM_FIRE', TEST_AUTO_REPORT_REASON);
+    }, TEST_AUTO_REPORT_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(autoReportTimer);
+      window.clearInterval(countdownTimer);
+    };
+  }, [activeAlert?.event_no, activeAlert?.isTest, activeAlert?.job_id, activeAlert?.operator_decision, isActionLoading]);
 
   const isDetecting = activeAlert?.severity === 'detecting';
   const isDismissed = activeAlert?.severity === 'dismissed';
@@ -113,6 +168,12 @@ function GlobalFireAlertOverlay() {
                     </button>
                   </>
                 ) : null}
+
+                {isTest && autoReportSecondsLeft != null && (
+                  <div className="w-full rounded-lg bg-white/15 px-3 py-1.5 text-center text-xs font-semibold text-white sm:w-auto">
+                    무응답 자동 신고까지 {autoReportSecondsLeft}초
+                  </div>
+                )}
 
                 <button
                   type="button"
