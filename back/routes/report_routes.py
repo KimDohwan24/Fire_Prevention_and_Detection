@@ -25,6 +25,9 @@ logger = logging.getLogger("fireguard.report")
 # 신고 ID 형식 — report_service.report_uid() 가 만드는 "FG-{event_no}"
 REPORT_UID_RE = re.compile(r"^FG-(\d+)$")
 
+# 영상 테스트 신고 ID — report_service.send_test_report() 가 만드는 "FG-TEST-{event_no}"
+TEST_REPORT_UID_RE = re.compile(r"^FG-TEST-(\d+)$")
+
 
 @bp.get("")
 @login_required
@@ -101,6 +104,18 @@ def receive_dispatch():
     body = request.get_json(silent=True) or {}
 
     uid = body.get("report_uid")
+
+    # 영상 테스트의 모의 신고(FG-TEST-*)는 장부(report_119)에 행이 없다 —
+    # send_test_report 가 의도적으로 안 만든다. 저장·승격 없이 수신만 확인해
+    # 주고, 콘솔이 "출동 접수됨 · 시각"을 그릴 수 있게 시각을 돌려준다.
+    if isinstance(uid, str) and (t := TEST_REPORT_UID_RE.fullmatch(uid)):
+        logger.info("영상 테스트 출동 통지 수신 — DB 미기록 (event_no=%s, 기관=%s)",
+                    int(t.group(1)), body.get("agency_name"))
+        return jsonify({
+            "report_dispatched_at": datetime.now().isoformat(),
+            "test": True,
+        })
+
     matched = REPORT_UID_RE.fullmatch(uid) if isinstance(uid, str) else None
     if matched is None:
         raise ApiError(400, "BAD_REQUEST",

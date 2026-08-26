@@ -207,6 +207,42 @@ def test_keeps_unknown_fields(client):
     assert dispatch["commander"] == "김소방"
 
 
+# ---------- 영상 테스트 통지 ----------
+
+def test_acknowledges_test_report_without_touching_db(client):
+    """FG-TEST-<n> 은 영상 테스트의 모의 신고다 — 장부(report_119)에 없다.
+
+    send_test_report 가 의도적으로 행을 만들지 않으므로 저장·승격할 대상이 없다.
+    수신만 확인해 주고, 콘솔이 "출동 접수됨 · 시각"을 그릴 시각을 돌려준다.
+    """
+    event_no = make_event()
+    report_no = make_report(event_no, status="ACCEPTED")
+    before = db.query_one("SELECT count(*) AS cnt FROM report_119")["cnt"]
+
+    r = client.post(URL, headers=agency_headers(),
+                    json=dispatch_body(event_no,
+                                       report_uid=f"FG-TEST-{event_no}"))
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["test"] is True
+    assert body["report_dispatched_at"] is not None
+
+    # DB 는 일절 건드리지 않는다 — 행 수 그대로, 같은 이벤트의 실제 신고도 그대로
+    after = db.query_one("SELECT count(*) AS cnt FROM report_119")["cnt"]
+    assert after == before
+    assert get_report(report_no)["report_status"] == "ACCEPTED"
+
+
+def test_rejects_test_uid_with_non_numeric_tail(client):
+    """'FG-TEST-abc' 는 테스트 통지도 실제 신고도 아니다 — 400."""
+    r = client.post(URL, headers=agency_headers(),
+                    json={"report_uid": "FG-TEST-abc"})
+
+    assert r.status_code == 400
+    assert r.get_json()["field"] == "report_uid"
+
+
 # ---------- 진행 중 정의 ----------
 
 def test_dispatched_report_blocks_new_report(monkeypatch):
