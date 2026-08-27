@@ -34,9 +34,12 @@ MEDIA_URL_PREFIX = "/media/"
 def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
     """검출 상자(bbox)를 이미지에 그려 넣는다 — 보는 쪽이 좌표를 몰라도 되게.
 
-    좌표는 media_detections 의 YOLO xywhn(중심 x·y, 폭, 높이 — 0~1 비율).
-    화재 클래스(flame/smoke)만 그린다. 어떤 이유로든 실패하면 원본을 그대로
-    돌려준다 — 이미지 때문에 신고나 알림이 막히면 안 된다.
+    media_detections 에는 두 형식이 실제로 들어온다 (키는 둘 다 "bbox"):
+    - 영상 테스트 경로: [cx, cy, w, h] 0~1 비율, "bbox_format": "xywhn"
+    - 라이브 검출 경로: [x1, y1, x2, y2] 픽셀 (bbox_format 없음)
+    bbox_format 이 없으면 값의 크기로 가른다 — 전부 1 이하면 xywhn 비율,
+    아니면 픽셀 xyxy. 화재 클래스(flame/smoke)만 그린다. 어떤 이유로든
+    실패하면 원본을 그대로 돌려준다 — 이미지 때문에 신고나 알림이 막히면 안 된다.
     """
     try:
         from PIL import Image, ImageDraw
@@ -57,12 +60,16 @@ def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
         for det in detections or []:
             if not isinstance(det, dict) or det.get("cls") not in ("flame", "smoke"):
                 continue
-            box = det.get("box") or []
+            box = det.get("bbox") or det.get("box") or []
             if len(box) != 4:
                 continue
-            cx, cy, w, h = (float(v) for v in box)
-            x1, y1 = (cx - w / 2) * width, (cy - h / 2) * height
-            x2, y2 = (cx + w / 2) * width, (cy + h / 2) * height
+            values = [float(v) for v in box]
+            if det.get("bbox_format") == "xywhn" or max(values) <= 1.0:
+                cx, cy, w, h = values
+                x1, y1 = (cx - w / 2) * width, (cy - h / 2) * height
+                x2, y2 = (cx + w / 2) * width, (cy + h / 2) * height
+            else:
+                x1, y1, x2, y2 = values
             draw.rectangle([x1, y1, x2, y2], outline=(220, 30, 30),
                            width=max(2, width // 300))
             drew = True

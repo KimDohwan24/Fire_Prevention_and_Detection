@@ -90,6 +90,43 @@ def test_reads_the_primary_frame_and_not_some_other_one(media_root):
     assert image is not None
 
 
+# ---------- 실제 저장 형식 두 가지 ----------
+# 운영 DB 의 media_detections 는 "box" 가 아니라 "bbox" 키다.
+# - 영상 테스트 경로(video_test_service): {"bbox": [cx,cy,w,h] 0~1, "bbox_format": "xywhn"}
+# - 라이브 경로(run_video → event_service): {"bbox": [x1,y1,x2,y2] 픽셀}
+
+def set_detections(event_no, detections_json: str):
+    db.execute(
+        "UPDATE event_media SET media_detections = %s::jsonb WHERE event_no = %s",
+        (detections_json, event_no),
+    )
+
+
+def test_draws_boxes_for_video_test_detections(media_root):
+    """영상 테스트가 저장하는 형식(bbox 키 + xywhn)으로도 상자가 그려진다."""
+    event_no = make_event()
+    write_black_jpeg(media_root, f"events/{event_no}/frame.jpg")
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/frame.jpg")
+    set_detections(event_no, '[{"cls":"flame","conf":0.91,'
+                             '"bbox":[0.5,0.5,0.2,0.2],"bbox_format":"xywhn"}]')
+
+    image, _ = event_frame.load_primary_frame(event_no)
+
+    assert red_pixels(image), "영상 테스트 형식(bbox+xywhn)의 상자가 그려지지 않았다"
+
+
+def test_draws_boxes_for_live_pixel_detections(media_root):
+    """라이브 경로가 저장하는 형식(bbox 키 + 픽셀 xyxy)으로도 상자가 그려진다."""
+    event_no = make_event()
+    write_black_jpeg(media_root, f"events/{event_no}/frame.jpg")
+    make_media(event_no, is_primary=True, url=f"/media/events/{event_no}/frame.jpg")
+    set_detections(event_no, '[{"cls":"flame","conf":0.91,"bbox":[20,20,80,80]}]')
+
+    image, _ = event_frame.load_primary_frame(event_no)
+
+    assert red_pixels(image), "라이브 형식(bbox+픽셀 xyxy)의 상자가 그려지지 않았다"
+
+
 # ---------- 실패해도 값으로만 알린다 ----------
 
 def test_returns_nothing_when_the_event_has_no_media(media_root):
