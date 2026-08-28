@@ -7,6 +7,7 @@ import pytest
 
 import config
 import db
+from services import video_test_service
 
 
 def _headers():
@@ -241,3 +242,97 @@ def test_rejects_invalid_result_statistics(client):
 
     assert response.status_code == 400
     assert response.get_json()["field"] == "result"
+
+
+# ---------- 대표프레임(media_is_primary) 경쟁 — 실제 경로와 같은 규칙 ----------
+#
+# 두 경로(event_service.process_detection / video_test_service)가 같은 함수
+# (event_service.promote_primary_if_higher)를 쓴다는 걸 행동으로 증명한다:
+# "지금까지 최고 media_confidence 프레임이 대표" (동률이면 기존 유지),
+# PEAK 역할이라서 강제로 대표가 되는 경로는 없다.
+
+def _progress_detection(job_id, *, frame_index, confidence, media_url):
+    """DETECTING 단계 진행 프레임 1장을 임시 이벤트로 적재한다."""
+    return video_test_service.register_video_test_detection(
+        job_id=job_id,
+        sample_name="fire_test.mp4",
+        cctv_no=1,
+        started_at="2026-08-19T10:00:00",
+        progress={
+            "phase": "DETECTING",
+            "frame_index": frame_index,
+            "offset_sec": 2.0,
+            "event_class": "FLAME",
+            "confidence": confidence,
+            "processed_frames": frame_index,
+            "positive_frames": 1,
+            "threshold_frames": 10,
+            "first_detected_offset_sec": 2.0,
+            "detections": [_detection(confidence)],
+        },
+        media_url=media_url,
+    )
+
+
+def _primary_media_row(event_no):
+    rows = db.query(
+        "SELECT media_url, media_frame_index, media_is_primary "
+        "FROM event_media WHERE event_no = %s AND media_is_primary",
+        (event_no,),
+    )
+    assert len(rows) == 1, "대표 프레임은 항상 정확히 1건이어야 한다"
+    return rows[0]
+
+
+def test_progress_frame_outranks_lower_confidence_peak_evidence(client):
+    """진행 프레임(conf 0.9)이 최종 PEAK 증거(conf 0.85)보다 높으면 대표는
+    여전히 진행 프레임이다 — PEAK 이면 무조건 대표를 강제하던 구 로직이면
+    이 검증이 깨진다.
+    """
+    job_id = "b" * 32
+    progress = _progress_detection(
+        job_id, frame_index=60, confidence=0.9,
+        media_url="/media/video-tests/jobs/b32/progress_60.jpg",
+    )
+
+    manifest = fire_manifest()
+    manifest["job_id"] = job_id
+    manifest["statistics"]["max_confidence"] = 0.85
+    manifest["evidence"][2]["confidence"] = 0.85
+    manifest["evidence"][2]["detections"] = [_detection(0.85)]
+
+    images = {f"evidence_{index}": _jpeg(color)
+              for index, color in enumerate(("red", "orange", "yellow"))}
+    response = post_manifest(client, manifest, images=images)
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["event_no"] == progress["event_no"]
+
+    primary = _primary_media_row(body["event_no"])
+    assert primary["media_url"] == progress["media_url"]
+    assert primary["media_frame_index"] == 60
+
+
+def test_peak_evidence_outranks_progress_frame_by_higher_confidence(client):
+    """반대로 PEAK 증거(conf 0.95)가 진행 프레임(conf 0.5)보다 높으면 PEAK
+    프레임이 대표가 된다 — 역할 때문이 아니라 경쟁 결과로서.
+    """
+    job_id = "c" * 32
+    _progress_detection(
+        job_id, frame_index=60, confidence=0.5,
+        media_url="/media/video-tests/jobs/c32/progress_60.jpg",
+    )
+
+    manifest = fire_manifest()
+    manifest["job_id"] = job_id  # PEAK 증거 conf 0.95 (fire_manifest 기본값)
+
+    images = {f"evidence_{index}": _jpeg(color)
+              for index, color in enumerate(("red", "orange", "yellow"))}
+    response = post_manifest(client, manifest, images=images)
+
+    assert response.status_code == 201
+    body = response.get_json()
+
+    primary = _primary_media_row(body["event_no"])
+    assert primary["media_frame_index"] == 900

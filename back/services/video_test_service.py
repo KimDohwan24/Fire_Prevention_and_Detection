@@ -16,7 +16,7 @@ from PIL import Image, UnidentifiedImageError
 import config
 import db
 from errors import ApiError
-from services import event_frame
+from services import event_frame, event_service
 
 logger = logging.getLogger("fireguard.video_test")
 
@@ -449,13 +449,18 @@ def register_video_test_detection(*, job_id: str, sample_name: str,
                     media_captured_at, media_is_primary, media_is_first,
                     media_frame_index, media_source_offset_sec
                 )
-                VALUES (%s, %s, %s::jsonb, %s, %s, true, true, %s, %s)
+                VALUES (%s, %s, %s::jsonb, %s, %s, false, true, %s, %s)
+                RETURNING media_no
                 """,
                 (
                     event_no, media_url, json.dumps(detections, ensure_ascii=False),
                     confidence, first_at, progress.get("frame_index"), first_offset,
                 ),
             )
+            media_no = cur.fetchone()["media_no"]
+            # 대표 경쟁: 실제 경로(event_service)와 같은 규칙·같은 함수를 쓴다.
+            # 이 이벤트의 첫 행이므로 결과는 그대로 대표가 된다.
+            event_service.promote_primary_if_higher(cur, event_no, media_no, confidence or 0)
 
     return {
         "event_no": event_no,
@@ -873,18 +878,17 @@ def create_video_test(manifest: dict, uploads) -> dict:
                     continue
 
                 if item["frame_index"] in existing_frame_indexes:
-                    if "CONFIRMATION" in roles or "PEAK" in roles:
+                    # media_is_primary 는 여기서 건드리지 않는다 — 그 행의 confidence 는
+                    # 이미 적재 시점에 promote_primary_if_higher 경쟁을 거쳤다. PEAK
+                    # 역할이라고 다시 대표를 강제하면 경쟁 결과가 뒤집힌다.
+                    if "CONFIRMATION" in roles:
                         cur.execute(
                             """
                             UPDATE event_media
-                            SET media_is_confirmation = media_is_confirmation OR %s,
-                                media_is_primary = media_is_primary OR %s
+                            SET media_is_confirmation = media_is_confirmation OR %s
                             WHERE event_no = %s AND media_frame_index = %s
                             """,
-                            (
-                                "CONFIRMATION" in roles, "PEAK" in roles,
-                                event_no, item["frame_index"],
-                            ),
+                            (True, event_no, item["frame_index"]),
                         )
                     continue
 
@@ -898,11 +902,8 @@ def create_video_test(manifest: dict, uploads) -> dict:
                     images[item["file_field"]], item["detections"]))
                 media_url = f"/media/video-tests/{event_no}/{filename}"
                 captured_at = data["started_at"] + timedelta(seconds=item["offset_sec"])
-                if "PEAK" in roles:
-                    cur.execute(
-                        "UPDATE event_media SET media_is_primary = false WHERE event_no = %s",
-                        (event_no,),
-                    )
+                # media_is_primary 는 role 로 강제하지 않는다 — false 로 넣고 실제
+                # 경로와 같은 경쟁 함수에 맡긴다(지금까지 최고 conf 프레임이 대표).
                 cur.execute(
                     """
                     INSERT INTO event_media (
@@ -911,15 +912,20 @@ def create_video_test(manifest: dict, uploads) -> dict:
                         media_is_confirmation, media_frame_index,
                         media_source_offset_sec
                     )
-                    VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s::jsonb, %s, %s, false, %s, %s, %s, %s)
+                    RETURNING media_no
                     """,
                     (
                         event_no, media_url,
                         json.dumps(item["detections"], ensure_ascii=False),
-                        item["confidence"], captured_at, "PEAK" in roles,
+                        item["confidence"], captured_at,
                         "FIRST" in roles, "CONFIRMATION" in roles,
                         item["frame_index"], item["offset_sec"],
                     ),
+                )
+                media_no = cur.fetchone()["media_no"]
+                event_service.promote_primary_if_higher(
+                    cur, event_no, media_no, item["confidence"]
                 )
 
             cur.execute(

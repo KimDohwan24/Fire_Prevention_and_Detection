@@ -150,6 +150,37 @@ def _confirmed_event_in_cooldown(cur, cctv_no: int, captured_at: datetime) -> di
     return dict(row) if row else None
 
 
+def promote_primary_if_higher(cur, event_no: int, media_no: int, frame_conf: float) -> None:
+    """지금까지 최고 media_confidence 프레임이 대표(media_is_primary)가 되도록 갈아끼운다.
+
+    규칙: 새 프레임의 conf 가 현재 대표보다 **엄격히 높을 때만** 교체한다(`<` 비교).
+    동률이면 기존 대표를 유지한다 — 먼저 대표가 된 프레임이 이긴다. 대표가 아직
+    없으면(이 이벤트의 첫 프레임) 조건 없이 대표가 된다.
+
+    실시간 수집(CCTV_LIVE)과 영상 테스트(VIDEO_TEST) 두 경로가 이 함수 하나를
+    공유한다 — 규칙이 코드 두 벌로 갈라지면 한쪽만 고치는 순간 어긋난다.
+    media_no 행은 호출 전에 이미 INSERT 돼 있어야 한다(이 함수는 UPDATE 만 한다).
+    """
+    cur.execute(
+        """
+        SELECT media_confidence FROM event_media
+        WHERE event_no = %s AND media_is_primary
+        """,
+        (event_no,),
+    )
+    primary = cur.fetchone()
+    if primary is None or float(primary["media_confidence"] or 0) < frame_conf:
+        cur.execute(
+            "UPDATE event_media SET media_is_primary = false "
+            "WHERE event_no = %s AND media_is_primary",
+            (event_no,),
+        )
+        cur.execute(
+            "UPDATE event_media SET media_is_primary = true WHERE media_no = %s",
+            (media_no,),
+        )
+
+
 def _save_frame_media(cur, event_no: int, media_url: str | None,
                       detections: list, frame_conf: float, captured_at: datetime) -> int:
     """프레임 1장을 event_media 에 적재하고 필요하면 대표 이미지를 교체한다.
@@ -175,25 +206,7 @@ def _save_frame_media(cur, event_no: int, media_url: str | None,
     if media_url is not None:
         event_frame.annotate_media_file(media_url, detections)
 
-    # 대표 이미지: 지금까지 최고 신뢰도 프레임이 대표가 되도록 같은 트랜잭션에서 교체
-    cur.execute(
-        """
-        SELECT media_confidence FROM event_media
-        WHERE event_no = %s AND media_is_primary
-        """,
-        (event_no,),
-    )
-    primary = cur.fetchone()
-    if primary is None or float(primary["media_confidence"] or 0) < frame_conf:
-        cur.execute(
-            "UPDATE event_media SET media_is_primary = false "
-            "WHERE event_no = %s AND media_is_primary",
-            (event_no,),
-        )
-        cur.execute(
-            "UPDATE event_media SET media_is_primary = true WHERE media_no = %s",
-            (media_no,),
-        )
+    promote_primary_if_higher(cur, event_no, media_no, frame_conf)
     return media_no
 
 

@@ -6,9 +6,11 @@
 소방서로 간 사진과 사용자가 받은 사진에 상자가 다르게 그려지는 상황이 생긴다.
 
 **conf 가 가장 높은 프레임을 여기서 고르지 않는다.** event_media.media_is_primary 가
-이미 그 프레임을 가리킨다 — 프레임이 들어올 때마다 services/event_service.py 가
-더 높은 conf 면 대표를 갈아끼운다. 여기서 다시 고르면 두 곳이 서로 다른 기준으로
-'대표'를 정하게 되고, 한쪽만 고치는 순간 어긋난다.
+이미 그 프레임을 가리킨다 — 프레임이 들어올 때마다 services/event_service.py 의
+promote_primary_if_higher 가 더 높은 conf 면 대표를 갈아끼운다. 실시간 수집과
+영상 테스트(services/video_test_service.py)가 이 함수 하나를 같이 쓰므로 두 경로의
+'대표' 기준은 항상 같다. 여기서 다시 고르면 그 규칙을 세 번째로 복제하게 되고,
+한쪽만 고치는 순간 어긋난다.
 
 **돌려주는 것은 base64 가 아니라 바이트다.** 텔레그램 sendPhoto 는 multipart 로
 파일을 올리므로 base64 를 다시 풀어야 하고, 119 신고만 JSON 페이로드라 base64 가

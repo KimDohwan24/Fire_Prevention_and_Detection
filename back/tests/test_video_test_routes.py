@@ -12,6 +12,8 @@ import db
 import pytest
 from PIL import Image
 
+from services import video_test_service
+
 
 def _wait_for_terminal(client, job_id, headers):
     current = None
@@ -335,6 +337,45 @@ def test_progress_image_without_detections_is_saved_as_is(tmp_path, monkeypatch)
 
     saved = (tmp_path / Path(url.removeprefix("/media/"))).read_bytes()
     assert saved == original
+
+
+def test_register_video_test_detection_makes_first_frame_primary(client):
+    """최초 감지 프레임 단독 적재 시 대표가 된다 (기존 동작 유지).
+
+    실제 경로와 같은 경쟁 함수(event_service.promote_primary_if_higher)를 타므로,
+    대표 행이 없는 상태에서 프레임을 하나 넣으면 그 프레임이 그대로 대표가 된다.
+    """
+    result = video_test_service.register_video_test_detection(
+        job_id="d" * 32,
+        sample_name="fire_test.mp4",
+        cctv_no=1,
+        started_at="2026-08-19T10:00:00",
+        progress={
+            "phase": "DETECTING",
+            "frame_index": 10,
+            "offset_sec": 1.0,
+            "event_class": "FLAME",
+            "confidence": 0.6,
+            "processed_frames": 10,
+            "positive_frames": 1,
+            "threshold_frames": 10,
+            "first_detected_offset_sec": 1.0,
+            "detections": [{
+                "cls": "flame", "conf": 0.6,
+                "bbox": [0.5, 0.5, 0.25, 0.4], "bbox_format": "xywhn",
+            }],
+        },
+        media_url="/media/video-tests/jobs/d32/progress_10.jpg",
+    )
+
+    media = db.query_one(
+        "SELECT media_is_primary, media_is_first, media_confidence "
+        "FROM event_media WHERE event_no = %s",
+        (result["event_no"],),
+    )
+    assert media["media_is_primary"] is True
+    assert media["media_is_first"] is True
+    assert float(media["media_confidence"]) == pytest.approx(0.6)
 
 
 def test_run_sample_rejects_unknown_sample(client, admin_headers, tmp_path, monkeypatch):
