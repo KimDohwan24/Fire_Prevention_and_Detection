@@ -13,6 +13,7 @@ conf 가 가장 높은 프레임을 고르는 일은 여기서 하지 않는다 
 들어올 때마다 대표를 갈아끼운다).
 """
 import io
+from pathlib import Path
 
 import pytest
 from conftest import make_event, make_media
@@ -273,3 +274,74 @@ def test_a_normal_nested_path_still_works(media_root):
     image, _ = event_frame.load_primary_frame(event_no)
 
     assert image is not None
+
+
+# ---------- 수집 시점 덮어쓰기 (annotate_media_file) ----------
+# 실제(CCTV_LIVE) 수집 경로: POST /api/internal/detections 로 들어온 프레임을
+# event_media 에 적재할 때 디스크 파일 자체에 상자를 그려 넣는다. 이후 /media/
+# 서빙과 119/알림 전송이 모두 이 파일을 그대로 읽는다.
+
+def test_annotate_media_file_overwrites_with_detection_boxes(media_root):
+    """검출기 원본 형식(픽셀 xyxy, bbox_format 마커 없음)으로 파일을 덮어쓴다."""
+    path = write_black_jpeg(media_root, "events/1/frame.jpg")
+    original = path.read_bytes()
+
+    event_frame.annotate_media_file(
+        "/media/events/1/frame.jpg",
+        [{"cls": "flame", "conf": 0.9, "bbox": [10, 20, 60, 80]}],
+    )
+
+    updated = path.read_bytes()
+    assert updated != original
+    assert red_pixels(updated), "검출 상자 선이 그려지지 않았다"
+
+
+def test_annotate_media_file_skips_rewrite_when_nothing_to_draw(media_root, monkeypatch):
+    """화재 클래스가 없으면 재인코딩·쓰기 자체를 생략한다 (파일이 그대로 유지되는 걸
+    확인하는 것만으로는 '건드리지 않았다'를 증명하지 못하므로 쓰기 호출 여부까지 본다).
+    """
+    path = write_black_jpeg(media_root, "events/1/frame.jpg")
+    original = path.read_bytes()
+    write_calls = []
+    real_write_bytes = Path.write_bytes
+
+    def spy_write_bytes(self, data):
+        write_calls.append(self)
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", spy_write_bytes)
+
+    event_frame.annotate_media_file(
+        "/media/events/1/frame.jpg",
+        [{"cls": "person", "conf": 0.8, "bbox": [10, 20, 60, 80]}],
+    )
+
+    assert write_calls == []
+    assert path.read_bytes() == original
+
+
+def test_annotate_media_file_is_a_noop_when_the_file_is_missing(media_root):
+    """디스크에 파일이 없어도 예외 없이 조용히 반환한다."""
+    event_frame.annotate_media_file("/media/events/1/ghost.jpg", [FLAME])  # raise 하지 않음
+
+
+def test_annotate_media_file_is_a_noop_for_unexpected_url_shape(media_root):
+    """"/media/" 로 시작하지 않으면 우리가 해석할 수 있는 값이 아니다 — MEDIA_ROOT 밖에
+    새 파일을 만들지 않는다.
+    """
+    event_frame.annotate_media_file("https://example.com/frame.jpg", [FLAME])
+
+    assert list(media_root.rglob("*")) == []
+
+
+def test_annotate_media_file_traversal_url_touches_nothing(media_root, tmp_path):
+    """/media/../<파일> 로 MEDIA_ROOT 바깥을 노리는 값은 거절한다 — 대상 파일이
+    생기거나 바뀌지 않는다.
+    """
+    secret = tmp_path.parent / "secret_annotate.txt"
+    secret.write_bytes(b"top secret")
+    before = secret.read_bytes()
+
+    event_frame.annotate_media_file(f"/media/../{secret.name}", [FLAME])
+
+    assert secret.read_bytes() == before

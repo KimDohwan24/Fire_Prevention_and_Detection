@@ -114,6 +114,37 @@ def draw_detections(content: bytes, detections: list | None) -> bytes:
         return content
 
 
+def resolve_media_path(media_url: str) -> Path | None:
+    """media_url("/media/<상대경로>")을 디스크 경로로 해석한다.
+
+    두 단계를 확인한다:
+      1. 접두어 — 정본 형태가 아니면 우리가 해석할 수 있는 값이 아니다. 접두어를
+         떼지 않고 그대로 열면 MEDIA_ROOT 바깥 파일을 읽거나 쓰게 된다.
+      2. MEDIA_ROOT 탈출 — 접두어 확인만으로는 부족하다. "/media/../.." 는
+         접두어를 통과한 뒤 MEDIA_ROOT 바깥을 가리킨다. media_url 은 AI 모델이
+         내부 검출 API 로 보내는 값이고(services/event_service.py 의
+         _normalize_media_url 은 "/" 로 시작하면 그대로 통과시킨다), 실제로
+         개발 DB 에 그런 행이 남아 있었다.
+
+    호출자가 이 경로로 읽은 바이트는 **바깥으로 나간다**(텔레그램 사진, 119 신고
+    페이로드) — 이 구멍은 '엉뚱한 그림이 간다'가 아니라 '서버 파일이 유출된다'에
+    가깝다. 쓰기 쪽(annotate_media_file)에서는 반대로 MEDIA_ROOT 밖 파일을
+    **덮어쓰는** 구멍이 된다. 서빙 라우트(routes/media_routes.py)는
+    send_from_directory 의 safe_join 이 막아 주지만 여기는 파일을 직접 여니
+    스스로 막아야 한다.
+
+    형식이 안 맞거나 MEDIA_ROOT 밖이면 None — 호출자가 그 사정에 맞는 로그를 남기고
+    조용히 포기한다.
+    """
+    if not isinstance(media_url, str) or not media_url.startswith(MEDIA_URL_PREFIX):
+        return None
+    root = Path(config.MEDIA_ROOT).resolve()
+    target = (root / media_url[len(MEDIA_URL_PREFIX):]).resolve()
+    if not target.is_relative_to(root):
+        return None
+    return target
+
+
 def load_primary_frame(event_no: int) -> tuple[bytes | None, list | None]:
     """대표 프레임의 이미지 바이트(검출 상자를 그린)와 검출 좌표를 가져온다.
 
@@ -131,26 +162,10 @@ def load_primary_frame(event_no: int) -> tuple[bytes | None, list | None]:
         return None, None
 
     url = row["media_url"]
-    if not url.startswith(MEDIA_URL_PREFIX):
-        # 정본 형태가 아니면 우리가 해석할 수 있는 값이 아니다. 접두어를 떼지 않고
-        # 그대로 열면 MEDIA_ROOT 바깥 파일을 읽게 된다.
-        logger.warning("대표 프레임 경로 형식이 예상과 다름 — 이미지 없이 진행 "
-                       "(event_no=%s, url=%s)", event_no, url)
-        return None, None
-    # 접두어 확인만으로는 부족하다 — "/media/../.." 는 접두어를 통과한 뒤 MEDIA_ROOT
-    # 바깥을 가리킨다. media_url 은 AI 모델이 내부 검출 API 로 보내는 값이고
-    # (services/event_service.py 의 _normalize_media_url 은 "/" 로 시작하면 그대로
-    # 통과시킨다), 실제로 개발 DB 에 그런 행이 남아 있었다.
-    #
-    # 여기서 읽은 바이트는 **바깥으로 나간다** — 텔레그램 사진과 119 신고 페이로드다.
-    # 즉 이 구멍은 '엉뚱한 그림이 간다'가 아니라 '서버 파일이 유출된다'에 가깝다.
-    # 서빙 라우트(routes/media_routes.py)는 send_from_directory 의 safe_join 이
-    # 막아 주지만 여기는 파일을 직접 여니 스스로 막아야 한다.
-    root = Path(config.MEDIA_ROOT).resolve()
-    target = (root / url[len(MEDIA_URL_PREFIX):]).resolve()
-    if not target.is_relative_to(root):
-        logger.warning("대표 프레임 경로가 MEDIA_ROOT 를 벗어남 — 이미지 없이 진행 "
-                       "(event_no=%s, url=%s)", event_no, url)
+    target = resolve_media_path(url)
+    if target is None:
+        logger.warning("대표 프레임 경로 형식이 예상과 다르거나 MEDIA_ROOT 를 벗어남 — "
+                       "이미지 없이 진행 (event_no=%s, url=%s)", event_no, url)
         return None, None
     try:
         content = target.read_bytes()
@@ -160,3 +175,39 @@ def load_primary_frame(event_no: int) -> tuple[bytes | None, list | None]:
         return None, None
 
     return draw_detections(content, row["media_detections"]), row["media_detections"]
+
+
+def annotate_media_file(media_url: str, detections: list | None) -> None:
+    """수집 시점에 디스크 프레임 파일 자체를 검출 상자 그린 그림으로 덮어쓴다.
+
+    실제(CCTV_LIVE) 경로는 event_media 적재 때 이 함수를 한 번 호출해 두면
+    이후 /media/ 서빙과 119/알림 전송이 모두 같은(상자 있는) 그림을 보게 된다.
+    전송 시점의 draw_detections 재호출은 그대로 둔다 — 좌표가 같아 결과가
+    같고, 상자 없이 이미 저장된 기존 행과의 하위 호환이 필요하다.
+
+    이 모듈 전체가 지키는 성질 그대로: **이미지 때문에 검출 수집이 막히면
+    안 된다.** 경로 불량·파일 없음·읽기/쓰기 실패는 warning 로그 후 조용히
+    반환한다 — 절대 raise 하지 않는다.
+    """
+    target = resolve_media_path(media_url)
+    if target is None:
+        logger.warning("프레임 경로 형식이 예상과 다르거나 MEDIA_ROOT 를 벗어남 — "
+                       "상자 그리기 생략 (url=%s)", media_url)
+        return
+    try:
+        content = target.read_bytes()
+    except OSError as exc:
+        logger.warning("프레임 파일 읽기 실패 — 상자 그리기 생략 (url=%s): %s",
+                       media_url, exc)
+        return
+
+    drawn = draw_detections(content, detections)
+    if drawn == content:
+        # 그릴 것이 없었다 — 재인코딩·쓰기 자체를 생략한다(다시 인코딩하면
+        # 화질만 한 번 더 깎이고, 파일은 이미 원본과 같은 내용이다).
+        return
+    try:
+        target.write_bytes(drawn)
+    except OSError as exc:
+        logger.warning("프레임 파일 쓰기 실패 — 원본 파일 유지 (url=%s): %s",
+                       media_url, exc)

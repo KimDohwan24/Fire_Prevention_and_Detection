@@ -6,9 +6,11 @@ AI 모델이 프레임 1장의 검출 결과를 보낼 때마다:
 - 관측 창(EVENT_WINDOW_SEC) 안에서 임계 프레임 수에 도달하면 CONFIRMED + 확정 훅 호출
 - 창은 최초 감지 시각에 고정 — 미달인 채로 창이 닫힌 PENDING 은 DISMISSED 처리
 """
+import io
 from datetime import datetime, timedelta
 
 import pytest
+from PIL import Image
 
 import config
 import db
@@ -530,3 +532,59 @@ def test_pending_event_visible_in_public_list(client, admin_headers):
     items = r.get_json()["items"]
     assert [it["event_no"] for it in items] == [ev_no]
     assert items[0]["event_status"] == "PENDING"
+
+
+# ---------- 수집 시점 디스크 프레임 덮어쓰기 ----------
+# 실제(CCTV_LIVE) 경로에서 event_media 적재와 같은 트랜잭션 안에서 디스크의
+# 프레임 파일 자체에 검출 상자를 그려 넣는다(services/event_frame.annotate_media_file).
+# 이후 /media/ 서빙과 119/알림 전송이 모두 상자 있는 그림을 보게 된다.
+
+@pytest.fixture()
+def media_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    return tmp_path
+
+
+def write_black_jpeg(media_root, rel_path):
+    path = media_root / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (100, 100), (0, 0, 0)).save(path, "JPEG")
+    return path
+
+
+def red_pixels(content: bytes) -> list:
+    im = Image.open(io.BytesIO(content)).convert("RGB")
+    return [px for px in im.getdata() if px[0] > 150 and px[1] < 80 and px[2] < 80]
+
+
+def test_ingest_draws_detection_boxes_onto_the_disk_frame(client, media_root):
+    """검출기가 보내는 원본 형식(픽셀 xyxy, bbox_format 마커 없음)으로 디스크 파일이
+    그대로 덮어써진다.
+    """
+    path = write_black_jpeg(media_root, "events/raw/f001.jpg")
+    original = path.read_bytes()
+    detection = {"cls": "flame", "conf": 0.9, "bbox": [10, 20, 60, 80]}
+
+    r = post_frame(client, detections=[detection],
+                   captured_at="2026-08-08T14:30:00",
+                   media_url="/media/events/raw/f001.jpg")
+    assert r.status_code == 200
+
+    updated = path.read_bytes()
+    assert updated != original, "수집 시점에 디스크 파일에 상자가 그려지지 않았다"
+    assert red_pixels(updated)
+
+
+def test_ingest_still_works_when_the_frame_file_is_missing_on_disk(client, media_root):
+    """디스크에 프레임 파일이 없어도 이벤트 누적·응답은 정상 동작한다.
+
+    (이미지 때문에 본 일 — 여기서는 검출 수집 자체 — 이 막히면 안 된다는 원칙은
+    event_frame 모듈 전체가 지키는 성질이고, 수집 경계에서도 마찬가지다)
+    """
+    r = post_frame(client, captured_at="2026-08-08T14:30:00",
+                   media_url="/media/events/raw/ghost.jpg")
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["event_status"] == "PENDING"
+    assert body["event_detected_frames"] == 1

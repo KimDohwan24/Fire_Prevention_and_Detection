@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 
 import config
 import db
-from services import hooks
+from services import event_frame, hooks
 
 # 화재로 취급하는 검출 클래스 → 이벤트 클래스 표기
 FIRE_CLASSES = {"flame": "FLAME", "smoke": "SMOKE"}
@@ -168,6 +168,12 @@ def _save_frame_media(cur, event_no: int, media_url: str | None,
         (event_no, media_url, json.dumps(detections), frame_conf, captured_at),
     )
     media_no = cur.fetchone()["media_no"]
+
+    # 디스크의 프레임 파일 자체에 검출 상자를 그려 넣는다 — 이후 /media/ 서빙과
+    # 119/알림 전송이 모두 같은(상자 있는) 그림을 보게 된다. media_url 이 없으면
+    # 그릴 파일도 없다.
+    if media_url is not None:
+        event_frame.annotate_media_file(media_url, detections)
 
     # 대표 이미지: 지금까지 최고 신뢰도 프레임이 대표가 되도록 같은 트랜잭션에서 교체
     cur.execute(
