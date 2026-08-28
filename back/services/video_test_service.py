@@ -16,6 +16,7 @@ from PIL import Image, UnidentifiedImageError
 import config
 import db
 from errors import ApiError
+from services import event_frame
 
 logger = logging.getLogger("fireguard.video_test")
 
@@ -628,7 +629,11 @@ def _create_video_test_legacy(manifest: dict, uploads) -> dict:
                 filename = f"evidence_{index + 1}_frame_{item['frame_index']}.jpg"
                 target = target_dir / filename
                 written_paths.append(target)
-                target.write_bytes(images[item["file_field"]])
+                # 프론트 모달은 이 파일을 그대로 서빙받는다 — 저장 시점에 검출
+                # 상자를 그린다. 원본 프레임은 ai-model/samples 영상에 남아 있어
+                # 증거 원본성 문제는 없다.
+                target.write_bytes(event_frame.draw_detections(
+                    images[item["file_field"]], item["detections"]))
                 media_url = f"/media/video-tests/{event_no}/{filename}"
                 captured_at = data["started_at"] + timedelta(seconds=item["offset_sec"])
                 roles = set(item["roles"])
@@ -886,7 +891,11 @@ def create_video_test(manifest: dict, uploads) -> dict:
                 filename = f"evidence_{index + 1}_frame_{item['frame_index']}.jpg"
                 target = target_dir / filename
                 written_paths.append(target)
-                target.write_bytes(images[item["file_field"]])
+                # 프론트 모달은 이 파일을 그대로 서빙받는다 — 저장 시점에 검출
+                # 상자를 그린다. 원본 프레임은 ai-model/samples 영상에 남아 있어
+                # 증거 원본성 문제는 없다.
+                target.write_bytes(event_frame.draw_detections(
+                    images[item["file_field"]], item["detections"]))
                 media_url = f"/media/video-tests/{event_no}/{filename}"
                 captured_at = data["started_at"] + timedelta(seconds=item["offset_sec"])
                 if "PEAK" in roles:

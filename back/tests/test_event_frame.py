@@ -145,6 +145,85 @@ def test_keeps_the_original_when_there_is_nothing_to_draw(media_root):
     assert image == path.read_bytes()
 
 
+# ---------- 검출 좌표 형식 호환 (draw_detections) ----------
+# media_detections 에는 세대가 다른 세 형식이 섞여 있다:
+#   * "box"                      — 초기 실시간 수집 형식, xywhn(중심·폭·높이 0~1 비율)
+#   * "bbox" (형식 마커 없음)    — AI 검출기(detector.py) 원본, 픽셀 xyxy
+#   * "bbox" + "bbox_format": "xywhn" — 영상 테스트(video_test.py) 증거
+# 예전에는 "box" 만 읽어서 나머지 두 형식이 조용히 no-op 이 됐고, 119 사진과
+# 텔레그램 사진이 전부 상자 없는 맨 이미지로 나갔다. 어느 형식이든 그려져야 한다.
+
+def black_jpeg_bytes(size=(100, 100)) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", size, (0, 0, 0)).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+def test_draws_pixel_xyxy_bbox_from_the_detector():
+    """검출기 원본 형식: bbox = 픽셀 [x1, y1, x2, y2], 형식 마커 없음."""
+    original = black_jpeg_bytes()
+
+    out = event_frame.draw_detections(original, [
+        {"cls": "flame", "conf": 0.85, "bbox": [10, 20, 60, 80]},
+    ])
+
+    assert out != original, "픽셀 xyxy 검출인데 아무것도 그려지지 않았다"
+    assert red_pixels(out)
+
+
+def test_clamps_pixel_bbox_that_leaves_the_image():
+    """이미지 밖으로 나간 픽셀 좌표는 경계로 잘라서라도 그린다.
+
+    실측: event 69 의 bbox 는 원본 해상도 기준이라 리사이즈된 프레임을 넘을 수 있다.
+    """
+    original = black_jpeg_bytes()
+
+    out = event_frame.draw_detections(original, [
+        {"cls": "flame", "conf": 0.85, "bbox": [50, 50, 400, 500]},
+    ])
+
+    assert out != original
+    assert red_pixels(out)
+
+
+def test_draws_xywhn_bbox_with_format_marker():
+    """영상 테스트 증거 형식: bbox = [cx, cy, w, h] 비율 + bbox_format 마커."""
+    original = black_jpeg_bytes()
+
+    out = event_frame.draw_detections(original, [
+        {"cls": "smoke", "conf": 0.5, "bbox": [0.5, 0.5, 0.2, 0.2],
+         "bbox_format": "xywhn"},
+    ])
+
+    assert out != original
+    assert red_pixels(out)
+
+
+def test_still_draws_the_legacy_box_key():
+    """기존 "box" 키(xywhn 비율)는 하위 호환으로 계속 그린다."""
+    original = black_jpeg_bytes()
+
+    out = event_frame.draw_detections(original, [FLAME])
+
+    assert out != original
+    assert red_pixels(out)
+
+
+def test_skips_broken_or_non_fire_detections():
+    """못 읽는 검출은 건너뛰고, 그릴 것이 없으면 원본 바이트 그대로(재인코딩 금지)."""
+    original = black_jpeg_bytes()
+
+    out = event_frame.draw_detections(original, [
+        {"cls": "person", "conf": 0.9, "bbox": [10, 10, 50, 50]},   # 화재 클래스 아님
+        {"cls": "flame", "conf": 0.9, "bbox": [10, 10, 50]},        # 좌표가 4개가 아님
+        {"cls": "flame", "conf": 0.9, "bbox": [1, 2, 3, 4],
+         "bbox_format": "xyxyn"},                                    # 모르는 형식 마커
+        {"cls": "flame", "conf": 0.9},                               # 좌표 없음
+    ])
+
+    assert out == original
+
+
 # ---------- 경로 이탈 방어 ----------
 # media_url 은 AI 모델이 내부 검출 API 로 보내는 값이다(services/event_service.py 의
 # process_detection). "/" 로 시작하면 그대로 저장되므로 "/media/../.." 같은 값이

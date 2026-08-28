@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import config
 import db
 import pytest
+from PIL import Image
 
 
 def _wait_for_terminal(client, job_id, headers):
@@ -298,6 +299,42 @@ def test_operator_can_decide_after_first_detection(
 
     completed = _wait_for_terminal(client, job_id, admin_headers)
     assert completed["status"] == "SUCCEEDED"
+
+
+def test_progress_image_is_saved_with_detection_boxes(tmp_path, monkeypatch):
+    """진행상황 이미지는 디스크 원본이 그대로 서빙된다 — 저장 시점에 상자를 그린다.
+
+    load_primary_frame 쪽 그리기는 신고·알림 전송 경로만 지나므로, 프론트 모달이
+    보는 이 파일에는 저장 전에 그려 넣어야 상자가 보인다. 검출은 검출기 원본
+    형식(픽셀 xyxy)으로 들어온다.
+    """
+    from services import video_test_runner
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (0, 0, 0)).save(buffer, "JPEG")
+    original = buffer.getvalue()
+
+    url = video_test_runner._save_progress_image(
+        "a" * 32, 7, original,
+        detections=[{"cls": "flame", "conf": 0.9, "bbox": [5, 5, 40, 30]}],
+    )
+
+    saved = (tmp_path / Path(url.removeprefix("/media/"))).read_bytes()
+    assert saved != original, "저장된 진행상황 이미지에 검출 상자가 그려지지 않았다"
+
+
+def test_progress_image_without_detections_is_saved_as_is(tmp_path, monkeypatch):
+    """검출이 없으면 원본 바이트 그대로 저장한다 — 불필요한 재인코딩 금지."""
+    from services import video_test_runner
+    monkeypatch.setattr(config, "MEDIA_ROOT", str(tmp_path))
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (0, 0, 0)).save(buffer, "JPEG")
+    original = buffer.getvalue()
+
+    url = video_test_runner._save_progress_image("b" * 32, 3, original)
+
+    saved = (tmp_path / Path(url.removeprefix("/media/"))).read_bytes()
+    assert saved == original
 
 
 def test_run_sample_rejects_unknown_sample(client, admin_headers, tmp_path, monkeypatch):

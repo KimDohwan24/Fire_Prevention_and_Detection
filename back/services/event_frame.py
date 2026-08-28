@@ -31,12 +31,52 @@ logger = logging.getLogger("fireguard.media")
 MEDIA_URL_PREFIX = "/media/"
 
 
-def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
+def _pixel_rect(det: dict, width: int, height: int) -> tuple | None:
+    """검출 dict 하나에서 픽셀 사각형 (x1, y1, x2, y2) 를 뽑는다.
+
+    media_detections 에는 세대가 다른 세 형식이 섞여 있다:
+      * "box"                      — 초기 실시간 수집 형식, xywhn(중심·폭·높이 0~1 비율)
+      * "bbox" (형식 마커 없음)    — AI 검출기(ai-model detector.py) 원본, 픽셀 xyxy
+      * "bbox" + "bbox_format": "xywhn" — 영상 테스트(video_test.py) 증거
+    "box" 만 읽던 시절에는 나머지 두 형식이 조용히 no-op 이 됐고, 119 사진과
+    텔레그램 사진이 전부 상자 없는 맨 이미지로 나갔다.
+
+    모르는 형식·깨진 좌표는 None — 그 검출만 건너뛴다. 픽셀 좌표는 원본 해상도
+    기준이라 이미지 밖으로 나갈 수 있으므로 경계로 잘라서 그린다.
+    """
+    if "box" in det:
+        values, fmt = det.get("box"), "xywhn"
+    else:
+        values = det.get("bbox")
+        fmt = det.get("bbox_format")
+        if fmt is None:
+            fmt = "xyxy"  # 검출기 원본은 마커 없이 픽셀 좌표를 보낸다
+        elif fmt != "xywhn":
+            return None
+    if not isinstance(values, (list, tuple)) or len(values) != 4:
+        return None
+    try:
+        a, b, c, d = (float(v) for v in values)
+    except (TypeError, ValueError):
+        return None
+    if fmt == "xywhn":
+        x1, y1 = (a - c / 2) * width, (b - d / 2) * height
+        x2, y2 = (a + c / 2) * width, (b + d / 2) * height
+    else:
+        x1, y1, x2, y2 = a, b, c, d
+    x1, x2 = sorted((min(max(x1, 0), width - 1), min(max(x2, 0), width - 1)))
+    y1, y2 = sorted((min(max(y1, 0), height - 1), min(max(y2, 0), height - 1)))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def draw_detections(content: bytes, detections: list | None) -> bytes:
     """검출 상자(bbox)를 이미지에 그려 넣는다 — 보는 쪽이 좌표를 몰라도 되게.
 
-    좌표는 media_detections 의 YOLO xywhn(중심 x·y, 폭, 높이 — 0~1 비율).
-    화재 클래스(flame/smoke)만 그린다. 어떤 이유로든 실패하면 원본을 그대로
-    돌려준다 — 이미지 때문에 신고나 알림이 막히면 안 된다.
+    좌표 형식은 세 가지를 모두 받는다 (_pixel_rect 참고). 화재 클래스
+    (flame/smoke)만 그린다. 어떤 이유로든 실패하면 원본을 그대로 돌려준다 —
+    이미지 때문에 신고나 알림이 막히면 안 된다.
     """
     try:
         from PIL import Image, ImageDraw
@@ -57,13 +97,10 @@ def _draw_bboxes(content: bytes, detections: list | None) -> bytes:
         for det in detections or []:
             if not isinstance(det, dict) or det.get("cls") not in ("flame", "smoke"):
                 continue
-            box = det.get("box") or []
-            if len(box) != 4:
+            rect = _pixel_rect(det, width, height)
+            if rect is None:
                 continue
-            cx, cy, w, h = (float(v) for v in box)
-            x1, y1 = (cx - w / 2) * width, (cy - h / 2) * height
-            x2, y2 = (cx + w / 2) * width, (cy + h / 2) * height
-            draw.rectangle([x1, y1, x2, y2], outline=(220, 30, 30),
+            draw.rectangle(list(rect), outline=(220, 30, 30),
                            width=max(2, width // 300))
             drew = True
         if not drew:
@@ -122,4 +159,4 @@ def load_primary_frame(event_no: int) -> tuple[bytes | None, list | None]:
                        event_no, exc)
         return None, None
 
-    return _draw_bboxes(content, row["media_detections"]), row["media_detections"]
+    return draw_detections(content, row["media_detections"]), row["media_detections"]

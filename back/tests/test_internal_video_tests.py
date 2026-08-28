@@ -157,6 +157,24 @@ def test_fire_result_and_three_raw_evidence_images_are_saved(client, tmp_path):
         assert (tmp_path / relative).is_file()
 
 
+def test_saved_evidence_images_have_detection_boxes_drawn(client, tmp_path):
+    """증거 파일은 디스크 원본이 그대로 서빙되므로 저장 시점에 상자를 그린다.
+
+    검출은 xywhn 비율 + bbox_format 마커 형식이다. 원본 프레임은 ai-model/samples
+    의 영상에 그대로 남아 있어 저장본에 그려도 증거 원본성 문제는 없다.
+    """
+    original = _jpeg("black")
+    images = {f"evidence_{index}": original for index in range(3)}
+
+    response = post_manifest(client, fire_manifest(), images=images)
+
+    assert response.status_code == 201
+    for row in response.get_json()["media"]:
+        relative = row["media_url"].removeprefix("/media/")
+        saved = (tmp_path / relative).read_bytes()
+        assert saved != original, f"{row['media_url']} 에 검출 상자가 그려지지 않았다"
+
+
 def test_no_fire_without_detections_still_creates_dismissed_history(client):
     response = post_manifest(client, no_fire_manifest())
 

@@ -149,13 +149,20 @@ def _subprocess_error_message(output: str) -> str:
     return cleaned or "AI 영상 분석 프로세스가 결과 없이 종료되었습니다."
 
 
-def _save_progress_image(job_id: str, frame_index: int, image: bytes) -> str:
+def _save_progress_image(job_id: str, frame_index: int, image: bytes,
+                         detections: list | None = None) -> str:
     if not image or len(image) > MAX_PROGRESS_IMAGE_BYTES:
         raise ApiError(400, "BAD_REQUEST", "감지 증거 이미지는 10MB 이하 JPEG여야 합니다.",
                        field="image")
     if not image.startswith(b"\xff\xd8"):
         raise ApiError(400, "BAD_REQUEST", "감지 증거 이미지는 JPEG여야 합니다.",
                        field="image")
+
+    # 이 파일은 프론트 모달이 디스크 원본 그대로 서빙받는다 — 저장 시점에 검출
+    # 상자를 그려 넣어야 화면에 상자가 보인다. 원본 프레임은 ai-model/samples 의
+    # 영상에 남아 있으므로 저장본에 그려도 증거 원본성 문제는 없다.
+    from services import event_frame
+    image = event_frame.draw_detections(image, detections)
 
     target_dir = Path(config.MEDIA_ROOT) / "video-tests" / "jobs" / job_id
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -184,7 +191,8 @@ def _update_progress_legacy(job_id: str, progress: dict, image: bytes | None = N
             if isinstance(frame_index, bool) or not isinstance(frame_index, int) or frame_index < 0:
                 raise ApiError(400, "BAD_REQUEST", "frame_index는 0 이상의 정수여야 합니다.",
                                field="progress.frame_index")
-            media_url = _save_progress_image(job_id, frame_index, image)
+            media_url = _save_progress_image(job_id, frame_index, image,
+                                             progress.get("detections"))
 
         job.update({
             "status": "RUNNING",
@@ -389,7 +397,8 @@ def update_progress(job_id: str, progress: dict, image: bytes | None = None) -> 
         if isinstance(frame_index, bool) or not isinstance(frame_index, int) or frame_index < 0:
             raise ApiError(400, "BAD_REQUEST", "frame_index는 0 이상의 정수여야 합니다.",
                            field="progress.frame_index")
-        media_url = _save_progress_image(job_id, frame_index, image)
+        media_url = _save_progress_image(job_id, frame_index, image,
+                                         progress.get("detections"))
 
     detection = None
     if phase == "DETECTING" and existing_event_no is None:
